@@ -62,12 +62,15 @@ pub struct WorkflowStep {
 
 impl WorkflowStep {
     /// Run this step's profession as an Agent, returning its output.
+    ///
+    /// `profession_resolver` is `Arc<dyn Fn + Send + Sync>` so the returned
+    /// future is `Send` (required for use in async runtimes like axum's).
     pub async fn run(
         &self,
         context: &WorkflowContext,
         tools: &[Arc<dyn Tool>],
         client: &Arc<dyn Client>,
-        profession_resolver: &dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError>,
+        profession_resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync>,
     ) -> Result<String, AgentError> {
         let profession = profession_resolver(&self.profession)?;
         let mut agent = Agent::new(
@@ -238,8 +241,10 @@ impl Workflow {
                 }
             }
 
+            let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync> =
+                Arc::new(|name: &str| resolve_profession(name));
             let output = step
-                .run(&context, tools, &client, &|name| resolve_profession(name))
+                .run(&context, tools, &client, resolver)
                 .await?;
             context.set(&step.output_var, output.clone());
             result.step_outputs.insert(step.id.clone(), output.clone());
