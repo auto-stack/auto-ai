@@ -10,6 +10,7 @@
 
 pub mod config;
 pub mod daemon;
+pub mod openai_format;
 pub mod provider;
 pub mod sse;
 pub mod types;
@@ -17,6 +18,7 @@ pub mod types;
 pub use provider::{AiProvider, ProviderRegistry};
 pub use types::*;
 
+use crate::openai_format::{openai_content, parse_openai_tool_calls, tool_to_openai, OpenAiMsg};
 use crate::sse::SseParser;
 
 /// Which mode the client is operating in.
@@ -159,6 +161,17 @@ impl AiClient {
             .unwrap_or("")
             .to_string();
 
+        // Daemon is OpenAI-compatible, so tool calls ride in `tool_calls`.
+        let tool_calls: Vec<ToolCall> = json["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .map(|arr| parse_openai_tool_calls(arr))
+            .unwrap_or_default();
+
+        let stop_reason = json["choices"][0]["finish_reason"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         let usage = json.get("usage").map(|u| Usage {
             input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
             output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
@@ -166,7 +179,14 @@ impl AiClient {
 
         let model = json["model"].as_str().unwrap_or(&req.model).to_string();
 
-        Ok(CompletionResponse { content, usage, model, error: None })
+        Ok(CompletionResponse {
+            content,
+            tool_calls,
+            stop_reason,
+            usage,
+            model,
+            error: None,
+        })
     }
 
     async fn daemon_complete_stream(
@@ -227,6 +247,8 @@ impl AiClient {
 
         Ok(CompletionResponse {
             content,
+            tool_calls: Vec::new(),
+            stop_reason: None,
             usage: None,
             model: req.model.clone(),
             error: None,
@@ -235,9 +257,34 @@ impl AiClient {
 
     /// Build the OpenAI-compatible request body for the daemon.
     fn build_daemon_body(&self, req: &CompletionRequest, stream: bool) -> serde_json::Value {
-        let messages: Vec<serde_json::Value> = req.messages.iter().map(|m| {
-            serde_json::json!({ "role": m.role, "content": m.content })
-        }).collect();
+        // The daemon speaks OpenAI's chat-completions format. Reuse the OpenAI
+        // provider's content-block translation so tool_use / tool_result round
+        // trip through the daemon unchanged.
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        for m in &req.messages {
+            match openai_content(&m.role, &m.content) {
+                OpenAiMsg::Text { role, content } => {
+                    messages.push(serde_json::json!({ "role": role, "content": content }));
+                }
+                OpenAiMsg::AssistantWithTools { text, tool_calls } => {
+                    let mut obj = serde_json::json!({ "role": "assistant" });
+                    if !text.is_empty() {
+                        obj["content"] = serde_json::json!(text);
+                    }
+                    obj["tool_calls"] = serde_json::Value::Array(tool_calls);
+                    messages.push(obj);
+                }
+                OpenAiMsg::ToolResults(results) => {
+                    for r in results {
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": r.tool_call_id,
+                            "content": r.content,
+                        }));
+                    }
+                }
+            }
+        }
 
         let mut all_msgs = Vec::new();
         if let Some(sys) = &req.system_prompt {
@@ -250,6 +297,11 @@ impl AiClient {
             "messages": all_msgs,
             "stream": stream,
         });
+        if !req.tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(
+                req.tools.iter().map(tool_to_openai).collect(),
+            );
+        }
         if let Some(n) = req.max_tokens {
             body["max_tokens"] = serde_json::json!(n);
         }
