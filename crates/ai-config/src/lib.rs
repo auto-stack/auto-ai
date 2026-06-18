@@ -12,8 +12,10 @@
 
 pub mod loader;
 pub mod provider;
+pub mod validate;
 pub mod wire;
 
 pub use loader::{parse_client_config, parse_daemon_config, ClientConfig, ConfigError, DaemonConfig};
 pub use provider::ProviderConfig;
+pub use validate::validate_model_exists;
 pub use wire::*;
