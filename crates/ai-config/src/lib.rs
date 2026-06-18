@@ -10,6 +10,8 @@
 //! Defining the canonical types once here keeps the client↔daemon boundary
 //! provider-neutral (no OpenAI/Anthropic shapes leak across it).
 
+pub mod provider;
 pub mod wire;
 
+pub use provider::ProviderConfig;
 pub use wire::*;
