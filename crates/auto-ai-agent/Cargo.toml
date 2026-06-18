@@ -11,6 +11,8 @@ path = "src/lib.rs"
 [dependencies]
 # Layer 2: the LLM client (tool-calling, daemon mode).
 auto-ai-client = { path = "../auto-ai-client" }
+# Shared config + canonical wire types (model validation against client config).
+ai-config = { path = "../ai-config" }
 # Atom (.at) config parsing — shared with AutoForge, lives in ../auto-lang.
 auto-atom = { path = "../../../auto-lang/crates/auto-atom" }
 auto-val = { path = "../../../auto-lang/crates/auto-val" }
@@ -21,6 +23,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync"] }
 thiserror = "1"
 tracing = "0.1"
+dirs = "5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
