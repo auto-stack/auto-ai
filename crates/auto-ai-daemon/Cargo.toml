@@ -9,6 +9,7 @@ name = "aaid"
 path = "src/main.rs"
 
 [dependencies]
+ai-config = { path = "../ai-config" }
 auto-ai-client = { path = "../auto-ai-client" }
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
@@ -21,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures = "0.3"
+async-trait = "0.1"
 
 [lib]
 name = "auto_ai_daemon"
