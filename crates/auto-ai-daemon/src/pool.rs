@@ -18,7 +18,9 @@ impl ConcurrencyManager {
         let mut pools = HashMap::new();
         let mut limits = HashMap::new();
         for (name, provider) in &config.providers {
-            let limit = provider.max_concurrency;
+            // max_concurrency is Option<usize> in the shared config; default
+            // to a sane cap when a provider doesn't set it.
+            let limit = provider.max_concurrency.unwrap_or(4);
             pools.insert(name.clone(), Arc::new(Semaphore::new(limit)));
             limits.insert(name.clone(), limit);
         }
@@ -56,17 +58,21 @@ impl ConcurrencyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DaemonConfig, ProviderEntry};
+    use crate::config::DaemonConfig;
 
     fn test_config() -> DaemonConfig {
         let mut providers = HashMap::new();
-        providers.insert("test".into(), ProviderEntry {
-            kind: "openai".into(),
-            base_url: String::new(),
-            api_key: "k".into(),
-            models: vec![],
-            max_concurrency: 2,
-        });
+        providers.insert(
+            "test".into(),
+            ai_config::ProviderConfig {
+                kind: "openai".into(),
+                base_url: String::new(),
+                api_key: Some("k".into()),
+                key_env: None,
+                models: vec![],
+                max_concurrency: Some(2),
+            },
+        );
         DaemonConfig {
             listen_addr: String::new(),
             idle_timeout_min: 0,
@@ -81,7 +87,6 @@ mod tests {
     fn pool_created() {
         let mgr = ConcurrencyManager::from_config(&test_config());
         assert_eq!(mgr.limit("test"), 2);
-        assert_eq!(mgr.available("test"), Some(0)); // 2 used - 2 available... no, available is permits
     }
 
     #[tokio::test]
@@ -90,5 +95,32 @@ mod tests {
         let permit = mgr.acquire("test").await;
         assert!(permit.is_some());
         drop(permit); // releases
+    }
+
+    #[test]
+    fn pool_defaults_concurrency_when_unset() {
+        // A provider with max_concurrency = None should fall back to 4.
+        let mut providers = HashMap::new();
+        providers.insert(
+            "unset".into(),
+            ai_config::ProviderConfig {
+                kind: "openai".into(),
+                base_url: String::new(),
+                api_key: Some("k".into()),
+                key_env: None,
+                models: vec![],
+                max_concurrency: None,
+            },
+        );
+        let cfg = DaemonConfig {
+            listen_addr: String::new(),
+            idle_timeout_min: 0,
+            providers,
+            default_provider: "unset".into(),
+            default_model: String::new(),
+            log_level: String::new(),
+        };
+        let mgr = ConcurrencyManager::from_config(&cfg);
+        assert_eq!(mgr.limit("unset"), 4);
     }
 }

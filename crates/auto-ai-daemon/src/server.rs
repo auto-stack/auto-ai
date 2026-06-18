@@ -1,9 +1,16 @@
 //! HTTP server (axum) — the daemon's public API.
+//!
+//! Endpoints:
+//! - `POST /v1/chat/completions` — receives a **canonical** `CompletionRequest`
+//!   (from `auto-ai-client`), selects a provider, translates to the provider's
+//!   wire format, calls the upstream LLM, and returns a **canonical**
+//!   `CompletionResponse`. All provider shape knowledge lives in the daemon.
+//! - `GET /v1/status` / `/v1/models` / `/v1/usage` — observability.
 
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Json;
@@ -11,26 +18,29 @@ use serde_json::json;
 
 use crate::config::DaemonConfig;
 use crate::pool::ConcurrencyManager;
+use crate::provider::ProviderRegistry;
 use crate::tracker::UsageTracker;
 
 pub struct AppState {
     pub config: DaemonConfig,
+    pub registry: ProviderRegistry,
     pub pool: ConcurrencyManager,
     pub tracker: UsageTracker,
     pub current_model: std::sync::Mutex<String>,
-    pub http_client: reqwest::Client,
 }
 
 impl AppState {
     pub fn new(config: DaemonConfig) -> Self {
+        let registry = ProviderRegistry::from_daemon_config(&config)
+            .expect("daemon config must have at least one provider");
         let pool = ConcurrencyManager::from_config(&config);
         let current_model = config.default_model.clone();
         Self {
             config,
+            registry,
             pool,
             tracker: UsageTracker::new(),
             current_model: std::sync::Mutex::new(current_model),
-            http_client: reqwest::Client::new(),
         }
     }
 }
@@ -44,10 +54,17 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .with_state(state)
 }
 
+/// POST /v1/chat/completions — receive a canonical request, call a provider,
+/// return a canonical response.
+///
+/// The body is a canonical [`ai_config::CompletionRequest`]. The daemon picks
+/// its default provider (provider/model routing is a future enhancement),
+/// acquires a concurrency permit, and delegates the (canonical↔provider)
+/// translation to the provider implementation.
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<ai_config::CompletionRequest>,
 ) -> impl IntoResponse {
     let app_name = headers
         .get("x-app-name")
@@ -55,10 +72,9 @@ async fn chat_completions(
         .unwrap_or("unknown")
         .to_string();
     let provider_name = &state.config.default_provider;
-    let is_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Acquire concurrency permit.
-    let _permit = match state.pool.acquire(provider_name).await {
+    let permit = match state.pool.acquire(provider_name).await {
         Some(p) => p,
         None => {
             return (
@@ -69,84 +85,42 @@ async fn chat_completions(
         }
     };
 
-    let provider = match state.config.providers.get(provider_name) {
-        Some(p) => p,
-        None => {
+    let provider = match state.registry.default_provider() {
+        Ok(p) => p.clone(),
+        Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": {"message": "provider not configured"}})),
+                Json(json!({"error": {"message": format!("{e}")}})),
             )
                 .into_response();
         }
     };
 
-    let url = match provider.kind.as_str() {
-        "anthropic" => format!("{}/v1/messages", provider.base_url.trim_end_matches('/')),
-        _ => format!("{}/chat/completions", provider.base_url.trim_end_matches('/')),
-    };
-
-    let mut req = state
-        .http_client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(&body);
-
-    match provider.kind.as_str() {
-        "anthropic" => {
-            req = req
-                .header("x-api-key", &provider.api_key)
-                .header("anthropic-version", "2023-06-01");
+    // Hand the canonical request to the provider, which translates it to its
+    // own wire format, calls upstream, and parses back a canonical response.
+    match provider.complete(&req).await {
+        Ok(resp) => {
+            if let Some(u) = &resp.usage {
+                state
+                    .tracker
+                    .record(&app_name, u.input_tokens as u64, u.output_tokens as u64);
+            }
+            drop(permit);
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(&resp).unwrap_or(json!({"error": "serialize"}))),
+            )
+                .into_response()
         }
-        _ => {
-            req = req.header("Authorization", format!("Bearer {}", provider.api_key));
-        }
-    }
-
-    let upstream = match req.send().await {
-        Ok(r) => r,
         Err(e) => {
-            tracing::error!("upstream request failed: {}", e);
-            return (
+            drop(permit);
+            (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({"error": {"message": format!("upstream error: {e}")}})),
             )
-                .into_response();
+                .into_response()
         }
-    };
-
-    let status = upstream.status();
-
-    // Non-streaming: pass through the response body.
-    if !is_stream {
-        let resp_body = upstream.bytes().await.unwrap_or_default();
-        // Extract usage for tracking (best-effort).
-        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&resp_body) {
-            let input = json
-                .pointer("/usage/prompt_tokens")
-                .or_else(|| json.pointer("/usage/input_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let output = json
-                .pointer("/usage/completion_tokens")
-                .or_else(|| json.pointer("/usage/output_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if input > 0 || output > 0 {
-                state.tracker.record(&app_name, input, output);
-            }
-        }
-        return (status, resp_body).into_response();
     }
-
-    // Streaming: read full response and forward as text/event-stream.
-    // (Simple proxy; future: true streaming passthrough.)
-    let resp_body = upstream.bytes().await.unwrap_or_default();
-    (
-        StatusCode::OK,
-        [("Content-Type", "text/event-stream")],
-        resp_body,
-    )
-        .into_response()
 }
 
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {

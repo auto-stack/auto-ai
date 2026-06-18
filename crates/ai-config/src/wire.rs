@@ -152,7 +152,7 @@ pub struct ToolCall {
 }
 
 /// A completion request (provider-agnostic).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -202,7 +202,7 @@ impl CompletionRequest {
 }
 
 /// A completion response.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionResponse {
     /// The full text response (all chunks joined for streaming).
     pub content: String,
