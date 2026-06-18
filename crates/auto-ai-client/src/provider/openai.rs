@@ -36,13 +36,39 @@ impl OpenAiProvider {
     }
 
     fn build_body(&self, req: &CompletionRequest) -> serde_json::Value {
-        let messages: Vec<serde_json::Value> = req.messages.iter().map(|m| {
-            serde_json::json!({ "role": m.role, "content": m.content })
-        }).collect();
+        // Translate each message. OpenAI has no content-block array: text blocks
+        // become a string `content`, `ToolUse` becomes `tool_calls`, and
+        // `ToolResult` becomes a separate `role:"tool"` message (which we emit
+        // as its own entry in the messages array below).
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        for m in &req.messages {
+            match crate::openai_format::openai_content(&m.role, &m.content) {
+                crate::openai_format::OpenAiMsg::Text { role, content } => {
+                    messages.push(serde_json::json!({ "role": role, "content": content }));
+                }
+                crate::openai_format::OpenAiMsg::AssistantWithTools { text, tool_calls } => {
+                    let mut obj = serde_json::json!({ "role": "assistant" });
+                    if !text.is_empty() {
+                        obj["content"] = serde_json::json!(text);
+                    }
+                    obj["tool_calls"] = serde_json::Value::Array(tool_calls);
+                    messages.push(obj);
+                }
+                crate::openai_format::OpenAiMsg::ToolResults(results) => {
+                    // Each tool result is its own role:"tool" message in OpenAI.
+                    for r in results {
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": r.tool_call_id,
+                            "content": r.content,
+                        }));
+                    }
+                }
+            }
+        }
 
         let mut body = serde_json::json!({
             "model": req.model,
-            "messages": messages,
             "stream": false,
         });
 
@@ -51,6 +77,17 @@ impl OpenAiProvider {
             let mut all_msgs = vec![serde_json::json!({ "role": "system", "content": sys })];
             all_msgs.extend(messages);
             body["messages"] = serde_json::Value::Array(all_msgs);
+        } else {
+            body["messages"] = serde_json::Value::Array(messages);
+        }
+
+        if !req.tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(
+                req.tools
+                    .iter()
+                    .map(crate::openai_format::tool_to_openai)
+                    .collect(),
+            );
         }
         if let Some(n) = req.max_tokens {
             body["max_tokens"] = serde_json::json!(n);
@@ -101,6 +138,17 @@ impl AiProvider for OpenAiProvider {
             .unwrap_or("")
             .to_string();
 
+        // OpenAI encodes tool invocations as a `tool_calls` array on the message.
+        let tool_calls: Vec<ToolCall> = json["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .map(|arr| crate::openai_format::parse_openai_tool_calls(arr))
+            .unwrap_or_default();
+
+        let stop_reason = json["choices"][0]["finish_reason"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         let usage = json.get("usage").map(|u| {
             Usage {
                 input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
@@ -115,6 +163,8 @@ impl AiProvider for OpenAiProvider {
 
         Ok(CompletionResponse {
             content,
+            tool_calls,
+            stop_reason,
             usage,
             model,
             error: None,
@@ -176,6 +226,8 @@ impl AiProvider for OpenAiProvider {
 
         Ok(CompletionResponse {
             content,
+            tool_calls: Vec::new(),
+            stop_reason: None,
             usage: None,
             model: req.model.clone(),
             error: None,
@@ -211,5 +263,84 @@ mod tests {
     fn url_construction() {
         let p = OpenAiProvider::new("z".into(), "https://api.test.com/v1/".into(), "k".into(), vec![]);
         assert_eq!(p.url(), "https://api.test.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn build_body_includes_tools() {
+        let p = OpenAiProvider::new("test".into(), "https://api.test.com/v1".into(), "key".into(), vec![]);
+        let tool = ToolDefinition::new("get_weather", "weather", serde_json::json!({"type":"object","properties":{}}));
+        let req = CompletionRequest::single("gpt-4o", "hi").with_tools(vec![tool]);
+        let body = p.build_body(&req);
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
+        assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn build_body_omits_tools_when_empty() {
+        let p = OpenAiProvider::new("test".into(), "https://api.test.com/v1".into(), "key".into(), vec![]);
+        let req = CompletionRequest::single("gpt-4o", "hi");
+        let body = p.build_body(&req);
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn build_body_serializes_tool_result_as_role_tool() {
+        let p = OpenAiProvider::new("test".into(), "https://api.test.com/v1".into(), "key".into(), vec![]);
+        let mut req = CompletionRequest::single("gpt-4o", "hi");
+        req.messages.push(Message::tool_result("call_1", "42"));
+        let body = p.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        // [user "hi", tool result]
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call_1");
+        assert_eq!(msgs[1]["content"], "42");
+    }
+
+    #[test]
+    fn parse_openai_tool_calls() {
+        // Simulate OpenAI's response carrying a tool_calls array.
+        let json = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\":\"a.txt\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5 },
+            "model": "gpt-4o"
+        });
+
+        let tool_calls: Vec<ToolCall> = json["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .map(|arr| {
+                arr.iter().filter_map(|tc| {
+                    let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                    if name.is_empty() { return None; }
+                    let input = serde_json::from_str(tc["function"]["arguments"].as_str().unwrap_or("{}"))
+                        .unwrap_or(serde_json::json!({}));
+                    Some(ToolCall {
+                        id: tc["id"].as_str().unwrap_or("").into(),
+                        name,
+                        input,
+                    })
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_1");
+        assert_eq!(tool_calls[0].name, "read_file");
+        assert_eq!(tool_calls[0].input["path"], "a.txt");
+        assert_eq!(json["choices"][0]["finish_reason"].as_str(), Some("tool_calls"));
     }
 }

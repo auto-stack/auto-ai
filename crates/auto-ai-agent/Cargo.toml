@@ -1,0 +1,26 @@
+[package]
+name = "auto-ai-agent"
+version = "0.1.0"
+edition = "2021"
+description = "AutoOS AI agent layer — Profession library, ReAct loop, Workflow engine"
+
+[lib]
+name = "auto_ai_agent"
+path = "src/lib.rs"
+
+[dependencies]
+# Layer 2: the LLM client (tool-calling, daemon mode).
+auto-ai-client = { path = "../auto-ai-client" }
+# Atom (.at) config parsing — shared with AutoForge, lives in ../auto-lang.
+auto-atom = { path = "../../../auto-lang/crates/auto-atom" }
+auto-val = { path = "../../../auto-lang/crates/auto-val" }
+
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

@@ -3,5 +3,6 @@ resolver = "2"
 members = [
     "crates/auto-ai-client",
     "crates/auto-ai-daemon",
+    "crates/auto-ai-agent",
     "crates/aictl",
 ]
