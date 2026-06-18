@@ -22,7 +22,7 @@ pub mod memory;
 pub mod profession;
 pub mod tool;
 
-pub use agent::{Agent, AgentResult, ToolCallRecord};
+pub use agent::{Agent, AgentResult, Client, ToolCallRecord};
 pub use error::{AgentError, ToolError};
 pub use memory::Memory;
 pub use profession::Profession;
