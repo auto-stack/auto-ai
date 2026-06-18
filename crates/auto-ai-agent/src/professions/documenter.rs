@@ -19,7 +19,7 @@ impl Profession for Documenter {
         SOUL
     }
     fn model(&self) -> &str {
-        "glm-4.5"
+        "glm-4.6"
     }
     fn temperature(&self) -> f64 {
         // Documentation benefits from clear, natural prose — slight warmth.

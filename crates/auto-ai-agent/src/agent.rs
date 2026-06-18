@@ -587,7 +587,7 @@ mod tests {
 
         let req = agent.build_request();
         assert_eq!(req.system_prompt.as_deref(), Some("you are a test profession"));
-        assert_eq!(req.model, "glm-4.5");
+        assert_eq!(req.model, "glm-4.6");
         assert!((req.temperature.unwrap() - 0.3).abs() < 1e-9);
         // MockProfession.allowed_tools() is empty → all tools visible.
         assert_eq!(req.tools.len(), 1);

@@ -9,18 +9,18 @@
 // (see examples/daemon.at). Both files usually list the same providers.
 //
 // Format: single `client { }` root (auto-atom is single-root). Model names are
-// quoted because they contain dots/dashes (e.g. "glm-4.5") that the parser
+// quoted because they contain dots/dashes (e.g. "glm-4.6") that the parser
 // would otherwise read as a number.
 
 client {
     default_provider : zhipu
-    default_model : "glm-4.5"
+    default_model : "glm-4.6"
 
     zhipu {
         kind : openai
         base_url : "https://open.bigmodel.cn/api/paas/v4"
         key_env : ZHIPU_API_KEY
-        models : ["glm-4.5", "glm-flash"]
+        models : ["glm-4.6", "glm-flash"]
     }
 
     // Optional second provider:

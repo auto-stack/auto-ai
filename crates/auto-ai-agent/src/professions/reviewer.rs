@@ -19,7 +19,7 @@ impl Profession for Reviewer {
         SOUL
     }
     fn model(&self) -> &str {
-        "glm-4.5"
+        "glm-4.6"
     }
     fn temperature(&self) -> f64 {
         // Reviewing rewards careful, deterministic analysis.

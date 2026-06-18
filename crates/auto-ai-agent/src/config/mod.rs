@@ -6,7 +6,7 @@
 //! ```text
 //! profession {
 //!     name : "coder"
-//!     model : "glm-4.5"
+//!     model : "glm-4.6"
 //!     temperature : 0.2
 //!     max_turns : 15
 //!     system_prompt : "you are a coder..."

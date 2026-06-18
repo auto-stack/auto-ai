@@ -47,7 +47,7 @@ impl Profession for Translator {
         SOUL
     }
     fn model(&self) -> &str {
-        "glm-4.5"
+        "glm-4.6"
     }
     fn temperature(&self) -> f64 {
         // Translation must be deterministic — one right answer.

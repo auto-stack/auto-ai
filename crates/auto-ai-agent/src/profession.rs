@@ -18,7 +18,7 @@ pub trait Profession: Send + Sync {
 
     /// Recommended model.
     fn model(&self) -> &str {
-        "glm-4.5"
+        "glm-4.6"
     }
 
     /// Generation temperature (creativity vs determinism).
@@ -69,7 +69,7 @@ mod tests {
         };
         assert_eq!(p.name(), "stub");
         assert_eq!(p.system_prompt(), "be helpful");
-        assert_eq!(p.model(), "glm-4.5");
+        assert_eq!(p.model(), "glm-4.6");
         assert!((p.temperature() - 0.3).abs() < 1e-9);
         assert_eq!(p.max_turns(), 10);
         assert!(p.allowed_tools().is_empty());

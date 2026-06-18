@@ -8,12 +8,12 @@
 //! ```text
 //! client {
 //!     default_provider : zhipu
-//!     default_model : "glm-4.5"
+//!     default_model : "glm-4.6"
 //!     zhipu {
 //!         kind : openai
 //!         base_url : "https://open.bigmodel.cn/api/paas/v4"
 //!         key_env : ZHIPU_API_KEY
-//!         models : ["glm-4.5", "glm-flash"]
+//!         models : ["glm-4.6", "glm-flash"]
 //!     }
 //! }
 //! ```
@@ -23,7 +23,7 @@
 //! inside each provider block).
 //!
 //! Note: model names are quoted (`default_model` and inside the `models`
-//! array) because they often contain dots/dashes (e.g. `glm-4.5`) that
+//! array) because they often contain dots/dashes (e.g. `glm-4.6`) that
 //! auto-atom would otherwise try to parse as a number literal.
 
 use std::collections::HashMap;
@@ -177,8 +177,8 @@ fn opt_str(node: &Node, key: &str) -> Option<String> {
 }
 
 /// Read the `models` field. Accepts either a quoted-string array
-/// `["glm-4.5", "glm-flash"]` (preferred — model names contain dots) or a
-/// legacy comma-separated bare string `glm-4.5,glm-flash` (only works when
+/// `["glm-4.6", "glm-flash"]` (preferred — model names contain dots) or a
+/// legacy comma-separated bare string `glm-4.6,glm-flash` (only works when
 /// names don't trip the number parser).
 fn opt_models(node: &Node, key: &str) -> Vec<String> {
     match node.get_prop_of(key) {
@@ -220,22 +220,22 @@ mod tests {
         let src = r#"
             client {
                 default_provider : zhipu
-                default_model : "glm-4.5"
+                default_model : "glm-4.6"
 
                 zhipu {
                     kind : openai
                     base_url : "https://open.bigmodel.cn/api/paas/v4"
                     key_env : ZHIPU_API_KEY
-                    models : ["glm-4.5", "glm-flash"]
+                    models : ["glm-4.6", "glm-flash"]
                 }
             }
         "#;
         let cfg = parse_client_config(src).unwrap();
         assert_eq!(cfg.default_provider, "zhipu");
-        assert_eq!(cfg.default_model, "glm-4.5");
+        assert_eq!(cfg.default_model, "glm-4.6");
         let zhipu = cfg.providers.get("zhipu").unwrap();
         assert_eq!(zhipu.kind, "openai");
-        assert_eq!(zhipu.models, vec!["glm-4.5".to_string(), "glm-flash".to_string()]);
+        assert_eq!(zhipu.models, vec!["glm-4.6".to_string(), "glm-flash".to_string()]);
         assert_eq!(zhipu.key_env.as_deref(), Some("ZHIPU_API_KEY"));
         assert_eq!(zhipu.max_concurrency, None); // client view: unset
     }
@@ -248,13 +248,13 @@ mod tests {
                 idle_timeout_min : 30
                 log_level : debug
                 default_provider : zhipu
-                default_model : "glm-4.5"
+                default_model : "glm-4.6"
 
                 zhipu {
                     kind : openai
                     base_url : "https://open.bigmodel.cn/api/paas/v4"
                     api_key : "test-key"
-                    models : ["glm-4.5", "glm-flash"]
+                    models : ["glm-4.6", "glm-flash"]
                     max_concurrency : 4
                 }
             }
@@ -298,12 +298,12 @@ mod tests {
     fn parse_daemon_defaults_model_from_provider() {
         let src = r#"
             daemon {
-                zhipu { kind : openai, models : ["glm-4.5", "glm-flash"] }
+                zhipu { kind : openai, models : ["glm-4.6", "glm-flash"] }
             }
         "#;
         let cfg = parse_daemon_config(src).unwrap();
         // default_model falls back to the provider's first model.
-        assert_eq!(cfg.default_model, "glm-4.5");
+        assert_eq!(cfg.default_model, "glm-4.6");
     }
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
                     kind : openai
                     base_url : "https://open.bigmodel.cn/api/paas/v4"
                     key_env : ZHIPU_API_KEY
-                    models : ["glm-4.5"]
+                    models : ["glm-4.6"]
                 }
             }
         "#;

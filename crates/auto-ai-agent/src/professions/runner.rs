@@ -45,7 +45,7 @@ impl Profession for Runner {
         SOUL
     }
     fn model(&self) -> &str {
-        "glm-4.5"
+        "glm-4.6"
     }
     fn temperature(&self) -> f64 {
         // Execution must be careful and deterministic.

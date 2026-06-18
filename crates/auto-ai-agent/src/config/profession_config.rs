@@ -193,7 +193,7 @@ impl Profession for ConfigProfession {
         &self.prompt
     }
     fn model(&self) -> &str {
-        self.cfg.model.as_deref().unwrap_or("glm-4.5")
+        self.cfg.model.as_deref().unwrap_or("glm-4.6")
     }
     fn temperature(&self) -> f64 {
         self.cfg.temperature.unwrap_or(0.3)
@@ -302,7 +302,7 @@ mod tests {
         let src = r#"
             profession {
                 name : "my-coder"
-                model : "glm-4.5"
+                model : "glm-4.6"
                 temperature : 0.25
                 max_turns : 12
                 system_prompt : "you write code"
@@ -311,7 +311,7 @@ mod tests {
         "#;
         let cfg = parse_at_profession(src).unwrap();
         assert_eq!(cfg.name.as_deref(), Some("my-coder"));
-        assert_eq!(cfg.model.as_deref(), Some("glm-4.5"));
+        assert_eq!(cfg.model.as_deref(), Some("glm-4.6"));
         assert!((cfg.temperature.unwrap() - 0.25).abs() < 1e-9);
         assert_eq!(cfg.max_turns, Some(12));
         assert_eq!(cfg.system_prompt.as_deref(), Some("you write code"));
@@ -331,7 +331,7 @@ mod tests {
         let src = r#"
             profession {
                 name : "p"
-                model : "glm-4.5"
+                model : "glm-4.6"
                 temperature : 0.4
                 max_turns : 7
                 system_prompt : "be precise"
@@ -341,7 +341,7 @@ mod tests {
         let p = load_profession(src).unwrap();
         assert_eq!(p.name(), "p");
         assert_eq!(p.system_prompt(), "be precise");
-        assert_eq!(p.model(), "glm-4.5");
+        assert_eq!(p.model(), "glm-4.6");
         assert!((p.temperature() - 0.4).abs() < 1e-9);
         assert_eq!(p.max_turns(), 7);
         assert_eq!(p.allowed_tools(), vec!["a".to_string(), "b".to_string()]);
@@ -361,14 +361,14 @@ mod tests {
             profession {
                 name : "precise-coder"
                 inherit : "coder"
-                model : "glm-4.5-air"
+                model : "glm-4.6-air"
                 temperature : 0.1
                 max_turns : 5
             }
         "#;
         let p = load_profession(src).unwrap();
         assert_eq!(p.name(), "precise-coder");
-        assert_eq!(p.model(), "glm-4.5-air"); // overridden
+        assert_eq!(p.model(), "glm-4.6-air"); // overridden
         assert!((p.temperature() - 0.1).abs() < 1e-9); // overridden
         assert_eq!(p.max_turns(), 5); // overridden
         // Prompt inherited from coder (not empty).

@@ -1,6 +1,6 @@
 //! Runtime model validation for Professions.
 //!
-//! A Profession names a model (e.g. `"glm-4.5"`) that the daemon must be able
+//! A Profession names a model (e.g. `"glm-4.6"`) that the daemon must be able
 //! to serve. [`validate_profession_model`] loads the client config
 //! (`~/.config/autoos/ai-client.at`) and checks the Profession's model exists
 //! in some provider, failing fast with a clear message instead of a confusing
@@ -64,12 +64,12 @@ mod tests {
                 base_url: String::new(),
                 api_key: None,
                 key_env: None,
-                models: vec!["glm-4.5".into()],
+                models: vec!["glm-4.6".into()],
                 max_concurrency: None,
             },
         );
 
-        assert!(ai_config::validate_model_exists(&cfg, "glm-4.5").is_ok());
+        assert!(ai_config::validate_model_exists(&cfg, "glm-4.6").is_ok());
         assert!(ai_config::validate_model_exists(&cfg, "missing").is_err());
     }
 
@@ -79,7 +79,7 @@ mod tests {
         // when the config file isn't present. We point HOME elsewhere by
         // validating against a Profession whose model we don't check — the
         // failure happens at the file-read step regardless.
-        let p = FixedModel("glm-4.5");
+        let p = FixedModel("glm-4.6");
         let res = validate_profession_model(&p);
         // Either the user's real config validates, or it errors cleanly —
         // never panics.

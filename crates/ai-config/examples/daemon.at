@@ -16,13 +16,13 @@ daemon {
     idle_timeout_min : 10
     log_level : info
     default_provider : zhipu
-    default_model : "glm-4.5"
+    default_model : "glm-4.6"
 
     zhipu {
         kind : openai
         base_url : "https://open.bigmodel.cn/api/paas/v4"
         api_key : "your-zhipu-key-here"   // or use key_env : ZHIPU_API_KEY
-        models : ["glm-4.5", "glm-flash"]
+        models : ["glm-4.6", "glm-flash"]
         max_concurrency : 4
     }
 
