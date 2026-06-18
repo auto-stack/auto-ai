@@ -36,4 +36,4 @@ pub use professions::{load_builtin, builtin_names, Architect, Coder, Documenter,
 pub use relay::RelayTarget;
 pub use tool::{Tool, ToolRegistry};
 pub use validate::{load_client_config, validate_profession_model};
-pub use workflow::{parse_at_workflow, Workflow, WorkflowContext, WorkflowResult, WorkflowStep};
+pub use workflow::{parse_at_workflow, Workflow, WorkflowContext, WorkflowEvent, WorkflowResult, WorkflowStep};

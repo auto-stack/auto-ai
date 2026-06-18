@@ -254,6 +254,95 @@ impl Workflow {
 
         Ok(result)
     }
+
+    /// Like [`Workflow::run`], but emits progress events via `on_event` as each
+    /// step starts/finishes. Lets the server stream step-by-step SSE so a long
+    /// multi-step workflow doesn't block a single HTTP response.
+    ///
+    /// Events: [`WorkflowEvent::StepStart`], [`WorkflowEvent::StepDone`],
+    /// [`WorkflowEvent::StepSkipped`], [`WorkflowEvent::Finished`].
+    pub async fn run_with_progress(
+        &self,
+        tools: &[Arc<dyn Tool>],
+        client: Arc<dyn Client>,
+        initial_input: &str,
+        on_event: Arc<dyn Fn(WorkflowEvent) + Send + Sync>,
+    ) -> Result<WorkflowResult, AgentError> {
+        let order = topo_sort(&self.steps)?;
+        let mut context = WorkflowContext::new(initial_input);
+        let mut result = WorkflowResult::default();
+
+        for step_id in order {
+            let step = self
+                .steps
+                .iter()
+                .find(|s| s.id == step_id)
+                .expect("topo id exists");
+
+            if let Some(cond) = &step.condition {
+                if !evaluate_condition(cond, &context) {
+                    tracing::info!("workflow step '{}' skipped (condition false)", step.id);
+                    on_event(WorkflowEvent::StepSkipped {
+                        step_id: step.id.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            on_event(WorkflowEvent::StepStart {
+                step_id: step.id.clone(),
+                profession: step.profession.clone(),
+                input: context.substitute(&step.input_template),
+            });
+
+            let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync> =
+                Arc::new(|name: &str| resolve_profession(name));
+            let output = step.run(&context, tools, &client, resolver).await?;
+
+            on_event(WorkflowEvent::StepDone {
+                step_id: step.id.clone(),
+                output: output.clone(),
+            });
+
+            context.set(&step.output_var, output.clone());
+            result.step_outputs.insert(step.id.clone(), output.clone());
+            let key = step.output_var.trim_start_matches('$').to_string();
+            result.outputs.insert(key, output);
+        }
+
+        on_event(WorkflowEvent::Finished {
+            result: WorkflowResult {
+                step_outputs: result.step_outputs.clone(),
+                outputs: result.outputs.clone(),
+                total_tokens: result.total_tokens,
+            },
+        });
+        Ok(result)
+    }
+}
+
+/// Progress events emitted by [`Workflow::run_with_progress`].
+#[derive(Clone, Debug)]
+pub enum WorkflowEvent {
+    /// A step is about to run.
+    StepStart {
+        step_id: String,
+        profession: String,
+        input: String,
+    },
+    /// A step finished with this output.
+    StepDone {
+        step_id: String,
+        output: String,
+    },
+    /// A step was skipped (condition false).
+    StepSkipped {
+        step_id: String,
+    },
+    /// The whole workflow finished (carries the final result).
+    Finished {
+        result: WorkflowResult,
+    },
 }
 
 /// Resolve a profession name: builtin first, else `.at` profession by file
