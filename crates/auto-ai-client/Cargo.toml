@@ -2,17 +2,13 @@
 name = "auto-ai-client"
 version = "0.1.0"
 edition = "2021"
-description = "AutoOS shared AI client — LLM provider abstraction for all apps"
+description = "AutoOS AI client — thin daemon HTTP client (canonical wire format)"
 
 [dependencies]
-reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
-serde = { version = "1", features = ["derive"] }
+ai-config = { path = "../ai-config" }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 serde_json = "1"
-futures = "0.3"
-tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-dirs = "5"
-async-trait = "0.1"
 
 [lib]
 name = "auto_ai_client"

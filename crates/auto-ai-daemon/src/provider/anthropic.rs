@@ -9,8 +9,8 @@ use async_trait::async_trait;
 
 use super::AiProvider;
 use crate::sse::SseParser;
-use crate::types::*;
-use crate::ClientError;
+use ai_config::*;
+use crate::LlmError;
 
 pub struct AnthropicProvider {
     name: String,
@@ -79,7 +79,7 @@ impl AiProvider for AnthropicProvider {
         self.models_list.clone()
     }
 
-    async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
+    async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let body = self.build_body(req);
 
         let resp = self
@@ -91,18 +91,18 @@ impl AiProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(ClientError::from)?;
+            .map_err(LlmError::from)?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(ClientError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::Api(format!("{}: {}", status, text)));
         }
 
         let json: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| ClientError::Api(format!("parse response: {}", e)))?;
+            .map_err(|e| LlmError::Api(format!("parse response: {}", e)))?;
 
         // Anthropic returns content as an array of blocks.
         let mut content = String::new();
@@ -156,7 +156,7 @@ impl AiProvider for AnthropicProvider {
         &self,
         req: &CompletionRequest,
         on_delta: Arc<dyn Fn(String) + Send + Sync>,
-    ) -> Result<CompletionResponse, ClientError> {
+    ) -> Result<CompletionResponse, LlmError> {
         let mut body = self.build_body(req);
         body["stream"] = serde_json::json!(true);
 
@@ -169,12 +169,12 @@ impl AiProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(ClientError::from)?;
+            .map_err(LlmError::from)?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(ClientError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::Api(format!("{}: {}", status, text)));
         }
 
         use futures::StreamExt;
@@ -183,7 +183,7 @@ impl AiProvider for AnthropicProvider {
         let mut content = String::new();
 
         while let Some(chunk_result) = stream.next().await {
-            let bytes = chunk_result.map_err(|e| ClientError::Http(e.to_string()))?;
+            let bytes = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
             let data_events = parser.push(&bytes);
 
             for data in data_events {

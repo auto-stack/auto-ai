@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use auto_ai_daemon::{DaemonConfig, AppState};
+use auto_ai_daemon::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -49,11 +49,11 @@ async fn main() {
     // Load config.
     let mut config = if let Some(path) = &config_path {
         let content = std::fs::read_to_string(path)
-            .expect(&format!("cannot read config: {}", path));
-        auto_ai_daemon::config::DaemonConfig::parse(&content)
-            .unwrap_or_else(|| panic!("failed to parse config: {}", path))
+            .unwrap_or_else(|_| panic!("cannot read config: {}", path));
+        auto_ai_daemon::config::parse_daemon_config(&content)
+            .unwrap_or_else(|e| panic!("failed to parse config {}: {}", path, e))
     } else {
-        DaemonConfig::load()
+        auto_ai_daemon::config::load()
     };
 
     // Apply overrides.
@@ -81,7 +81,7 @@ async fn main() {
     tracing::info!("aaid listening on http://{}", listen_addr);
     for (name, p) in &state.config.providers {
         tracing::info!(
-            "  provider: {} (kind={}, models={:?}, max_concurrency={})",
+            "  provider: {} (kind={}, models={:?}, max_concurrency={:?})",
             name, p.kind, p.models, p.max_concurrency
         );
     }

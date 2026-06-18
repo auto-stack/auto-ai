@@ -24,6 +24,7 @@ pub mod profession;
 pub mod professions;
 pub mod relay;
 pub mod tool;
+pub mod validate;
 pub mod workflow;
 
 pub use agent::{Agent, AgentResult, Client, ToolCallRecord};
@@ -34,4 +35,5 @@ pub use profession::Profession;
 pub use professions::{load_builtin, builtin_names, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
 pub use relay::RelayTarget;
 pub use tool::{Tool, ToolRegistry};
+pub use validate::{load_client_config, validate_profession_model};
 pub use workflow::{parse_at_workflow, Workflow, WorkflowContext, WorkflowResult, WorkflowStep};

@@ -1,7 +1,11 @@
-//! Unified types for AI completion requests/responses.
+//! Canonical wire types for the AutoOS AI stack.
 //!
-//! Extracted and simplified from AutoForge's `provider/types.rs`.
-//! These are provider-agnostic — each provider translates to/from its own format.
+//! These are the provider-agnostic, neutral-format types exchanged between
+//! `auto-ai-client` (which sends canonical [`CompletionRequest`]s) and
+//! `auto-ai-daemon` (which receives them and translates to a concrete
+//! provider's format). Defining them once here means the client, daemon, and
+//! agent crates all share one source of truth — no provider-specific shapes
+//! leak across the client↔daemon boundary.
 //!
 //! Messages carry an ordered list of [`ContentBlock`]s so the same type can
 //! represent plain text, assistant tool-use requests, and user tool results.
@@ -148,7 +152,7 @@ pub struct ToolCall {
 }
 
 /// A completion request (provider-agnostic).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -198,7 +202,7 @@ impl CompletionRequest {
 }
 
 /// A completion response.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionResponse {
     /// The full text response (all chunks joined for streaming).
     pub content: String,

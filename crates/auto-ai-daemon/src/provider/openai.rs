@@ -8,8 +8,8 @@ use async_trait::async_trait;
 
 use super::AiProvider;
 use crate::sse::SseParser;
-use crate::types::*;
-use crate::ClientError;
+use ai_config::*;
+use crate::LlmError;
 
 pub struct OpenAiProvider {
     name: String,
@@ -42,11 +42,11 @@ impl OpenAiProvider {
         // as its own entry in the messages array below).
         let mut messages: Vec<serde_json::Value> = Vec::new();
         for m in &req.messages {
-            match crate::openai_format::openai_content(&m.role, &m.content) {
-                crate::openai_format::OpenAiMsg::Text { role, content } => {
+            match crate::format::openai_content(&m.role, &m.content) {
+                crate::format::OpenAiMsg::Text { role, content } => {
                     messages.push(serde_json::json!({ "role": role, "content": content }));
                 }
-                crate::openai_format::OpenAiMsg::AssistantWithTools { text, tool_calls } => {
+                crate::format::OpenAiMsg::AssistantWithTools { text, tool_calls } => {
                     let mut obj = serde_json::json!({ "role": "assistant" });
                     if !text.is_empty() {
                         obj["content"] = serde_json::json!(text);
@@ -54,7 +54,7 @@ impl OpenAiProvider {
                     obj["tool_calls"] = serde_json::Value::Array(tool_calls);
                     messages.push(obj);
                 }
-                crate::openai_format::OpenAiMsg::ToolResults(results) => {
+                crate::format::OpenAiMsg::ToolResults(results) => {
                     // Each tool result is its own role:"tool" message in OpenAI.
                     for r in results {
                         messages.push(serde_json::json!({
@@ -85,7 +85,7 @@ impl OpenAiProvider {
             body["tools"] = serde_json::Value::Array(
                 req.tools
                     .iter()
-                    .map(crate::openai_format::tool_to_openai)
+                    .map(crate::format::tool_to_openai)
                     .collect(),
             );
         }
@@ -109,7 +109,7 @@ impl AiProvider for OpenAiProvider {
         self.models_list.clone()
     }
 
-    async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
+    async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let body = self.build_body(req);
 
         let resp = self
@@ -120,18 +120,18 @@ impl AiProvider for OpenAiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(ClientError::from)?;
+            .map_err(LlmError::from)?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(ClientError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::Api(format!("{}: {}", status, text)));
         }
 
         let json: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| ClientError::Api(format!("parse response: {}", e)))?;
+            .map_err(|e| LlmError::Api(format!("parse response: {}", e)))?;
 
         let content = json["choices"][0]["message"]["content"]
             .as_str()
@@ -141,7 +141,7 @@ impl AiProvider for OpenAiProvider {
         // OpenAI encodes tool invocations as a `tool_calls` array on the message.
         let tool_calls: Vec<ToolCall> = json["choices"][0]["message"]["tool_calls"]
             .as_array()
-            .map(|arr| crate::openai_format::parse_openai_tool_calls(arr))
+            .map(|arr| crate::format::parse_openai_tool_calls(arr))
             .unwrap_or_default();
 
         let stop_reason = json["choices"][0]["finish_reason"]
@@ -175,7 +175,7 @@ impl AiProvider for OpenAiProvider {
         &self,
         req: &CompletionRequest,
         on_delta: Arc<dyn Fn(String) + Send + Sync>,
-    ) -> Result<CompletionResponse, ClientError> {
+    ) -> Result<CompletionResponse, LlmError> {
         let mut body = self.build_body(req);
         body["stream"] = serde_json::json!(true);
 
@@ -187,12 +187,12 @@ impl AiProvider for OpenAiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(ClientError::from)?;
+            .map_err(LlmError::from)?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(ClientError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::Api(format!("{}: {}", status, text)));
         }
 
         use futures::StreamExt;
@@ -201,7 +201,7 @@ impl AiProvider for OpenAiProvider {
         let mut content = String::new();
 
         while let Some(chunk_result) = stream.next().await {
-            let bytes = chunk_result.map_err(|e| ClientError::Http(e.to_string()))?;
+            let bytes = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
             let data_events = parser.push(&bytes);
 
             for data in data_events {

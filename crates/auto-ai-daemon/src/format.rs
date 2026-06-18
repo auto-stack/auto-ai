@@ -1,13 +1,13 @@
 //! Shared OpenAI chat-completions wire-format translation.
 //!
-//! Both the [`crate::provider::OpenAiProvider`] and the daemon-mode path in
-//! [`crate::AiClient`] speak OpenAI's `/v1/chat/completions` format. This
-//! module centralizes the translation of our provider-agnostic
-//! [`ContentBlock`]s into OpenAI's message shapes (plain text, assistant
-//! `tool_calls`, and `role:"tool"` results) so the two call sites stay in
-//! sync.
+//! The daemon's [`crate::provider::OpenAiProvider`] speaks OpenAI's
+//! `/v1/chat/completions` format. This module centralizes the translation of
+//! our provider-agnostic [`ContentBlock`]s into OpenAI's message shapes (plain
+//! text, assistant `tool_calls`, and `role:"tool"` results).
+//!
+//! Migrated from `auto-ai-client` (Task 6).
 
-use crate::types::{ContentBlock, ToolDefinition};
+use ai_config::{ContentBlock, ToolDefinition};
 use serde_json::Value as JsonValue;
 
 /// One tool result extracted from a message's content blocks, ready to become
@@ -116,8 +116,8 @@ pub(crate) fn tool_to_openai(t: &ToolDefinition) -> JsonValue {
     })
 }
 
-/// Parse OpenAI's `tool_calls` array into our [`crate::types::ToolCall`] list.
-pub(crate) fn parse_openai_tool_calls(arr: &[JsonValue]) -> Vec<crate::types::ToolCall> {
+/// Parse OpenAI's `tool_calls` array into our [`ai_config::ToolCall`] list.
+pub(crate) fn parse_openai_tool_calls(arr: &[JsonValue]) -> Vec<ai_config::ToolCall> {
     arr.iter()
         .filter_map(|tc| {
             let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
@@ -126,7 +126,7 @@ pub(crate) fn parse_openai_tool_calls(arr: &[JsonValue]) -> Vec<crate::types::To
             }
             let input = serde_json::from_str(tc["function"]["arguments"].as_str().unwrap_or("{}"))
                 .unwrap_or(serde_json::json!({}));
-            Some(crate::types::ToolCall {
+            Some(ai_config::ToolCall {
                 id: tc["id"].as_str().unwrap_or("").into(),
                 name,
                 input,

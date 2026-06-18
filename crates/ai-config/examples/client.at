@@ -1,0 +1,33 @@
+// Example ai-client.at — client-side provider config.
+//
+// Location: ~/.config/autoos/ai-client.at
+//
+// This is the config the auto-ai-client (and auto-ai-agent's model validator)
+// reads. It tells the client which providers exist and which models they
+// serve. The client does NOT call these providers directly — it forwards
+// canonical requests to the aaid daemon, which uses its own ai-daemon.at
+// (see examples/daemon.at). Both files usually list the same providers.
+//
+// Format: single `client { }` root (auto-atom is single-root). Model names are
+// quoted because they contain dots/dashes (e.g. "glm-4.5") that the parser
+// would otherwise read as a number.
+
+client {
+    default_provider : zhipu
+    default_model : "glm-4.5"
+
+    zhipu {
+        kind : openai
+        base_url : "https://open.bigmodel.cn/api/paas/v4"
+        key_env : ZHIPU_API_KEY
+        models : ["glm-4.5", "glm-flash"]
+    }
+
+    // Optional second provider:
+    // anthropic {
+    //     kind : anthropic
+    //     base_url : "https://api.anthropic.com"
+    //     key_env : ANTHROPIC_API_KEY
+    //     models : ["claude-3-5-sonnet-20241022"]
+    // }
+}
