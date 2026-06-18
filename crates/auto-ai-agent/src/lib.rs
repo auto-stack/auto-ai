@@ -27,7 +27,7 @@ pub mod tool;
 pub mod validate;
 pub mod workflow;
 
-pub use agent::{Agent, AgentResult, Client, ToolCallRecord};
+pub use agent::{Agent, AgentResult, Client, StreamEvent, ToolCallRecord};
 pub use config::{load_profession, parse_at_profession, ConfigProfession, ProfessionConfig};
 pub use error::{AgentError, ToolError};
 pub use memory::Memory;

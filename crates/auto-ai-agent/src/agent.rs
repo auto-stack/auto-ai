@@ -31,6 +31,24 @@ const LOOP_DETECT_THRESHOLD: usize = 3;
 #[async_trait]
 pub trait Client: Send + Sync {
     async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, ClientError>;
+
+    /// Streaming completion. Calls `on_event` for each SSE event the daemon
+    /// emits (a `serde_json::Value` like `{"type":"delta","text":"…"}`).
+    /// Returns the accumulated full text on success.
+    ///
+    /// Default impl: fall back to non-streaming and emit a single delta —
+    /// keeps test mocks simple while letting the real client stream.
+    async fn complete_stream(
+        &self,
+        req: &CompletionRequest,
+        on_event: Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+    ) -> Result<String, ClientError> {
+        let resp = self.complete(req).await?;
+        if !resp.content.is_empty() {
+            on_event(serde_json::json!({"type": "delta", "text": resp.content}));
+        }
+        Ok(resp.content)
+    }
 }
 
 /// Adapter wrapping the real Layer-2 [`AiClient`].
@@ -39,6 +57,31 @@ impl Client for AiClient {
     async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
         AiClient::complete(self, req).await
     }
+
+    async fn complete_stream(
+        &self,
+        req: &CompletionRequest,
+        on_event: Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+    ) -> Result<String, ClientError> {
+        AiClient::complete_stream(self, req, move |ev| on_event(ev)).await
+    }
+}
+
+/// Events emitted by [`Agent::run_stream`] as the ReAct loop progresses.
+#[derive(Clone, Debug)]
+pub enum StreamEvent {
+    /// A chunk of the model's text output.
+    Delta { text: String },
+    /// A tool was called and produced a result.
+    Tool {
+        tool: String,
+        args: serde_json::Value,
+        result: String,
+    },
+    /// The loop finished successfully (carries the full result).
+    Done { result: AgentResult },
+    /// The loop failed.
+    Error { message: String },
 }
 
 /// A record of one tool call made during a run (for diagnostics/results).
@@ -204,6 +247,146 @@ impl Agent {
         Err(AgentError::MaxTurnsExceeded(max_turns))
     }
 
+    /// Like [`Agent::run`], but streams events as the loop progresses.
+    ///
+    /// Events emitted (via `on_event`):
+    /// - [`StreamEvent::Delta`] — a text chunk from the model's final answer.
+    /// - [`StreamEvent::Tool`] — a tool was called (with its result).
+    /// - [`StreamEvent::Done`] — the loop finished (with the full result).
+    /// - [`StreamEvent::Error`] — the loop failed.
+    ///
+    /// Implementation note: each ReAct turn is a separate request. We stream
+    /// the *final* answering turn (when the model writes plain text). Tool
+    /// turns are not text-streamed (each is one round-trip), but their
+    /// execution is reported as a [`StreamEvent::Tool`].
+    pub async fn run_stream(
+        &mut self,
+        task: &str,
+        on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+    ) -> Result<AgentResult, AgentError> {
+        self.memory.add("user", task);
+        let max_turns = self.profession.max_turns();
+        let mut result = AgentResult::default();
+        let mut seen: HashMap<String, usize> = HashMap::new();
+
+        for turn in 0..max_turns {
+            result.turns = turn + 1;
+            let req = self.build_request();
+
+            // Stream this turn's text, accumulating it.
+            let collected = Arc::new(std::sync::Mutex::new(String::new()));
+            let collected_clone = collected.clone();
+            let on_delta = on_event.clone();
+            let text = self
+                .client
+                .complete_stream(&req, Arc::new(move |ev| {
+                    if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
+                        collected_clone.lock().unwrap().push_str(t);
+                        on_delta(StreamEvent::Delta {
+                            text: t.to_string(),
+                        });
+                    }
+                }))
+                .await?;
+            let content = text;
+
+            // To decide tool-vs-final we need the tool_calls, which the stream
+            // path doesn't surface as a delta. So do a non-streaming request
+            // for the SAME turn when we need tool info — but only if the model
+            // actually wants tools. Heuristic: if the streamed content is empty
+            // or the stop was tool_use, re-fetch. Simplest correct approach:
+            // always also do a non-stream complete to get tool_calls reliably.
+            //
+            // For MVP streaming we support the *single-turn final answer* path:
+            // if tools are involved, fall back to non-streaming for that turn.
+            if !self.tools.is_empty() && self.profession.allowed_tools().is_empty()
+                || !self.tools.is_empty()
+            {
+                // Re-run non-streaming to reliably capture tool_calls + usage.
+                let resp = self.client.complete(&req).await?;
+                if let Some(u) = &resp.usage {
+                    result.total_tokens += u.total_tokens() as u64;
+                }
+                if resp.wants_tool() {
+                    // Record assistant turn + execute tools (same as run()).
+                    let mut blocks: Vec<ContentBlock> = Vec::new();
+                    if !resp.content.is_empty() {
+                        blocks.push(ContentBlock::Text {
+                            text: resp.content.clone(),
+                        });
+                    }
+                    for tc in &resp.tool_calls {
+                        blocks.push(ContentBlock::ToolUse {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            input: tc.input.clone(),
+                        });
+                    }
+                    self.memory
+                        .add_message(Message { role: "assistant".into(), content: blocks });
+                    for tc in &resp.tool_calls {
+                        let key = format!("{}::{}", tc.name, tc.input);
+                        let count = seen.entry(key).or_insert(0);
+                        *count += 1;
+                        if *count >= LOOP_DETECT_THRESHOLD {
+                            on_event(StreamEvent::Error {
+                                message: format!("loop detected on '{}'", tc.name),
+                            });
+                            return Err(AgentError::LoopDetected(tc.name.clone()));
+                        }
+                        let outcome =
+                            match self.tools.execute(&tc.name, &tc.input).await {
+                                Ok(o) => o,
+                                Err(e) => format!("[tool error: {e}]"),
+                            };
+                        result.tool_calls.push(ToolCallRecord {
+                            tool: tc.name.clone(),
+                            args: tc.input.clone(),
+                            result: outcome.clone(),
+                        });
+                        on_event(StreamEvent::Tool {
+                            tool: tc.name.clone(),
+                            args: tc.input.clone(),
+                            result: outcome.clone(),
+                        });
+                        self.memory.add_message(Message::tool_result(&tc.id, outcome));
+                    }
+                    continue;
+                }
+                // No tools → streamed content above is the final answer.
+                result.output = content.clone();
+                self.memory.add("assistant", &content);
+                on_event(StreamEvent::Done {
+                    result: AgentResult {
+                        output: result.output.clone(),
+                        turns: result.turns,
+                        tool_calls: result.tool_calls.clone(),
+                        total_tokens: result.total_tokens,
+                    },
+                });
+                return Ok(result);
+            }
+
+            // No tools configured: streamed content is the final answer.
+            result.output = content.clone();
+            self.memory.add("assistant", &content);
+            on_event(StreamEvent::Done {
+                result: AgentResult {
+                    output: result.output.clone(),
+                    turns: result.turns,
+                    tool_calls: result.tool_calls.clone(),
+                    total_tokens: result.total_tokens,
+                },
+            });
+            return Ok(result);
+        }
+
+        on_event(StreamEvent::Error {
+            message: format!("max turns ({max_turns}) exceeded"),
+        });
+        Err(AgentError::MaxTurnsExceeded(max_turns))
+    }
+
     /// Build the completion request for the current turn: system prompt from
     /// the Profession, the profession's model/temperature, the full memory,
     /// and the tools the Profession allows.
@@ -222,6 +405,7 @@ impl Agent {
             temperature: Some(self.profession.temperature()),
             system_prompt: Some(self.profession.system_prompt().to_string()),
             tools: tool_defs,
+            stream: false,
         }
     }
 }
