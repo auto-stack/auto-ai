@@ -16,7 +16,9 @@ pub mod sse;
 pub mod types;
 
 pub use provider::{AiProvider, ProviderRegistry};
-pub use types::*;
+// Canonical wire types now live in `ai-config`; re-export them so existing
+// `auto_ai_client::*` users (e.g. `auto-ai-agent`) keep working unchanged.
+pub use ai_config::*;
 
 use crate::openai_format::{openai_content, parse_openai_tool_calls, tool_to_openai, OpenAiMsg};
 use crate::sse::SseParser;
