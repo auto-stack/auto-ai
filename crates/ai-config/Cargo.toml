@@ -1,0 +1,17 @@
+[package]
+name = "ai-config"
+version = "0.1.0"
+edition = "2021"
+description = "Shared AI configuration + canonical wire types for AutoOS AI crates"
+
+[lib]
+name = "ai_config"
+path = "src/lib.rs"
+
+[dependencies]
+auto-atom = { path = "../../../auto-lang/crates/auto-atom" }
+auto-val = { path = "../../../auto-lang/crates/auto-val" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+dirs = "5"

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/ai-config",
     "crates/auto-ai-client",
     "crates/auto-ai-daemon",
     "crates/auto-ai-agent",
