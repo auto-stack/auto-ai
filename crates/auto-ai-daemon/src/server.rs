@@ -98,6 +98,10 @@ async fn chat_completions(
 
     // Hand the canonical request to the provider, which translates it to its
     // own wire format, calls upstream, and parses back a canonical response.
+    if req.stream {
+        return streaming_response(state, app_name, provider, req, permit).await;
+    }
+
     match provider.complete(&req).await {
         Ok(resp) => {
             if let Some(u) = &resp.usage {
@@ -121,6 +125,80 @@ async fn chat_completions(
                 .into_response()
         }
     }
+}
+
+/// Build an SSE response that streams text deltas from the provider.
+///
+/// Uses an mpsc channel to bridge the provider's `on_delta` callback (which is
+/// sync) to axum's async stream. Events emitted:
+/// - `data: {"type":"delta","text":"..."}` for each token chunk
+/// - `data: {"type":"done","turns":1,"usage":{...}}` at the end
+/// - `data: {"type":"error","message":"..."}` on failure
+async fn streaming_response(
+    state: Arc<AppState>,
+    app_name: String,
+    provider: Arc<dyn crate::provider::AiProvider>,
+    req: ai_config::CompletionRequest,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::response::Response;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel::<String>(64);
+
+    // Spawn the streaming call: invokes the provider, whose `on_delta` callback
+    // pushes deltas into the channel. When done, sends a final event.
+    let tx2 = tx.clone();
+    let provider_task = tokio::spawn(async move {
+        let on_delta: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |delta: String| {
+            // best-effort push; ignore if channel closed (client disconnected)
+            let _ = tx2.try_send(format!(
+                "data: {}\n\n",
+                json!({"type": "delta", "text": delta})
+            ));
+        });
+
+        match provider.complete_stream(&req, on_delta).await {
+            Ok(resp) => {
+                if let Some(u) = &resp.usage {
+                    state
+                        .tracker
+                        .record(&app_name, u.input_tokens as u64, u.output_tokens as u64);
+                }
+                let _ = tx.try_send(format!(
+                    "data: {}\n\n",
+                    json!({"type": "done", "model": resp.model, "usage": resp.usage})
+                ));
+            }
+            Err(e) => {
+                let _ = tx.try_send(format!(
+                    "data: {}\n\n",
+                    json!({"type": "error", "message": format!("{e}")})
+                ));
+            }
+        }
+        // Release the concurrency permit when streaming finishes.
+        drop(permit);
+    });
+
+    // Build an SSE body from the channel. When the client disconnects or the
+    // provider task ends (channel closes), the stream ends.
+    let stream = async_stream::stream! {
+        while let Some(event) = rx.recv().await {
+            yield Ok::<_, std::convert::Infallible>(event);
+        }
+        // Ensure the task completes (propagates panics / cleans up).
+        let _ = provider_task.await;
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(Body::from_stream(stream))
+        .unwrap()
 }
 
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {

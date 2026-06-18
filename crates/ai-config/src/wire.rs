@@ -161,6 +161,10 @@ pub struct CompletionRequest {
     pub system_prompt: Option<String>,
     /// Tools the model may call. Empty by default.
     pub tools: Vec<ToolDefinition>,
+    /// If true, the daemon streams SSE deltas back instead of a single
+    /// response. (Non-streaming callers leave this false.)
+    #[serde(default)]
+    pub stream: bool,
 }
 
 impl CompletionRequest {
@@ -173,6 +177,7 @@ impl CompletionRequest {
             temperature: None,
             system_prompt: None,
             tools: Vec::new(),
+            stream: false,
         }
     }
 
