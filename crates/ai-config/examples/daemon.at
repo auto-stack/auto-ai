@@ -1,0 +1,36 @@
+// Example ai-daemon.at — daemon-side provider + operations config.
+//
+// Location: ~/.config/autoos/ai-daemon.at
+//
+// This is the config the aaid daemon reads. It owns the real API keys and the
+// per-provider concurrency caps. The daemon receives canonical requests from
+// auto-ai-client, translates them to the target provider's wire format, calls
+// upstream, and returns canonical responses.
+//
+// Format: single `daemon { }` root (auto-atom is single-root). Daemon-only
+// fields: listen_addr, idle_timeout_min, log_level, and max_concurrency inside
+// each provider block. Model names are quoted (contain dots/dashes).
+
+daemon {
+    listen_addr : "127.0.0.1:17654"
+    idle_timeout_min : 10
+    log_level : info
+    default_provider : zhipu
+    default_model : "glm-4.5"
+
+    zhipu {
+        kind : openai
+        base_url : "https://open.bigmodel.cn/api/paas/v4"
+        api_key : "your-zhipu-key-here"   // or use key_env : ZHIPU_API_KEY
+        models : ["glm-4.5", "glm-flash"]
+        max_concurrency : 4
+    }
+
+    // anthropic {
+    //     kind : anthropic
+    //     base_url : "https://api.anthropic.com"
+    //     api_key : "your-anthropic-key"
+    //     models : ["claude-3-5-sonnet-20241022"]
+    //     max_concurrency : 2
+    // }
+}
