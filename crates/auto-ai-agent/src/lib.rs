@@ -20,10 +20,12 @@ pub mod agent;
 pub mod error;
 pub mod memory;
 pub mod profession;
+pub mod professions;
 pub mod tool;
 
 pub use agent::{Agent, AgentResult, Client, ToolCallRecord};
 pub use error::{AgentError, ToolError};
 pub use memory::Memory;
 pub use profession::Profession;
+pub use professions::{load_builtin, builtin_names, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
 pub use tool::{Tool, ToolRegistry};
