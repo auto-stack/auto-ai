@@ -17,6 +17,7 @@
 //! Design doc: `docs/auto-ai-agent-design.md`.
 
 pub mod agent;
+pub mod config;
 pub mod error;
 pub mod memory;
 pub mod profession;
@@ -24,6 +25,7 @@ pub mod professions;
 pub mod tool;
 
 pub use agent::{Agent, AgentResult, Client, ToolCallRecord};
+pub use config::{load_profession, parse_at_profession, ConfigProfession, ProfessionConfig};
 pub use error::{AgentError, ToolError};
 pub use memory::Memory;
 pub use profession::Profession;
