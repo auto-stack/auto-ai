@@ -22,7 +22,9 @@ pub mod error;
 pub mod memory;
 pub mod profession;
 pub mod professions;
+pub mod relay;
 pub mod tool;
+pub mod workflow;
 
 pub use agent::{Agent, AgentResult, Client, ToolCallRecord};
 pub use config::{load_profession, parse_at_profession, ConfigProfession, ProfessionConfig};
@@ -30,4 +32,6 @@ pub use error::{AgentError, ToolError};
 pub use memory::Memory;
 pub use profession::Profession;
 pub use professions::{load_builtin, builtin_names, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
+pub use relay::RelayTarget;
 pub use tool::{Tool, ToolRegistry};
+pub use workflow::{parse_at_workflow, Workflow, WorkflowContext, WorkflowResult, WorkflowStep};

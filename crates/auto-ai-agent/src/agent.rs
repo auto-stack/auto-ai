@@ -88,6 +88,12 @@ impl Agent {
         self.tools.register(tool);
     }
 
+    /// Register an already-`Arc`'d tool (used by the Workflow engine to share
+    /// one tool set across many agents).
+    pub fn register_shared(&mut self, tool: Arc<dyn crate::tool::Tool>) {
+        self.tools.register_shared(tool);
+    }
+
     /// Borrow the shared tool registry (Phase 5's Workflow shares tools across
     /// agents via this).
     pub fn tools(&self) -> &ToolRegistry {
