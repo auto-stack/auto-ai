@@ -388,8 +388,8 @@ impl Agent {
     }
 
     /// Build the completion request for the current turn: system prompt from
-    /// the Profession, the profession's model/temperature, the full memory,
-    /// and the tools the Profession allows.
+    /// the Profession, the profession's tier/model, the full memory, and the
+    /// tools the Profession allows.
     fn build_request(&self) -> CompletionRequest {
         let allowed = self.profession.allowed_tools();
         let visible = self.tools.filter(&allowed);
@@ -398,8 +398,24 @@ impl Agent {
             .map(|t| tool_to_definition(t.as_ref()))
             .collect();
 
+        // Model selection: if the profession pins a concrete model id (non-
+        // empty), use it. Otherwise emit a tier token ("tier:<tier>") that the
+        // daemon resolves to a concrete model from its config — so professions
+        // declare capability (tier), not a specific model.
+        let model = {
+            let pinned = self.profession.model();
+            if !pinned.is_empty() {
+                pinned.to_string()
+            } else {
+                format!(
+                    "tier:{}",
+                    self.profession.model_tier().display_name().to_ascii_lowercase()
+                )
+            }
+        };
+
         CompletionRequest {
-            model: self.profession.model().to_string(),
+            model,
             messages: self.memory.to_messages(),
             max_tokens: None,
             temperature: Some(self.profession.temperature()),
@@ -587,7 +603,8 @@ mod tests {
 
         let req = agent.build_request();
         assert_eq!(req.system_prompt.as_deref(), Some("you are a test profession"));
-        assert_eq!(req.model, "glm-4.6");
+        // MockProfession's model() is empty → tier token emitted.
+        assert_eq!(req.model, "tier:mid");
         assert!((req.temperature.unwrap() - 0.3).abs() < 1e-9);
         // MockProfession.allowed_tools() is empty → all tools visible.
         assert_eq!(req.tools.len(), 1);

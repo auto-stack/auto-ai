@@ -44,8 +44,8 @@ impl Profession for Runner {
     fn system_prompt(&self) -> &str {
         SOUL
     }
-    fn model(&self) -> &str {
-        "glm-4.6"
+    fn model_tier(&self) -> ai_config::ModelTier {
+        ai_config::ModelTier::Mid
     }
     fn temperature(&self) -> f64 {
         // Execution must be careful and deterministic.

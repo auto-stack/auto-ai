@@ -8,10 +8,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::tier::ModelDefinition;
+
 /// One LLM provider's configuration.
 ///
-/// `max_concurrency` is only meaningful to the daemon (its per-provider
-/// concurrency cap); client-side code ignores it and leaves it `None`.
+/// `models` are [`ModelDefinition`]s (each tagged with a [`crate::ModelTier`]),
+/// not bare strings — so a profession's tier can be resolved to a concrete
+/// model at request time. `max_concurrency` is only meaningful to the daemon.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderConfig {
     /// Provider type: `"anthropic"` | `"openai"` | `"zhipu"`.
@@ -22,8 +25,8 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     /// Environment variable name holding the API key (alternative to `api_key`).
     pub key_env: Option<String>,
-    /// Available models for this provider.
-    pub models: Vec<String>,
+    /// Available models, each tagged with its capability tier.
+    pub models: Vec<ModelDefinition>,
     /// Daemon-only: per-provider concurrency cap. `None` on the client side.
     pub max_concurrency: Option<usize>,
 }

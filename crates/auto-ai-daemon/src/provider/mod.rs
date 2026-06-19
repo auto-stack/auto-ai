@@ -66,18 +66,20 @@ impl ProviderRegistry {
             let key = pc
                 .resolve_key()
                 .ok_or_else(|| LlmError::NoApiKey(name.clone()))?;
+            // Providers only need the model id list (not the full tier metadata).
+            let model_ids: Vec<String> = pc.models.iter().map(|m| m.id.clone()).collect();
             let provider: Arc<dyn AiProvider> = match pc.kind.as_str() {
                 "anthropic" => Arc::new(AnthropicProvider::new(
                     name.clone(),
                     pc.base_url.clone(),
                     key,
-                    pc.models.clone(),
+                    model_ids.clone(),
                 )),
                 "openai" | _ => Arc::new(OpenAiProvider::new(
                     name.clone(),
                     pc.base_url.clone(),
                     key,
-                    pc.models.clone(),
+                    model_ids.clone(),
                 )),
             };
             registry.insert(name.clone(), provider);

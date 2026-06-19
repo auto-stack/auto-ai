@@ -104,7 +104,9 @@ mod tests {
     fn each_builtin_has_sane_model_and_turns() {
         for name in builtin_names() {
             let p = load_builtin(name).unwrap();
-            assert!(!p.model().is_empty(), "{name} model empty");
+            // Each builtin declares a tier (not a concrete model id, which is
+            // empty by default and resolved by the daemon).
+            let _ = p.model_tier();
             assert!(
                 p.max_turns() >= 1,
                 "{name} max_turns too low: {}",

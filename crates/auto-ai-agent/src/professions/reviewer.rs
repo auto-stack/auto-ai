@@ -18,8 +18,8 @@ impl Profession for Reviewer {
     fn system_prompt(&self) -> &str {
         SOUL
     }
-    fn model(&self) -> &str {
-        "glm-4.6"
+    fn model_tier(&self) -> ai_config::ModelTier {
+        ai_config::ModelTier::Pro
     }
     fn temperature(&self) -> f64 {
         // Reviewing rewards careful, deterministic analysis.

@@ -100,6 +100,9 @@ impl Profession for ArcProfession {
     fn system_prompt(&self) -> &str {
         self.0.system_prompt()
     }
+    fn model_tier(&self) -> ai_config::ModelTier {
+        self.0.model_tier()
+    }
     fn model(&self) -> &str {
         self.0.model()
     }
