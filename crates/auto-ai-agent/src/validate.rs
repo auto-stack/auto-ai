@@ -64,7 +64,10 @@ mod tests {
                 base_url: String::new(),
                 api_key: None,
                 key_env: None,
-                models: vec!["glm-4.6".into()],
+                models: vec![ai_config::ModelDefinition::new(
+                    "glm-4.6",
+                    ai_config::ModelTier::Mid,
+                )],
                 max_concurrency: None,
             },
         );

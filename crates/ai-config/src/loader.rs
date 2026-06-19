@@ -13,7 +13,10 @@
 //!         kind : openai
 //!         base_url : "https://open.bigmodel.cn/api/paas/v4"
 //!         key_env : ZHIPU_API_KEY
-//!         models : ["glm-4.6", "glm-flash"]
+//!         models : [
+//!             { id : "glm-5.2", tier : max },
+//!             { id : "glm-4.6", tier : mid }
+//!         ]
 //!     }
 //! }
 //! ```
@@ -32,6 +35,7 @@ use auto_atom::{Atom, AtomParser};
 use auto_val::{Kid, Node, Value};
 
 use crate::provider::ProviderConfig;
+use crate::tier::{ModelDefinition, ModelTier};
 
 /// Configuration error.
 #[derive(Debug, thiserror::Error)]
@@ -123,7 +127,7 @@ pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
         cfg.default_model = cfg
             .providers
             .get(&cfg.default_provider)
-            .and_then(|p| p.models.first().cloned())
+            .and_then(|p| p.models.first().map(|m| m.id.clone()))
             .unwrap_or_default();
     }
 
@@ -180,23 +184,66 @@ fn opt_str(node: &Node, key: &str) -> Option<String> {
 /// `["glm-4.6", "glm-flash"]` (preferred — model names contain dots) or a
 /// legacy comma-separated bare string `glm-4.6,glm-flash` (only works when
 /// names don't trip the number parser).
-fn opt_models(node: &Node, key: &str) -> Vec<String> {
+/// Read the `models` field as a list of [`ModelDefinition`]s (id + tier).
+///
+/// Accepted shapes (each element of the `models` array):
+/// - `Obj { id: "glm-5.2", name: "...", tier: max }` — full, preferred.
+/// - `Str "glm-5.2"` — bare model id, defaults to `ModelTier::Mid` (callers
+///   who don't care about tiers get a sane default).
+fn opt_models(node: &Node, key: &str) -> Vec<ModelDefinition> {
+    use crate::tier::ModelTier;
     match node.get_prop_of(key) {
         Value::Array(arr) => arr
             .values
             .iter()
-            .map(|v| match v {
-                Value::Str(s) => s.to_string(),
-                other => other.to_astr().to_string(),
+            .filter_map(|v| match v {
+                // object: { id: "...", name: "...", tier: <tier> }
+                Value::Obj(o) => {
+                    let id = match o.get("id") {
+                        Some(Value::Str(s)) => s.to_string(),
+                        Some(other) => other.to_astr().to_string(),
+                        None => return None,
+                    };
+                    let name = match o.get("name") {
+                        Some(Value::Str(s)) => s.to_string(),
+                        Some(other) => other.to_astr().to_string(),
+                        None => String::new(),
+                    };
+                    let tier = match o.get("tier") {
+                        Some(Value::Str(s)) => parse_tier(s.as_str()),
+                        _ => ModelTier::Mid,
+                    };
+                    Some(ModelDefinition { id, name, tier })
+                }
+                // bare string: "glm-5.2" → Mid default
+                Value::Str(s) => Some(ModelDefinition::new(s.to_string(), ModelTier::Mid)),
+                _ => None,
             })
             .collect(),
+        // legacy: comma-separated string
         Value::Str(s) => s
             .split(',')
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty())
+            .map(|m| ModelDefinition::new(m, ModelTier::Mid))
             .collect(),
         Value::Nil => Vec::new(),
         _ => Vec::new(),
+    }
+}
+
+/// Parse a tier name → ModelTier. Accepts snake_case ("max", "mid"), display
+/// ("Max", "Mid"), and auto-forge aliases ("large"=Pro, "heavy"=Max).
+/// Unknown → Mid (sane default).
+fn parse_tier(s: &str) -> ModelTier {
+    use crate::tier::ModelTier;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "min" => ModelTier::Min,
+        "lite" | "light" => ModelTier::Lite,
+        "mid" => ModelTier::Mid,
+        "pro" | "large" => ModelTier::Pro,
+        "max" | "heavy" => ModelTier::Max,
+        _ => ModelTier::Mid,
     }
 }
 
@@ -226,7 +273,10 @@ mod tests {
                     kind : openai
                     base_url : "https://open.bigmodel.cn/api/paas/v4"
                     key_env : ZHIPU_API_KEY
-                    models : ["glm-4.6", "glm-flash"]
+                    models : [
+                        { id : "glm-5.2", tier : max },
+                        { id : "glm-4.6", tier : mid }
+                    ]
                 }
             }
         "#;
@@ -235,7 +285,11 @@ mod tests {
         assert_eq!(cfg.default_model, "glm-4.6");
         let zhipu = cfg.providers.get("zhipu").unwrap();
         assert_eq!(zhipu.kind, "openai");
-        assert_eq!(zhipu.models, vec!["glm-4.6".to_string(), "glm-flash".to_string()]);
+        assert_eq!(zhipu.models.len(), 2);
+        assert_eq!(zhipu.models[0].id, "glm-5.2");
+        assert_eq!(zhipu.models[0].tier, ModelTier::Max);
+        assert_eq!(zhipu.models[1].id, "glm-4.6");
+        assert_eq!(zhipu.models[1].tier, ModelTier::Mid);
         assert_eq!(zhipu.key_env.as_deref(), Some("ZHIPU_API_KEY"));
         assert_eq!(zhipu.max_concurrency, None); // client view: unset
     }

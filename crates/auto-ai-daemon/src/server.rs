@@ -85,6 +85,22 @@ async fn chat_completions(
         }
     };
 
+    // Resolve the request's model: a "tier:<tier>" token → concrete model id
+    // (the agent emits a tier token when the profession didn't pin a model).
+    // Falls through unchanged for concrete model ids.
+    let mut req = req;
+    if req.model.starts_with("tier:") {
+        if let Some(resolved) = resolve_tier_model(&req.model, &state.config) {
+            req.model = resolved;
+        } else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {"message": format!("could not resolve tier '{}' — configure models with tiers in ai-daemon.at", req.model)}})),
+            )
+                .into_response();
+        }
+    }
+
     let provider = match state.registry.default_provider() {
         Ok(p) => p.clone(),
         Err(e) => {
@@ -199,6 +215,24 @@ async fn streaming_response(
         .header("Connection", "keep-alive")
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+/// Resolve a `"tier:<tier>"` token to a concrete model id from the default
+/// provider's tier-tagged models. Returns None if the tier name is unknown or
+/// the provider has no models.
+fn resolve_tier_model(token: &str, config: &crate::config::DaemonConfig) -> Option<String> {
+    let tier_name = token.strip_prefix("tier:")?.trim().to_ascii_lowercase();
+    let tier = match tier_name.as_str() {
+        "min" => ai_config::ModelTier::Min,
+        "lite" | "light" => ai_config::ModelTier::Lite,
+        "mid" => ai_config::ModelTier::Mid,
+        "pro" | "large" => ai_config::ModelTier::Pro,
+        "max" | "heavy" => ai_config::ModelTier::Max,
+        _ => return None,
+    };
+    let provider = config.providers.get(&config.default_provider)?;
+    let models: Vec<ai_config::ModelDefinition> = provider.models.clone();
+    ai_config::resolve_model_id(tier, &models)
 }
 
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {

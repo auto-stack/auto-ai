@@ -1,9 +1,18 @@
 //! The [`Profession`] trait (design doc §3.1).
 //!
 //! A Profession bundles the *personality* of an agent: its system prompt
-//! (the tuned "soul") plus model/temperature/turn-budget/tool-policy defaults.
-//! Built-in Professions live in [`crate::professions`]; Phase 4 adds
-//! `.at`-config-driven Professions on top.
+//! (the tuned "soul") plus a model **tier** + temperature/turn-budget/tool
+//! policy. Built-in Professions live in [`crate::professions`]; `.at`-config
+//! Professions build on top.
+//!
+//! **Model selection via tier** (ported from auto-forge): a Profession declares
+//! the capability tier it needs ([`Profession::model_tier`]); the daemon
+//! resolves that tier to a concrete model at request time (see
+//! `ai_config::tier`). This decouples "what capability" from "which model id"
+//! — swap models by editing config, not code. [`Profession::model`] is an
+//! optional concrete-id override (empty = use the tier).
+
+use ai_config::ModelTier;
 
 /// A Profession describes how an agent should behave.
 ///
@@ -16,9 +25,17 @@ pub trait Profession: Send + Sync {
     /// The full system prompt (the tuned essence of the role).
     fn system_prompt(&self) -> &str;
 
-    /// Recommended model.
+    /// The capability tier this role needs (Min/Lite/Mid/Pro/Max). The daemon
+    /// resolves this to a concrete model id. Default: [`ModelTier::Mid`].
+    fn model_tier(&self) -> ModelTier {
+        ModelTier::Mid
+    }
+
+    /// Optional concrete model id override. Empty (default) = "resolve via
+    /// [`Self::model_tier`]". Set this only when a profession must pin a
+    /// specific model regardless of tier resolution.
     fn model(&self) -> &str {
-        "glm-4.6"
+        ""
     }
 
     /// Generation temperature (creativity vs determinism).
@@ -69,7 +86,8 @@ mod tests {
         };
         assert_eq!(p.name(), "stub");
         assert_eq!(p.system_prompt(), "be helpful");
-        assert_eq!(p.model(), "glm-4.6");
+        assert_eq!(p.model_tier(), ModelTier::Mid);
+        assert_eq!(p.model(), ""); // no concrete override
         assert!((p.temperature() - 0.3).abs() < 1e-9);
         assert_eq!(p.max_turns(), 10);
         assert!(p.allowed_tools().is_empty());

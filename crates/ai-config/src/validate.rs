@@ -8,14 +8,14 @@ use crate::loader::ClientConfig;
 /// Profession references a model the user hasn't configured.
 pub fn validate_model_exists(config: &ClientConfig, model: &str) -> Result<(), String> {
     for (_name, p) in &config.providers {
-        if p.models.iter().any(|m| m == model) {
+        if p.models.iter().any(|m| m.id == model) {
             return Ok(());
         }
     }
     let available: Vec<&str> = config
         .providers
         .values()
-        .flat_map(|p| p.models.iter().map(|s| s.as_str()))
+        .flat_map(|p| p.models.iter().map(|m| m.id.as_str()))
         .collect();
     Err(format!(
         "model '{}' not found in any configured provider; available: {:?}",

@@ -23,6 +23,9 @@ use crate::professions::load_builtin;
 pub struct ProfessionConfig {
     pub name: Option<String>,
     pub model: Option<String>,
+    /// Capability tier (Min/Lite/Mid/Pro/Max); resolved by the daemon to a
+    /// concrete model id. Ignored when `model` is set.
+    pub model_tier: Option<ai_config::ModelTier>,
     pub temperature: Option<f64>,
     pub max_turns: Option<usize>,
     pub system_prompt: Option<String>,
@@ -45,6 +48,9 @@ impl ProfessionConfig {
         // Scalars: override when Some.
         base.name = self.name.take().or(base.name);
         base.model = self.model.take().or(base.model);
+        base.temperature = self.temperature.take().or(base.temperature);
+        base.model = self.model.take().or(base.model);
+        base.model_tier = self.model_tier.take().or(base.model_tier);
         base.temperature = self.temperature.take().or(base.temperature);
         base.max_turns = self.max_turns.take().or(base.max_turns);
         base.system_prompt = self.system_prompt.take().or(base.system_prompt);
@@ -99,6 +105,15 @@ pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError
     let mut cfg = ProfessionConfig::default();
     cfg.name = opt_string(&node, "name");
     cfg.model = opt_string(&node, "model");
+    cfg.model_tier = opt_string(&node, "model_tier")
+        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+            "min" => Some(ai_config::ModelTier::Min),
+            "lite" | "light" => Some(ai_config::ModelTier::Lite),
+            "mid" => Some(ai_config::ModelTier::Mid),
+            "pro" | "large" => Some(ai_config::ModelTier::Pro),
+            "max" | "heavy" => Some(ai_config::ModelTier::Max),
+            _ => None,
+        });
     cfg.temperature = opt_float(&node, "temperature");
     cfg.max_turns = opt_uint(&node, "max_turns");
     cfg.memory_limit = opt_uint(&node, "memory_limit").map(|u| u as usize);
@@ -192,8 +207,12 @@ impl Profession for ConfigProfession {
     fn system_prompt(&self) -> &str {
         &self.prompt
     }
+    fn model_tier(&self) -> ai_config::ModelTier {
+        self.cfg.model_tier.unwrap_or(ai_config::ModelTier::Mid)
+    }
     fn model(&self) -> &str {
-        self.cfg.model.as_deref().unwrap_or("glm-4.6")
+        // Concrete override if set; empty (resolve via tier) otherwise.
+        self.cfg.model.as_deref().unwrap_or("")
     }
     fn temperature(&self) -> f64 {
         self.cfg.temperature.unwrap_or(0.3)
@@ -254,7 +273,10 @@ pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError>
         // None fields with the builtin's values.
         let resolved = ProfessionConfig {
             name: Some(merged.name.clone().unwrap_or_else(|| base_builtin.name().to_string())),
-            model: Some(merged.model.clone().unwrap_or_else(|| base_builtin.model().to_string())),
+            model: merged.model.clone(),
+            model_tier: Some(
+                merged.model_tier.unwrap_or_else(|| base_builtin.model_tier()),
+            ),
             temperature: Some(
                 merged.temperature.unwrap_or_else(|| base_builtin.temperature()),
             ),
