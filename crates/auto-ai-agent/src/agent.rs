@@ -111,6 +111,10 @@ pub struct Agent {
     tools: ToolRegistry,
     memory: Memory,
     client: Arc<dyn Client>,
+    /// Bootstrap block listing available skills (injected into the system
+    /// prompt so the model knows what it can invoke). Set when a SkillTool is
+    /// registered via [`Agent::register_skill_tool`].
+    skills_block: Option<String>,
 }
 
 impl Agent {
@@ -123,12 +127,26 @@ impl Agent {
             tools: ToolRegistry::new(),
             memory: Memory::new(limit),
             client,
+            skills_block: None,
         }
     }
 
     /// Register a tool the agent may call.
     pub fn register_tool<T: crate::tool::Tool + 'static>(&mut self, tool: T) {
         self.tools.register(tool);
+    }
+
+    /// Register a [`crate::SkillTool`] and store its available-skills bootstrap
+    /// block, which gets appended to the system prompt every turn so the model
+    /// knows what skills it can invoke via the `skill` tool.
+    pub fn register_skill_tool(&mut self, tool: crate::SkillTool) {
+        let block = if tool.available_skills_block().is_empty() {
+            None
+        } else {
+            Some(tool.available_skills_block())
+        };
+        self.tools.register(tool);
+        self.skills_block = block;
     }
 
     /// Register an already-`Arc`'d tool (used by the Workflow engine to share
@@ -414,12 +432,20 @@ impl Agent {
             }
         };
 
+        // Build the system prompt: the profession's soul + (if a SkillTool is
+        // registered) the available-skills directory, so the model knows what
+        // it can invoke via the `skill` tool.
+        let mut system_prompt = self.profession.system_prompt().to_string();
+        if let Some(block) = &self.skills_block {
+            system_prompt.push_str(block);
+        }
+
         CompletionRequest {
             model,
             messages: self.memory.to_messages(),
             max_tokens: None,
             temperature: Some(self.profession.temperature()),
-            system_prompt: Some(self.profession.system_prompt().to_string()),
+            system_prompt: Some(system_prompt),
             tools: tool_defs,
             stream: false,
         }
@@ -611,5 +637,48 @@ mod tests {
         assert_eq!(req.tools[0].name, "add_one");
         // Memory carries the seeded user message.
         assert!(req.messages.iter().any(|m| m.role == "user"));
+    }
+
+    #[test]
+    fn build_request_injects_skill_block_when_skilltool_registered() {
+        // Registering a SkillTool with skills should append an
+        // <available_skills> block to the system prompt; without skills it
+        // stays the bare profession prompt.
+        let client = mock_client(vec![]);
+
+        // 1. No SkillTool → plain system prompt.
+        let mut agent = Agent::new(MockProfession, client.clone());
+        agent.memory.add("user", "hi");
+        let req = agent.build_request();
+        assert!(!req.system_prompt.as_deref().unwrap().contains("<available_skills>"));
+
+        // 2. SkillTool with a skill → block injected.
+        use crate::skill::SkillRegistry;
+        use std::sync::Arc as StdArc;
+        let tmp = std::env::temp_dir().join("musk_agent_skill_inject_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("demo")).unwrap();
+        std::fs::write(
+            tmp.join("demo").join("SKILL.md"),
+            "---\nname: demo\ndescription: a demo skill\n---\n# Demo\nDo demo things.\n",
+        )
+        .unwrap();
+        let registry = StdArc::new(SkillRegistry::scan(&tmp));
+        let skill_tool = crate::SkillTool::new(registry);
+
+        let mut agent2 = Agent::new(MockProfession, client);
+        agent2.register_skill_tool(skill_tool);
+        agent2.memory.add("user", "hi");
+        let req2 = agent2.build_request();
+        let sys = req2.system_prompt.as_deref().unwrap();
+        assert!(sys.starts_with("you are a test profession"));
+        assert!(sys.contains("<available_skills>"));
+        assert!(sys.contains("demo"));
+        assert!(sys.contains("a demo skill"));
+        // The skill tool itself is also registered.
+        assert_eq!(req2.tools.len(), 1);
+        assert_eq!(req2.tools[0].name, "skill");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
