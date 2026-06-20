@@ -27,6 +27,7 @@ pub mod skill;
 pub mod tool;
 pub mod validate;
 pub mod workflow;
+pub mod workflow_validator;
 
 pub use agent::{Agent, AgentResult, Client, StreamEvent, ToolCallRecord};
 pub use config::{load_profession, parse_at_profession, ConfigProfession, ProfessionConfig};

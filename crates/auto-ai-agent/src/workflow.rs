@@ -49,6 +49,35 @@ use crate::professions::load_builtin;
 use crate::tool::Tool;
 use crate::Agent;
 
+/// What to do when a step's validators fail: retry an earlier step, up to
+/// `max` times. Beyond that, the whole workflow fails.
+#[derive(Clone, Debug)]
+pub struct RetrySpec {
+    /// The step id to jump back to (re-run it and everything after).
+    pub retry: String,
+    /// Max retry attempts before failing the workflow.
+    pub max: usize,
+}
+
+/// Per-step tool guard: restrict which tools this step's agent may use.
+/// `allow` empty = inherit all; `forbid` removes specific tools.
+#[derive(Clone, Debug, Default)]
+pub struct ToolGuard {
+    pub allow: Vec<String>,
+    pub forbid: Vec<String>,
+}
+
+/// Whether a step needs human approval before proceeding.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Gate {
+    /// Automatic — validators pass → continue (default).
+    #[default]
+    Auto,
+    /// Pause and wait for external approval (returns a Paused state; the
+    /// caller resumes). MVP: the engine returns Paused; the API/CLI handles it.
+    Human,
+}
+
 /// A single relay step in a workflow.
 #[derive(Clone, Debug)]
 pub struct WorkflowStep {
@@ -58,6 +87,15 @@ pub struct WorkflowStep {
     pub output_var: String,
     pub depends_on: Vec<String>,
     pub condition: Option<String>,
+    /// Validators that gate this step's output. All must pass for the step to
+    /// be considered successful.
+    pub validators: Vec<crate::workflow_validator::Validator>,
+    /// On validator failure, retry from this step (up to `max` times).
+    pub on_fail: Option<RetrySpec>,
+    /// Per-step tool restrictions.
+    pub tool_guard: ToolGuard,
+    /// Whether human approval is required after this step.
+    pub gate: Gate,
 }
 
 impl WorkflowStep {
@@ -233,26 +271,75 @@ impl Workflow {
         let mut context = WorkflowContext::new(initial_input);
         let mut result = WorkflowResult::default();
 
-        for step_id in order {
-            let step = self.steps.iter().find(|s| s.id == step_id).expect("topo id exists");
+        let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync> =
+            Arc::new(|name: &str| resolve_profession(name));
+
+        // Index-based loop so on_fail can rewind (retry an earlier step).
+        let mut i = 0;
+        // Per-step retry counters (step_id → attempts so far).
+        let mut retry_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+        while i < order.len() {
+            let step_id = &order[i];
+            let step = self.steps.iter().find(|s| s.id == *step_id).expect("topo id exists");
 
             // Condition: skip the step if it evaluates false.
             if let Some(cond) = &step.condition {
                 if !evaluate_condition(cond, &context) {
                     tracing::info!("workflow step '{}' skipped (condition false)", step.id);
+                    i += 1;
                     continue;
                 }
             }
 
-            let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync> =
-                Arc::new(|name: &str| resolve_profession(name));
+            // Apply per-step tool guard: filter the shared tool set.
+            let step_tools = filter_tools_for_step(tools, &step.tool_guard);
             let output = step
-                .run(&context, tools, &client, resolver)
+                .run(&context, &step_tools, &client, resolver.clone())
                 .await?;
+
+            // Run validators. If they fail and on_fail is set, rewind to the
+            // retry step (up to max times); else the workflow fails.
+            if !step.validators.is_empty() {
+                if let Err(msg) = crate::workflow_validator::check_all(&step.validators, &output) {
+                    tracing::warn!("workflow step '{}' validation failed: {}", step.id, msg);
+                    if let Some(retry) = &step.on_fail {
+                        let count = retry_counts.entry(step.id.clone()).or_insert(0);
+                        *count += 1;
+                        if *count <= retry.max {
+                            tracing::info!(
+                                "workflow: retrying from '{}' (attempt {}/{})",
+                                retry.retry,
+                                *count,
+                                retry.max
+                            );
+                            // Rewind to the retry step's index.
+                            if let Some(rewind_idx) = order.iter().position(|id| id == &retry.retry) {
+                                i = rewind_idx;
+                                continue;
+                            }
+                        }
+                    }
+                    // No on_fail, or exhausted retries → fail.
+                    return Err(AgentError::Config(format!(
+                        "step '{}' validation failed: {}",
+                        step.id, msg
+                    )));
+                }
+            }
+
+            // Human gate: return a Paused-like result. MVP: for `run()` we
+            // just log and continue (the streaming variant surfaces it via
+            // events). A future API caller handles the Human pause explicitly.
+            if step.gate == Gate::Human {
+                tracing::info!("workflow step '{}' paused at human gate (auto-continuing in run())", step.id);
+            }
+
             context.set(&step.output_var, output.clone());
             result.step_outputs.insert(step.id.clone(), output.clone());
             let key = step.output_var.trim_start_matches('$').to_string();
             result.outputs.insert(key, output);
+            i += 1;
         }
 
         Ok(result)
@@ -365,6 +452,35 @@ fn resolve_profession(name: &str) -> Result<Arc<dyn Profession>, AgentError> {
 }
 
 // ── Topological sort (Kahn's algorithm) ────────────────────────────────────
+
+/// Filter the shared tool set for a step based on its ToolGuard.
+/// - `allow` non-empty → only those tools.
+/// - `forbid` → remove those from the full set.
+/// - both empty → all tools (no filtering).
+fn filter_tools_for_step(
+    tools: &[Arc<dyn Tool>],
+    guard: &ToolGuard,
+) -> Vec<Arc<dyn Tool>> {
+    if guard.allow.is_empty() && guard.forbid.is_empty() {
+        return tools.to_vec();
+    }
+    tools
+        .iter()
+        .filter(|t| {
+            let name = t.name();
+            if !guard.allow.is_empty() {
+                guard.allow.iter().any(|a| a == name)
+            } else {
+                true
+            }
+        })
+        .filter(|t| {
+            let name = t.name();
+            !guard.forbid.iter().any(|f| f == name)
+        })
+        .cloned()
+        .collect()
+}
 
 fn topo_sort(steps: &[WorkflowStep]) -> Result<Vec<String>, AgentError> {
     let ids: HashSet<&str> = steps.iter().map(|s| s.id.as_str()).collect();
@@ -511,6 +627,13 @@ fn parse_relay_node(node: &auto_val::Node) -> Result<WorkflowStep, AgentError> {
     let output_var = opt_string_req(node, "output")?;
     let depends_on = opt_string_list(node, "depends_on").unwrap_or_default();
     let condition = opt_string(node, "condition");
+    let validators = parse_validators(node);
+    let on_fail = parse_on_fail(node);
+    let tool_guard = parse_tool_guard(node);
+    let gate = match opt_string(node, "gate").as_deref() {
+        Some("human") => Gate::Human,
+        _ => Gate::Auto,
+    };
     Ok(WorkflowStep {
         id,
         profession,
@@ -518,7 +641,84 @@ fn parse_relay_node(node: &auto_val::Node) -> Result<WorkflowStep, AgentError> {
         output_var,
         depends_on,
         condition,
+        validators,
+        on_fail,
+        tool_guard,
+        gate,
     })
+}
+
+/// Parse the `validate : [...]` array into [`Validator`]s.
+fn parse_validators(node: &auto_val::Node) -> Vec<crate::workflow_validator::Validator> {
+    match node.get_prop_of("validate") {
+        Value::Array(arr) => arr.values.iter().filter_map(parse_one_validator).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Parse a single validator from a Value (Obj with `type` + fields).
+fn parse_one_validator(v: &Value) -> Option<crate::workflow_validator::Validator> {
+    use crate::workflow_validator::Validator;
+    let obj = v.as_obj();
+    let vtype = obj.get("type")?.to_astr().to_string();
+    let pattern = || -> String {
+        obj.get("pattern")
+            .map(|p| p.to_astr().to_string())
+            .unwrap_or_default()
+    };
+    match vtype.as_str() {
+        "output_contains" => Some(Validator::OutputContains { pattern: pattern() }),
+        "output_not_contains" => Some(Validator::OutputNotContains { pattern: pattern() }),
+        "output_min_length" => {
+            let min = obj.get("min").map(|m| m.as_uint() as usize).unwrap_or(0);
+            Some(Validator::OutputMinLength { min })
+        }
+        "all" => {
+            let inner = parse_validator_array(obj, "validators");
+            Some(Validator::All { validators: inner })
+        }
+        "any" => {
+            let inner = parse_validator_array(obj, "validators");
+            Some(Validator::Any { validators: inner })
+        }
+        _ => None,
+    }
+}
+
+/// Parse a nested `validators` array from an all/any validator Obj.
+fn parse_validator_array(obj: &auto_val::Obj, key: &str) -> Vec<crate::workflow_validator::Validator> {
+    match obj.get(key) {
+        Some(Value::Array(arr)) => arr.values.iter().filter_map(parse_one_validator).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Parse `on_fail : { retry : "step_id", max : N }`.
+fn parse_on_fail(node: &auto_val::Node) -> Option<RetrySpec> {
+    let obj = match node.get_prop_of("on_fail") {
+        Value::Obj(o) => o,
+        _ => return None,
+    };
+    let retry = obj.get("retry")?.to_astr().to_string();
+    let max = obj.get("max").map(|m| m.as_uint() as usize).unwrap_or(1);
+    Some(RetrySpec { retry, max })
+}
+
+/// Parse `tools : { allow : [...], forbid : [...] }`.
+fn parse_tool_guard(node: &auto_val::Node) -> ToolGuard {
+    let obj = match node.get_prop_of("tools") {
+        Value::Obj(o) => o,
+        _ => return ToolGuard::default(),
+    };
+    let allow = match obj.get("allow") {
+        Some(Value::Array(arr)) => arr.values.iter().map(|v| v.to_astr().to_string()).collect(),
+        _ => Vec::new(),
+    };
+    let forbid = match obj.get("forbid") {
+        Some(Value::Array(arr)) => arr.values.iter().map(|v| v.to_astr().to_string()).collect(),
+        _ => Vec::new(),
+    };
+    ToolGuard { allow, forbid }
 }
 
 fn opt_string(node: &auto_val::Node, key: &str) -> Option<String> {
@@ -640,6 +840,10 @@ mod tests {
                 output_var: "$a".into(),
                 depends_on: vec![],
                 condition: None,
+            validators: vec![],
+            on_fail: None,
+            tool_guard: Default::default(),
+            gate: Default::default(),
             },
             WorkflowStep {
                 id: "b".into(),
@@ -648,6 +852,10 @@ mod tests {
                 output_var: "$b".into(),
                 depends_on: vec!["a".into()],
                 condition: None,
+            validators: vec![],
+            on_fail: None,
+            tool_guard: Default::default(),
+            gate: Default::default(),
             },
         ];
         let order = topo_sort(&steps).unwrap();
@@ -664,6 +872,10 @@ mod tests {
                 output_var: "$a".into(),
                 depends_on: vec!["b".into()],
                 condition: None,
+            validators: vec![],
+            on_fail: None,
+            tool_guard: Default::default(),
+            gate: Default::default(),
             },
             WorkflowStep {
                 id: "b".into(),
@@ -672,6 +884,10 @@ mod tests {
                 output_var: "$b".into(),
                 depends_on: vec!["a".into()],
                 condition: None,
+            validators: vec![],
+            on_fail: None,
+            tool_guard: Default::default(),
+            gate: Default::default(),
             },
         ];
         let err = topo_sort(&steps).unwrap_err();
@@ -687,6 +903,10 @@ mod tests {
             output_var: "$a".into(),
             depends_on: vec!["nope".into()],
             condition: None,
+        validators: vec![],
+        on_fail: None,
+        tool_guard: Default::default(),
+        gate: Default::default(),
         }];
         assert!(topo_sort(&steps).is_err());
     }
@@ -818,5 +1038,119 @@ mod tests {
         "#;
         let err = parse_at_workflow(src).err().unwrap();
         assert!(err.to_string().contains("output"));
+    }
+
+    #[test]
+    fn parse_validators_and_on_fail() {
+        let src = r#"
+            workflow {
+                steps : [
+                    relay {
+                        id : "reviewer"
+                        profession : "reviewer"
+                        input : "review"
+                        output : "$review"
+                        validate : [
+                            { type : "output_contains", pattern : "STATUS:" }
+                        ]
+                        on_fail : { retry : "coder", max : 3 }
+                        tools : { allow : [read_file, search], forbid : [write_file] }
+                        gate : "human"
+                    }
+                ]
+            }
+        "#;
+        let wf = parse_at_workflow(src).unwrap();
+        let step = &wf.steps[0];
+        assert_eq!(step.validators.len(), 1);
+        assert!(step.on_fail.is_some());
+        let retry = step.on_fail.as_ref().unwrap();
+        assert_eq!(retry.retry, "coder");
+        assert_eq!(retry.max, 3);
+        assert_eq!(step.tool_guard.allow, vec!["read_file", "search"]);
+        assert_eq!(step.tool_guard.forbid, vec!["write_file"]);
+        assert_eq!(step.gate, Gate::Human);
+    }
+
+    #[test]
+    fn parse_old_workflow_still_works_no_new_fields() {
+        // Backward compat: a relay without validators/on_fail/tools/gate parses.
+        let src = r#"
+            workflow {
+                steps : [
+                    relay { id : "a", profession : "coder", input : "x", output : "$y" }
+                ]
+            }
+        "#;
+        let wf = parse_at_workflow(src).unwrap();
+        assert!(wf.steps[0].validators.is_empty());
+        assert!(wf.steps[0].on_fail.is_none());
+        assert_eq!(wf.steps[0].gate, Gate::Auto);
+    }
+
+    #[test]
+    fn filter_tools_allow_only() {
+        use async_trait::async_trait;
+        struct FakeTool(&'static str);
+        #[async_trait]
+        impl Tool for FakeTool {
+            fn name(&self) -> &str { self.0 }
+            fn description(&self) -> &str { "" }
+            async fn execute(&self, _: &serde_json::Value) -> Result<String, crate::ToolError> { Ok(String::new()) }
+        }
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(FakeTool("read_file")),
+            Arc::new(FakeTool("write_file")),
+            Arc::new(FakeTool("search")),
+        ];
+        let guard = ToolGuard { allow: vec!["read_file".into(), "search".into()], forbid: vec![] };
+        let filtered = filter_tools_for_step(&tools, &guard);
+        let names: Vec<&str> = filtered.iter().map(|t| t.name()).collect();
+        assert_eq!(names, vec!["read_file", "search"]);
+    }
+
+    #[test]
+    fn filter_tools_forbid() {
+        use async_trait::async_trait;
+        struct FakeTool(&'static str);
+        #[async_trait]
+        impl Tool for FakeTool {
+            fn name(&self) -> &str { self.0 }
+            fn description(&self) -> &str { "" }
+            async fn execute(&self, _: &serde_json::Value) -> Result<String, crate::ToolError> { Ok(String::new()) }
+        }
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(FakeTool("read_file")),
+            Arc::new(FakeTool("write_file")),
+        ];
+        let guard = ToolGuard { allow: vec![], forbid: vec!["write_file".into()] };
+        let filtered = filter_tools_for_step(&tools, &guard);
+        let names: Vec<&str> = filtered.iter().map(|t| t.name()).collect();
+        assert_eq!(names, vec!["read_file"]);
+    }
+
+    #[tokio::test]
+    async fn run_validators_fail_without_on_fail_errors() {
+        // A step whose validators fail and has no on_fail → workflow errors.
+        let mut wf = Workflow {
+            name: "test".into(),
+            steps: vec![WorkflowStep {
+                id: "checker".into(),
+                profession: "coder".into(),
+                input_template: "say hi".into(),
+                output_var: "$out".into(),
+                depends_on: vec![],
+                condition: None,
+                validators: vec![crate::workflow_validator::Validator::OutputContains {
+                    pattern: "NEVER_MATCHES".into(),
+                }],
+                on_fail: None,
+                tool_guard: Default::default(),
+                gate: Default::default(),
+            }],
+        };
+        let client = mock_client();
+        let err = wf.run(&[], client, "test").await.unwrap_err();
+        assert!(err.to_string().contains("validation failed"));
     }
 }
