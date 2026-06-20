@@ -115,6 +115,10 @@ pub struct Agent {
     /// prompt so the model knows what it can invoke). Set when a SkillTool is
     /// registered via [`Agent::register_skill_tool`].
     skills_block: Option<String>,
+    /// Project context (e.g. contents of `.musk.md` / `CLAUDE.md`). Prepended
+    /// to the system prompt so the agent starts with project knowledge.
+    /// Set via [`Agent::with_context`].
+    context_block: Option<String>,
 }
 
 impl Agent {
@@ -128,6 +132,36 @@ impl Agent {
             memory: Memory::new(limit),
             client,
             skills_block: None,
+            context_block: None,
+        }
+    }
+
+    /// Inject project context (e.g. the contents of `.musk.md` or `CLAUDE.md`)
+    /// into the system prompt. It's prepended before the profession's soul, so
+    /// the agent starts every turn knowing the project's tech stack, conventions,
+    /// and common commands — without having to re-explore from scratch.
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        let ctx = context.into();
+        if !ctx.trim().is_empty() {
+            self.context_block = Some(ctx);
+        }
+        self
+    }
+
+    /// Load project context from a file (`.musk.md`, `CLAUDE.md`, etc.) and
+    /// inject it. No-op (returns self unchanged) if the file doesn't exist or
+    /// can't be read — so callers can chain it unconditionally.
+    pub fn with_context_file(self, path: impl AsRef<std::path::Path>) -> Self {
+        match std::fs::read_to_string(path.as_ref()) {
+            Ok(content) if !content.trim().is_empty() => {
+                tracing::debug!(
+                    "agent: loaded context from {}",
+                    path.as_ref().display()
+                );
+                self.with_context(content)
+            }
+            Ok(_) => self, // empty file
+            Err(_) => self, // file doesn't exist — fine
         }
     }
 
@@ -432,10 +466,14 @@ impl Agent {
             }
         };
 
-        // Build the system prompt: the profession's soul + (if a SkillTool is
-        // registered) the available-skills directory, so the model knows what
-        // it can invoke via the `skill` tool.
-        let mut system_prompt = self.profession.system_prompt().to_string();
+        // Build the system prompt: project context (if any) + profession soul +
+        // (if a SkillTool is registered) the available-skills directory.
+        let mut system_prompt = String::new();
+        if let Some(ctx) = &self.context_block {
+            system_prompt.push_str(ctx);
+            system_prompt.push_str("\n\n---\n\n");
+        }
+        system_prompt.push_str(self.profession.system_prompt());
         if let Some(block) = &self.skills_block {
             system_prompt.push_str(block);
         }
@@ -640,12 +678,49 @@ mod tests {
     }
 
     #[test]
-    fn build_request_injects_skill_block_when_skilltool_registered() {
-        // Registering a SkillTool with skills should append an
-        // <available_skills> block to the system prompt; without skills it
-        // stays the bare profession prompt.
+    fn build_request_injects_context_block() {
         let client = mock_client(vec![]);
+        // No context → bare profession prompt.
+        let mut agent = Agent::new(MockProfession, client.clone());
+        agent.memory.add("user", "hi");
+        let req = agent.build_request();
+        assert!(req.system_prompt.as_deref().unwrap().starts_with("you are a test profession"));
+        assert!(!req.system_prompt.as_deref().unwrap().contains("PROJECT_CONTEXT"));
 
+        // With context → prepended before the profession soul.
+        let mut agent2 = Agent::new(MockProfession, client)
+            .with_context("PROJECT_CONTEXT: this is a Rust project.");
+        agent2.memory.add("user", "hi");
+        let req2 = agent2.build_request();
+        let sys = req2.system_prompt.as_deref().unwrap();
+        assert!(sys.starts_with("PROJECT_CONTEXT"));
+        assert!(sys.contains("you are a test profession")); // profession still present
+    }
+
+    #[test]
+    fn with_context_file_missing_is_noop() {
+        let client = mock_client(vec![]);
+        let agent = Agent::new(MockProfession, client)
+            .with_context_file("/nonexistent/context.md");
+        // No panic, no context set.
+        assert!(agent.context_block.is_none());
+    }
+
+    #[test]
+    fn with_context_file_loads_content() {
+        let path = std::env::temp_dir().join("musk_ctx_file_test.md");
+        std::fs::write(&path, "# Project\n\nThis is a test project.").unwrap();
+        let client = mock_client(vec![]);
+        let agent = Agent::new(MockProfession, client)
+            .with_context_file(&path);
+        assert!(agent.context_block.is_some());
+        assert!(agent.context_block.as_deref().unwrap().contains("test project"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn build_request_injects_skill_block_when_skilltool_registered() {
+        let client = mock_client(vec![]);
         // 1. No SkillTool → plain system prompt.
         let mut agent = Agent::new(MockProfession, client.clone());
         agent.memory.add("user", "hi");
