@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>aaid — Daemon Config</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f5; color: #222; }
+.container { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { font-size: 1.5rem; margin-bottom: 4px; }
+.subtitle { color: #888; font-size: 0.9rem; margin-bottom: 20px; }
+.card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+.card h2 { font-size: 1.1rem; margin-bottom: 12px; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+.field { display: flex; align-items: center; margin-bottom: 10px; gap: 12px; }
+.field label { width: 140px; font-size: 0.9rem; color: #555; flex-shrink: 0; }
+.field input, .field select { flex: 1; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; }
+.field input:read-only { background: #f9f9f9; color: #999; }
+table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 0.85rem; }
+th { color: #888; font-weight: 600; }
+input[type="text"], input[type="password"], input[type="number"] { outline: none; }
+input:focus { border-color: #4a9eff; }
+.btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+.btn-primary { background: #4a9eff; color: #fff; }
+.btn-primary:hover { background: #3a8eef; }
+.btn-secondary { background: #e0e0e0; color: #555; }
+.btn-secondary:hover { background: #d0d0d0; }
+.btn-danger { background: #ff4444; color: #fff; }
+.btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+.actions { display: flex; gap: 8px; margin-top: 16px; }
+.provider-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+.provider-card.selected { border-color: #4a9eff; background: #f0f7ff; }
+.provider-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; cursor: pointer; }
+.provider-name { font-weight: 600; font-size: 1rem; }
+.provider-kind { font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; background: #e8e8e8; }
+.test-result { padding: 8px 12px; border-radius: 4px; margin-top: 8px; font-size: 0.85rem; }
+.test-ok { background: #e8f5e9; color: #2e7d32; }
+.test-fail { background: #ffebee; color: #c62828; }
+.note { padding: 8px 12px; background: #fff3cd; border-radius: 4px; font-size: 0.85rem; color: #856404; margin-top: 12px; }
+.add-model-row { display: flex; gap: 6px; margin-top: 6px; }
+.add-model-row input { flex: 1; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>auto-ai Daemon Configuration</h1>
+  <p class="subtitle">Configure LLM providers, API keys, and model tiers. Changes are saved to <code>~/.config/autoos/ai-daemon.at</code>.</p>
+
+  <div id="daemon-settings" class="card">
+    <h2>Daemon Settings</h2>
+    <div class="field"><label>Listen Address</label><input type="text" id="listen_addr" readonly></div>
+    <div class="field"><label>Idle Timeout (min)</label><input type="number" id="idle_timeout_min" readonly></div>
+    <div class="field"><label>Log Level</label><input type="text" id="log_level" readonly></div>
+    <div class="field"><label>Default Provider</label><input type="text" id="default_provider" readonly></div>
+    <div class="field"><label>Default Model</label><input type="text" id="default_model" readonly></div>
+  </div>
+
+  <div id="providers" class="card">
+    <h2>LLM Providers</h2>
+    <div id="provider-list"></div>
+    <button class="btn btn-secondary btn-sm" onclick="addProvider()">+ Add Provider</button>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+    <button class="btn btn-secondary" onclick="loadConfig()">Reload</button>
+  </div>
+  <div id="save-note" class="note" style="display:none"></div>
+</div>
+
+<script>
+let providers = [];
+
+async function loadConfig() {
+  try {
+    const resp = await fetch('/v1/config/data');
+    const data = await resp.json();
+    document.getElementById('listen_addr').value = data.listen_addr || '';
+    document.getElementById('idle_timeout_min').value = data.idle_timeout_min || '';
+    document.getElementById('log_level').value = data.log_level || '';
+    document.getElementById('default_provider').value = data.default_provider || '';
+    document.getElementById('default_model').value = data.default_model || '';
+    providers = data.providers || [];
+    renderProviders();
+  } catch (e) {
+    alert('Failed to load config: ' + e.message);
+  }
+}
+
+function renderProviders() {
+  const list = document.getElementById('provider-list');
+  list.innerHTML = '';
+  if (providers.length === 0) {
+    list.innerHTML = '<p style="color:#999;text-align:center;padding:20px">No providers configured. Click "Add Provider" below.</p>';
+    return;
+  }
+  providers.forEach((p, i) => {
+    const card = document.createElement('div');
+    card.className = 'provider-card';
+    card.innerHTML = `
+      <div class="provider-header">
+        <span class="provider-name">${p.name || 'unnamed'}</span>
+        <span class="provider-kind">${p.kind}</span>
+      </div>
+      <div class="field"><label>Name</label><input type="text" value="${p.name||''}" oninput="providers[${i}].name=this.value"></div>
+      <div class="field"><label>Kind</label>
+        <select onchange="providers[${i}].kind=this.value">
+          <option value="anthropic" ${p.kind==='anthropic'?'selected':''}>anthropic</option>
+          <option value="openai" ${p.kind==='openai'||p.kind==='zhipu'?'selected':''}>openai</option>
+        </select>
+      </div>
+      <div class="field"><label>Base URL</label><input type="text" value="${p.base_url||''}" oninput="providers[${i}].base_url=this.value"></div>
+      <div class="field"><label>API Key</label><input type="password" placeholder="${p.api_key_masked||'(set via key_env)'}" oninput="providers[${i}].api_key=this.value"></div>
+      <div class="field"><label>Key Env Var</label><input type="text" value="${p.key_env||''}" oninput="providers[${i}].key_env=this.value"></div>
+      <div class="field"><label>Max Concurrency</label><input type="number" value="${p.max_concurrency||4}" oninput="providers[${i}].max_concurrency=parseInt(this.value)||4"></div>
+      <table>
+        <thead><tr><th>Model ID</th><th>Tier</th><th></th></tr></thead>
+        <tbody id="models-${i}"></tbody>
+      </table>
+      <div class="add-model-row">
+        <input type="text" id="new-model-${i}" placeholder="model id (e.g. glm-5.2)">
+        <select id="new-tier-${i}">
+          <option value="min">min</option><option value="lite">lite</option>
+          <option value="mid" selected>mid</option><option value="pro">pro</option><option value="max">max</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="addModel(${i})">+ Model</button>
+      </div>
+      <div id="test-${i}"></div>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" onclick="testProvider(${i})">Test Connection</button>
+        <button class="btn btn-danger btn-sm" onclick="removeProvider(${i})">Delete</button>
+      </div>
+    `;
+    list.appendChild(card);
+    renderModels(i);
+  });
+}
+
+function renderModels(i) {
+  const tbody = document.getElementById('models-' + i);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  (providers[i].models || []).forEach((m, j) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" value="${m.id}" style="width:100%;border:none;font-size:0.8rem" onchange="providers[${i}].models[${j}].id=this.value"></td>
+      <td>
+        <select style="font-size:0.8rem" onchange="providers[${i}].models[${j}].tier=this.value">
+          ${['min','lite','mid','pro','max'].map(t=>`<option value="${t}" ${m.tier===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </td>
+      <td><button class="btn btn-danger btn-sm" onclick="providers[${i}].models.splice(${j},1);renderModels(${i})">×</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function addModel(i) {
+  if (!providers[i].models) providers[i].models = [];
+  const id = document.getElementById('new-model-' + i).value.trim();
+  if (!id) return;
+  const tier = document.getElementById('new-tier-' + i).value;
+  providers[i].models.push({id, name: id, tier});
+  document.getElementById('new-model-' + i).value = '';
+  renderModels(i);
+}
+
+function addProvider() {
+  providers.push({name: 'new-provider', kind: 'openai', base_url: '', api_key: '', key_env: '', models: [], max_concurrency: 4});
+  renderProviders();
+}
+
+function removeProvider(i) {
+  if (confirm('Delete provider "' + providers[i].name + '"?')) {
+    providers.splice(i, 1);
+    renderProviders();
+  }
+}
+
+async function testProvider(i) {
+  const p = providers[i];
+  const model = (p.models && p.models.length > 0) ? p.models[0].id : '';
+  const div = document.getElementById('test-' + i);
+  div.innerHTML = '<div class="test-result">Testing...</div>';
+  try {
+    const resp = await fetch('/v1/config/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind: p.kind, base_url: p.base_url, api_key: p.api_key || '', model}),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      div.innerHTML = `<div class="test-result test-ok">✓ Connected in ${data.latency_ms}ms</div>`;
+    } else {
+      div.innerHTML = `<div class="test-result test-fail">✗ ${data.error} (${data.latency_ms}ms)</div>`;
+    }
+  } catch (e) {
+    div.innerHTML = `<div class="test-result test-fail">✗ ${e.message}</div>`;
+  }
+}
+
+async function saveConfig() {
+  const body = {
+    listen_addr: document.getElementById('listen_addr').value,
+    idle_timeout_min: parseInt(document.getElementById('idle_timeout_min').value) || 10,
+    log_level: document.getElementById('log_level').value,
+    default_provider: document.getElementById('default_provider').value,
+    default_model: document.getElementById('default_model').value,
+    providers: providers.map(p => ({
+      name: p.name,
+      kind: p.kind,
+      base_url: p.base_url,
+      api_key: p.api_key || '',
+      key_env: p.key_env || '',
+      max_concurrency: p.max_concurrency || 4,
+      models: (p.models || []).map(m => ({id: m.id, name: m.name || m.id, tier: m.tier})),
+    })),
+  };
+  try {
+    const resp = await fetch('/v1/config/data', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    const note = document.getElementById('save-note');
+    if (data.status === 'saved') {
+      note.style.display = 'block';
+      note.textContent = '✓ Saved to ~/.config/autoos/ai-daemon.at. Restart aaid to apply changes.';
+      note.style.background = '#d4edda';
+      note.style.color = '#155724';
+    } else {
+      note.style.display = 'block';
+      note.textContent = '✗ ' + (data.error || 'Save failed');
+      note.style.background = '#f8d7da';
+      note.style.color = '#721c24';
+    }
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  }
+}
+
+loadConfig();
+</script>
+</body>
+</html>
