@@ -51,6 +51,9 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/status", get(status))
         .route("/v1/models", get(models))
         .route("/v1/usage", get(usage))
+        .route("/v1/config", get(config_page))
+        .route("/v1/config/data", get(config_data).put(config_update))
+        .route("/v1/config/test", post(config_test))
         .with_state(state)
 }
 
@@ -215,6 +218,224 @@ async fn streaming_response(
         .header("Connection", "keep-alive")
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+// ── Config page (web UI) ─────────────────────────────────────────────────────
+
+const CONFIG_HTML: &str = include_str!("config.html");
+
+/// `GET /v1/config` — serve the embedded config web page.
+async fn config_page() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/html; charset=utf-8")],
+        CONFIG_HTML,
+    )
+}
+
+/// `GET /v1/config/data` — return current daemon config as JSON (API keys
+/// masked for security).
+async fn config_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let c = &state.config;
+    let providers: Vec<serde_json::Value> = c
+        .providers
+        .iter()
+        .map(|(name, p)| {
+            json!({
+                "name": name,
+                "kind": p.kind,
+                "base_url": p.base_url,
+                "api_key_masked": mask_key(p.api_key.as_deref()),
+                "key_env": p.key_env,
+                "models": p.models.iter().map(|m| json!({
+                    "id": m.id,
+                    "name": if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
+                    "tier": format!("{:?}", m.tier).to_lowercase(),
+                })).collect::<Vec<_>>(),
+                "max_concurrency": p.max_concurrency,
+            })
+        })
+        .collect();
+
+    Json(json!({
+        "listen_addr": c.listen_addr,
+        "idle_timeout_min": c.idle_timeout_min,
+        "log_level": c.log_level,
+        "default_provider": c.default_provider,
+        "default_model": c.default_model,
+        "providers": providers,
+    }))
+}
+
+/// `PUT /v1/config/data` — update providers (persist to ai-daemon.at).
+async fn config_update(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    // Build a new .at string from the request and save it.
+    let at_content = match build_daemon_at(&body) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("invalid config: {e}")})),
+            )
+        }
+    };
+    match save_daemon_at(&at_content) {
+        Ok(_) => {
+            tracing::info!("daemon config updated via web UI");
+            (
+                StatusCode::OK,
+                Json(json!({"status": "saved", "note": "restart aaid to apply changes"})),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("save failed: {e}")})),
+        ),
+    }
+}
+
+/// `POST /v1/config/test` — test a provider connection. Body:
+/// `{ "kind": "anthropic", "base_url": "...", "api_key": "...", "model": "..." }`
+async fn config_test(
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let kind = body["kind"].as_str().unwrap_or("openai");
+    let base_url = body["base_url"].as_str().unwrap_or("");
+    let api_key = body["api_key"].as_str().unwrap_or("");
+    let model = body["model"].as_str().unwrap_or("");
+
+    let url = if kind == "anthropic" {
+        format!("{}/v1/messages", base_url.trim_end_matches('/'))
+    } else {
+        format!("{}/chat/completions", base_url.trim_end_matches('/'))
+    };
+
+    let req_body = if kind == "anthropic" {
+        json!({
+            "model": model,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "Hi"}],
+        })
+    } else {
+        json!({
+            "model": model,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "Hi"}],
+        })
+    };
+
+    let client = reqwest::Client::new();
+    let start = std::time::Instant::now();
+
+    let mut req = client.post(&url).json(&req_body);
+    if kind == "anthropic" {
+        req = req
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        req = req.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    match req.timeout(std::time::Duration::from_secs(15)).send().await {
+        Ok(resp) => {
+            let latency = start.elapsed().as_millis();
+            let status = resp.status();
+            if status.is_success() {
+                Json(json!({"success": true, "latency_ms": latency}))
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                Json(json!({"success": false, "error": format!("HTTP {status}: {}", body.chars().take(200).collect::<String>()), "latency_ms": latency}))
+            }
+        }
+        Err(e) => Json(json!({"success": false, "error": e.to_string(), "latency_ms": start.elapsed().as_millis()})),
+    }
+}
+
+/// Mask an API key for display: show first 6 + last 4 chars, middle masked.
+fn mask_key(key: Option<&str>) -> String {
+    match key {
+        None | Some("") => String::new(),
+        Some(k) if k.len() <= 10 => "****".to_string(),
+        Some(k) => format!("{}****{}", &k[..6], &k[k.len() - 4..]),
+    }
+}
+
+/// Build a `.at` config string from a JSON config update request.
+fn build_daemon_at(body: &serde_json::Value) -> Result<String, String> {
+    let listen_addr = body["listen_addr"].as_str().unwrap_or("127.0.0.1:17654");
+    let idle_timeout = body["idle_timeout_min"].as_u64().unwrap_or(10);
+    let log_level = body["log_level"].as_str().unwrap_or("info");
+    let default_provider = body["default_provider"].as_str().unwrap_or("");
+    let default_model = body["default_model"].as_str().unwrap_or("");
+
+    let mut out = String::from("daemon {\n");
+    out.push_str(&format!("    listen_addr : \"{listen_addr}\"\n"));
+    out.push_str(&format!("    idle_timeout_min : {idle_timeout}\n"));
+    out.push_str(&format!("    log_level : {log_level}\n"));
+    out.push_str(&format!("    default_provider : {default_provider}\n"));
+    if !default_model.is_empty() {
+        out.push_str(&format!("    default_model : \"{default_model}\"\n"));
+    }
+    out.push('\n');
+
+    if let Some(providers) = body["providers"].as_array() {
+        for p in providers {
+            let name = p["name"].as_str().unwrap_or("provider");
+            let kind = p["kind"].as_str().unwrap_or("openai");
+            let base_url = p["base_url"].as_str().unwrap_or("");
+            // api_key: only write if provided (non-empty, non-masked)
+            let api_key = p["api_key"].as_str().unwrap_or("");
+            let key_env = p["key_env"].as_str().unwrap_or("");
+            let max_concurrency = p["max_concurrency"].as_u64();
+
+            out.push_str(&format!("    {name} {{\n"));
+            out.push_str(&format!("        kind : {kind}\n"));
+            out.push_str(&format!("        base_url : \"{base_url}\"\n"));
+            if !api_key.is_empty() && !api_key.contains("****") {
+                out.push_str(&format!("        api_key : \"{api_key}\"\n"));
+            }
+            if !key_env.is_empty() {
+                out.push_str(&format!("        key_env : {key_env}\n"));
+            }
+            if let Some(models) = p["models"].as_array() {
+                let model_strs: Vec<String> = models
+                    .iter()
+                    .map(|m| {
+                        let id = m["id"].as_str().unwrap_or("");
+                        let tier = m["tier"].as_str().unwrap_or("mid");
+                        format!("{{ id : \"{id}\", tier : {tier} }}")
+                    })
+                    .collect();
+                out.push_str(&format!("        models : [{}]\n", model_strs.join(", ")));
+            }
+            if let Some(mc) = max_concurrency {
+                out.push_str(&format!("        max_concurrency : {mc}\n"));
+            }
+            out.push_str("    }\n\n");
+        }
+    }
+
+    out.push_str("}\n");
+    Ok(out)
+}
+
+/// Save the config string to `~/.config/autoos/ai-daemon.at`.
+fn save_daemon_at(content: &str) -> std::io::Result<()> {
+    let path = dirs::home_dir()
+        .map(|h| h.join(".config/autoos/ai-daemon.at"))
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Back up the old config.
+    let backup = path.with_extension("at.bak");
+    if path.exists() {
+        let _ = std::fs::copy(&path, &backup);
+    }
+    std::fs::write(&path, content)
 }
 
 /// Resolve a `"tier:<tier>"` token to a concrete model id from the default
