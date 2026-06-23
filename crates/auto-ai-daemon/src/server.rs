@@ -51,6 +51,14 @@ impl AppState {
 }
 
 pub fn router(state: Arc<AppState>) -> axum::Router {
+    // Serve federation remote assets (remoteEntry.js + chunks) from frontend-dist/.
+    let dist_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("frontend-dist");
+    let static_service = tower_http::services::ServeDir::new(&dist_path)
+        .fallback(tower_http::services::ServeFile::new(
+            dist_path.join("assets/remoteEntry.js"),
+        ));
+
     axum::Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/status", get(status))
@@ -59,6 +67,9 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/config", get(config_page))
         .route("/v1/config/data", get(config_data).put(config_update))
         .route("/v1/config/test", post(config_test))
+        // Federation remote: /remoteEntry.js → frontend-dist/assets/remoteEntry.js
+        .route_service("/remoteEntry.js", static_service.clone())
+        .nest_service("/assets", static_service)
         .with_state(state)
 }
 
