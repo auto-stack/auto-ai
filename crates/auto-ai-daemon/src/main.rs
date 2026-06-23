@@ -79,7 +79,7 @@ async fn main() {
 
     // Log config before moving Arc into router.
     tracing::info!("aaid listening on http://{}", listen_addr);
-    for (name, p) in &state.config.providers {
+    for (name, p) in &state.cfg().providers {
         tracing::info!(
             "  provider: {} (kind={}, models={:?}, max_concurrency={:?})",
             name, p.kind, p.models, p.max_concurrency

@@ -22,7 +22,7 @@ use crate::provider::ProviderRegistry;
 use crate::tracker::UsageTracker;
 
 pub struct AppState {
-    pub config: DaemonConfig,
+    pub config: std::sync::Arc<std::sync::RwLock<DaemonConfig>>,
     pub registry: ProviderRegistry,
     pub pool: ConcurrencyManager,
     pub tracker: UsageTracker,
@@ -36,12 +36,17 @@ impl AppState {
         let pool = ConcurrencyManager::from_config(&config);
         let current_model = config.default_model.clone();
         Self {
-            config,
+            config: std::sync::Arc::new(std::sync::RwLock::new(config)),
             registry,
             pool,
             tracker: UsageTracker::new(),
             current_model: std::sync::Mutex::new(current_model),
         }
+    }
+
+    /// Read-locked access to the config (for GET handlers).
+    pub fn cfg(&self) -> std::sync::RwLockReadGuard<'_, DaemonConfig> {
+        self.config.read().unwrap()
     }
 }
 
@@ -74,10 +79,10 @@ async fn chat_completions(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
-    let provider_name = &state.config.default_provider;
+    let provider_name = state.cfg().default_provider.clone();
 
     // Acquire concurrency permit.
-    let permit = match state.pool.acquire(provider_name).await {
+    let permit = match state.pool.acquire(&provider_name).await {
         Some(p) => p,
         None => {
             return (
@@ -93,7 +98,7 @@ async fn chat_completions(
     // Falls through unchanged for concrete model ids.
     let mut req = req;
     if req.model.starts_with("tier:") {
-        if let Some(resolved) = resolve_tier_model(&req.model, &state.config) {
+        if let Some(resolved) = resolve_tier_model(&req.model, &state.cfg()) {
             req.model = resolved;
         } else {
             return (
@@ -236,7 +241,7 @@ async fn config_page() -> impl IntoResponse {
 /// `GET /v1/config/data` — return current daemon config as JSON (API keys
 /// masked for security).
 async fn config_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let c = &state.config;
+    let c = state.cfg();
     let providers: Vec<serde_json::Value> = c
         .providers
         .iter()
@@ -273,22 +278,48 @@ async fn config_update(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     // Build a new .at string from the request and save it.
-    let at_content = match build_daemon_at(&body) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("invalid config: {e}")})),
-            )
+    let at_content = {
+        let cfg_guard = state.cfg();
+        match build_daemon_at(&body, &cfg_guard) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid config: {e}")})),
+                )
+            }
         }
     };
     match save_daemon_at(&at_content) {
-        Ok(_) => {
-            tracing::info!("daemon config updated via web UI");
-            (
-                StatusCode::OK,
-                Json(json!({"status": "saved", "note": "restart aaid to apply changes"})),
-            )
+        Ok(path) => {
+            tracing::info!("daemon config saved to {}", path.display());
+            // Hot-reload: re-parse the file and update the in-memory config so
+            // GET /v1/config/data reflects the new values immediately (no restart
+            // needed for display; a restart is still needed to re-build the
+            // provider registry for actual LLM calls).
+            match crate::config::parse_daemon_config(&at_content) {
+                Ok(new_config) => {
+                    *state.config.write().unwrap() = new_config;
+                    tracing::info!("daemon config hot-reloaded (display only; restart to apply to provider registry)");
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "status": "saved",
+                            "note": "config updated. Restart aaid to apply to provider registry."
+                        })),
+                    )
+                }
+                Err(e) => {
+                    tracing::warn!("daemon config saved but failed to hot-reload: {e}");
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "status": "saved",
+                            "note": "saved to file but hot-reload failed; restart aaid."
+                        })),
+                    )
+                }
+            }
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -364,7 +395,11 @@ fn mask_key(key: Option<&str>) -> String {
 }
 
 /// Build a `.at` config string from a JSON config update request.
-fn build_daemon_at(body: &serde_json::Value) -> Result<String, String> {
+///
+/// `current`: the current config, used to **preserve existing API keys** when
+/// the UI sends an empty/masked key (the UI masks keys for display, so the
+/// user never sees the real key — we must not lose it on save).
+fn build_daemon_at(body: &serde_json::Value, current: &DaemonConfig) -> Result<String, String> {
     let listen_addr = body["listen_addr"].as_str().unwrap_or("127.0.0.1:17654");
     let idle_timeout = body["idle_timeout_min"].as_u64().unwrap_or(10);
     let log_level = body["log_level"].as_str().unwrap_or("info");
@@ -386,16 +421,27 @@ fn build_daemon_at(body: &serde_json::Value) -> Result<String, String> {
             let name = p["name"].as_str().unwrap_or("provider");
             let kind = p["kind"].as_str().unwrap_or("openai");
             let base_url = p["base_url"].as_str().unwrap_or("");
-            // api_key: only write if provided (non-empty, non-masked)
+            // api_key: use from request if non-empty/non-masked; else preserve
+            // the existing key from current config (so we don't lose it).
             let api_key = p["api_key"].as_str().unwrap_or("");
+            let existing_key = current
+                .providers
+                .get(name)
+                .and_then(|cp| cp.api_key.as_deref())
+                .unwrap_or("");
+            let effective_key = if !api_key.is_empty() && !api_key.contains("****") {
+                api_key
+            } else {
+                existing_key
+            };
             let key_env = p["key_env"].as_str().unwrap_or("");
             let max_concurrency = p["max_concurrency"].as_u64();
 
             out.push_str(&format!("    {name} {{\n"));
             out.push_str(&format!("        kind : {kind}\n"));
             out.push_str(&format!("        base_url : \"{base_url}\"\n"));
-            if !api_key.is_empty() && !api_key.contains("****") {
-                out.push_str(&format!("        api_key : \"{api_key}\"\n"));
+            if !effective_key.is_empty() && !effective_key.contains("****") {
+                out.push_str(&format!("        api_key : \"{effective_key}\"\n"));
             }
             if !key_env.is_empty() {
                 out.push_str(&format!("        key_env : {key_env}\n"));
@@ -422,8 +468,8 @@ fn build_daemon_at(body: &serde_json::Value) -> Result<String, String> {
     Ok(out)
 }
 
-/// Save the config string to `~/.config/autoos/ai-daemon.at`.
-fn save_daemon_at(content: &str) -> std::io::Result<()> {
+/// Save the config string to `~/.config/autoos/ai-daemon.at`. Returns the path.
+fn save_daemon_at(content: &str) -> std::io::Result<std::path::PathBuf> {
     let path = dirs::home_dir()
         .map(|h| h.join(".config/autoos/ai-daemon.at"))
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
@@ -435,7 +481,8 @@ fn save_daemon_at(content: &str) -> std::io::Result<()> {
     if path.exists() {
         let _ = std::fs::copy(&path, &backup);
     }
-    std::fs::write(&path, content)
+    std::fs::write(&path, content)?;
+    Ok(path)
 }
 
 /// Resolve a `"tier:<tier>"` token to a concrete model id from the default
@@ -481,8 +528,8 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let models: Vec<serde_json::Value> = state
-        .config
+    let cfg = state.cfg();
+    let models: Vec<serde_json::Value> = cfg
         .providers
         .iter()
         .flat_map(|(name, p)| {
