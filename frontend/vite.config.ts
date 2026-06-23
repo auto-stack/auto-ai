@@ -1,22 +1,21 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import federation from '@originjs/vite-plugin-federation'
 
+// Build ConfigPage as a standalone ESM bundle (no federation).
+// The host (auto-os-config) loads it via dynamic import() from the real URL.
 export default defineConfig({
-  plugins: [
-    vue(),
-    federation({
-      name: 'aaid-config',
-      exposes: {
-        ConfigPage: './src/config-page.vue',
-      },
-      shared: ['vue'],
-    }),
-  ],
+  plugins: [vue()],
   build: {
     target: 'esnext',
     minify: true,
-    // Output to a directory aaid serves as static files.
+    lib: {
+      entry: './src/config-page.vue',
+      formats: ['es'],
+      fileName: 'config-page',
+    },
+    rollupOptions: {
+      external: [], // bundle everything (including Vue) for true independence
+    },
     outDir: '../crates/auto-ai-daemon/frontend-dist',
     emptyOutDir: true,
   },

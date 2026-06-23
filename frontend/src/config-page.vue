@@ -1,6 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 
+// Base URL for API calls — the origin of wherever this module was loaded from.
+// This ensures fetch() hits the correct server (aaid :17654) even when the
+// component is loaded remotely by auto-os-config (:17700).
+const API_BASE = (() => {
+  try {
+    const url = new URL(import.meta.url)
+    return `${url.protocol}//${url.host}`
+  } catch {
+    return 'http://127.0.0.1:17654'
+  }
+})()
+
 interface ModelDef {
   id: string
   name: string
@@ -29,7 +41,7 @@ const saveOk = ref(false)
 
 async function loadConfig() {
   try {
-    const resp = await fetch('/v1/config/data')
+    const resp = await fetch(`${API_BASE}/v1/config/data`)
     const data = await resp.json()
     listen_addr.value = data.listen_addr || ''
     idle_timeout_min.value = data.idle_timeout_min || 10
@@ -73,7 +85,7 @@ async function testProvider(i: number) {
   const div = document.getElementById(`test-${i}`)
   if (div) div.textContent = 'Testing...'
   try {
-    const resp = await fetch('/v1/config/test', {
+    const resp = await fetch(`${API_BASE}/v1/config/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: p.kind, base_url: p.base_url, api_key: p.api_key || '', model }),
@@ -103,7 +115,7 @@ async function saveConfig() {
     })),
   }
   try {
-    const resp = await fetch('/v1/config/data', {
+    const resp = await fetch(`${API_BASE}/v1/config/data`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
