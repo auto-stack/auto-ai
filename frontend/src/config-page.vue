@@ -48,6 +48,14 @@ const TIER_COLORS: Record<string, string> = {
   max: '#ec4899',
 }
 
+// Display order: highest tier first (max → pro → mid → lite → min → unknown).
+// Ties within a tier keep their original order (stable sort).
+const TIER_RANK: Record<string, number> = { max: 0, pro: 1, mid: 2, lite: 3, min: 4 }
+const tierRank = (t: string) => (TIER_RANK[t] ?? 99)
+function sortByTier(models: ModelDef[]): ModelDef[] {
+  return models.slice().sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
+}
+
 const listen_addr = ref('')
 const idle_timeout_min = ref(10)
 const log_level = ref('')
@@ -71,6 +79,7 @@ async function loadConfig() {
     default_model.value = data.default_model || ''
     providers.value = (data.providers || []).map((p: any) => ({
       ...p,
+      models: sortByTier(p.models || []),
       api_key: '',
     }))
   } catch (e) {
@@ -94,7 +103,11 @@ function removeProvider(i: number) {
 
 function addModel(i: number) {
   const id = prompt('Model ID:')
-  if (id) providers.value[i].models.push({ id, name: id, tier: 'mid' })
+  if (!id) return
+  const models = providers.value[i].models
+  models.push({ id, name: id, tier: 'mid' })
+  // Reorder in place so the new model lands at its tier-rank position.
+  models.sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
 }
 
 function removeModel(i: number, j: number) {
