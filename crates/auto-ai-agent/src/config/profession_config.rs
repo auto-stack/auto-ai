@@ -22,6 +22,7 @@ use crate::professions::load_builtin;
 #[derive(Clone, Debug, Default)]
 pub struct ProfessionConfig {
     pub name: Option<String>,
+    pub description: Option<String>,
     pub model: Option<String>,
     /// Capability tier (Min/Lite/Mid/Pro/Max); resolved by the daemon to a
     /// concrete model id. Ignored when `model` is set.
@@ -36,6 +37,16 @@ pub struct ProfessionConfig {
     pub tools_append: Option<Vec<String>>,
     pub inherit: Option<String>,
     pub memory_limit: Option<usize>,
+    // ── Plan 004: Agent Roles extensions ────────────────────────────────────
+    /// Tiers a role may run at. Empty/None = no restriction.
+    pub allowed_tiers: Option<Vec<ai_config::ModelTier>>,
+    /// Per-role skill whitelist (skill names). Empty/None = no constraint.
+    pub skills: Option<Vec<String>>,
+    /// Per-role token budget (stored only; not enforced yet).
+    pub token_budget: Option<u64>,
+    /// Sidecar Soul markdown file (same dir as the .at). When set, the Soul
+    /// comes from this file instead of the inline `system_prompt`.
+    pub soul_file: Option<String>,
 }
 
 impl ProfessionConfig {
@@ -47,6 +58,7 @@ impl ProfessionConfig {
     pub fn merge_over(mut self, mut base: ProfessionConfig) -> ProfessionConfig {
         // Scalars: override when Some.
         base.name = self.name.take().or(base.name);
+        base.description = self.description.take().or(base.description);
         base.model = self.model.take().or(base.model);
         base.temperature = self.temperature.take().or(base.temperature);
         base.model = self.model.take().or(base.model);
@@ -56,6 +68,11 @@ impl ProfessionConfig {
         base.system_prompt = self.system_prompt.take().or(base.system_prompt);
         base.memory_limit = self.memory_limit.take().or(base.memory_limit);
         base.inherit = self.inherit.take().or(base.inherit);
+        // Plan 004 fields: override when Some.
+        base.allowed_tiers = self.allowed_tiers.take().or(base.allowed_tiers);
+        base.skills = self.skills.take().or(base.skills);
+        base.token_budget = self.token_budget.take().or(base.token_budget);
+        base.soul_file = self.soul_file.take().or(base.soul_file);
 
         // system_prompt_append accumulates (base append, then self append).
         if let Some(extra) = base.system_prompt_append.take() {
@@ -86,17 +103,20 @@ pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError
         AgentError::Config(format!("failed to parse profession .at: {e}"))
     })?;
 
+    // Accept both `role { … }` (Plan 004 standard name) and the legacy
+    // `profession { … }` root — the on-disk format is otherwise identical, and
+    // `inherit:` chains may reference either.
     let node = match atom {
-        Atom::Node(n) if n.name.as_str() == "profession" => n,
+        Atom::Node(n) if n.name.as_str() == "profession" || n.name.as_str() == "role" => n,
         Atom::Node(n) => {
             return Err(AgentError::Config(format!(
-                "expected a 'profession' block, found '{}'",
+                "expected a 'role' (or legacy 'profession') block, found '{}'",
                 n.name
             )))
         }
         other => {
             return Err(AgentError::Config(format!(
-                "expected a 'profession' node, found {:?}",
+                "expected a 'role' node, found {:?}",
                 other
             )))
         }
@@ -104,16 +124,9 @@ pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError
 
     let mut cfg = ProfessionConfig::default();
     cfg.name = opt_string(&node, "name");
+    cfg.description = opt_string(&node, "description");
     cfg.model = opt_string(&node, "model");
-    cfg.model_tier = opt_string(&node, "model_tier")
-        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
-            "min" => Some(ai_config::ModelTier::Min),
-            "lite" | "light" => Some(ai_config::ModelTier::Lite),
-            "mid" => Some(ai_config::ModelTier::Mid),
-            "pro" | "large" => Some(ai_config::ModelTier::Pro),
-            "max" | "heavy" => Some(ai_config::ModelTier::Max),
-            _ => None,
-        });
+    cfg.model_tier = opt_string(&node, "model_tier").map(|s| parse_tier(&s)).flatten();
     cfg.temperature = opt_float(&node, "temperature");
     cfg.max_turns = opt_uint(&node, "max_turns");
     cfg.memory_limit = opt_uint(&node, "memory_limit").map(|u| u as usize);
@@ -122,8 +135,112 @@ pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError
     cfg.inherit = opt_string(&node, "inherit");
     cfg.tools = opt_string_list(&node, "tools");
     cfg.tools_append = opt_string_list(&node, "tools_append");
+    // Plan 004: Agent Roles extensions.
+    cfg.allowed_tiers = opt_string_list(&node, "allowed_tiers").map(|names| {
+        names.into_iter().filter_map(|s| parse_tier(&s)).collect()
+    });
+    cfg.skills = opt_string_list(&node, "skills");
+    cfg.token_budget = opt_uint(&node, "token_budget").map(|u| u as u64);
+    cfg.soul_file = opt_string(&node, "soul_file");
 
     Ok(cfg)
+}
+
+/// Serialize a [`ProfessionConfig`] back to round-trippable `.at` source for a
+/// `role { … }` block. Only `Some` fields are emitted, so a partial config (e.g.
+/// one that only overrides a few inherited fields) stays minimal.
+///
+/// Uses auto-val's escape-correct emitter (Phase A of Plan 004) so strings with
+/// quotes/backslashes survive. The root node name is `role`.
+///
+/// NOTE: the Soul markdown itself is NOT serialized here — per the architecture
+/// it lives in a sidecar `<name>.soul.md` file; only the `soul_file` reference
+/// is written into `.at`.
+pub fn serialize_at_role(cfg: &ProfessionConfig) -> String {
+    use auto_val::AtomSource;
+    let mut node = auto_val::Node::new("role");
+    if let Some(v) = &cfg.name {
+        node.set_prop("name", Value::str(v.as_str()));
+    }
+    if let Some(v) = &cfg.description {
+        node.set_prop("description", Value::str(v.as_str()));
+    }
+    if let Some(v) = &cfg.inherit {
+        node.set_prop("inherit", Value::str(v.as_str()));
+    }
+    if let Some(v) = &cfg.model {
+        node.set_prop("model", Value::str(v.as_str()));
+    }
+    if let Some(t) = cfg.model_tier {
+        node.set_prop("model_tier", Value::str(tier_name(t)));
+    }
+    if let Some(v) = cfg.temperature {
+        node.set_prop("temperature", Value::Double(v));
+    }
+    if let Some(v) = cfg.max_turns {
+        node.set_prop("max_turns", Value::Uint(v as u32));
+    }
+    if let Some(v) = cfg.memory_limit {
+        node.set_prop("memory_limit", Value::Uint(v as u32));
+    }
+    if let Some(v) = &cfg.system_prompt {
+        node.set_prop("system_prompt", Value::str(v.as_str()));
+    }
+    if let Some(v) = &cfg.system_prompt_append {
+        node.set_prop("system_prompt_append", Value::str(v.as_str()));
+    }
+    if let Some(v) = &cfg.tools {
+        node.set_prop("tools", string_array(v));
+    }
+    if let Some(v) = &cfg.tools_append {
+        node.set_prop("tools_append", string_array(v));
+    }
+    if let Some(v) = &cfg.soul_file {
+        node.set_prop("soul_file", Value::str(v.as_str()));
+    }
+    if let Some(v) = &cfg.skills {
+        node.set_prop("skills", string_array(v));
+    }
+    if let Some(v) = cfg.token_budget {
+        node.set_prop("token_budget", Value::Uint(v as u32));
+    }
+    if let Some(tiers) = &cfg.allowed_tiers {
+        let names: Vec<Value> = tiers.iter().map(|t| Value::str(tier_name(*t))).collect();
+        node.set_prop(
+            "allowed_tiers",
+            Value::Array(auto_val::Array { values: names }),
+        );
+    }
+    node.to_at_source()
+}
+
+fn tier_name(t: ai_config::ModelTier) -> &'static str {
+    match t {
+        ai_config::ModelTier::Min => "min",
+        ai_config::ModelTier::Lite => "lite",
+        ai_config::ModelTier::Mid => "mid",
+        ai_config::ModelTier::Pro => "pro",
+        ai_config::ModelTier::Max => "max",
+    }
+}
+
+fn string_array(items: &[String]) -> Value {
+    let values = items.iter().map(|s| Value::str(s.as_str())).collect();
+    Value::Array(auto_val::Array { values })
+}
+
+/// Parse a single tier name (case-insensitive) into a `ModelTier`.
+/// Returns None for an unrecognised name (rather than erroring) so a typo in
+/// `allowed_tiers` just drops that entry instead of failing the whole parse.
+fn parse_tier(s: &str) -> Option<ai_config::ModelTier> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "min" => Some(ai_config::ModelTier::Min),
+        "lite" | "light" => Some(ai_config::ModelTier::Lite),
+        "mid" => Some(ai_config::ModelTier::Mid),
+        "pro" | "large" => Some(ai_config::ModelTier::Pro),
+        "max" | "heavy" => Some(ai_config::ModelTier::Max),
+        _ => None,
+    }
 }
 
 // ── small Value readers (the auto-atom navigation pattern) ──────────────────
@@ -226,6 +343,16 @@ impl Profession for ConfigProfession {
     fn memory_limit(&self) -> Option<usize> {
         self.cfg.memory_limit.or(Some(20))
     }
+    // Plan 004: Agent Roles extensions.
+    fn allowed_tiers(&self) -> Vec<ai_config::ModelTier> {
+        self.cfg.allowed_tiers.clone().unwrap_or_default()
+    }
+    fn token_budget(&self) -> Option<u64> {
+        self.cfg.token_budget
+    }
+    fn skills(&self) -> Vec<String> {
+        self.cfg.skills.clone().unwrap_or_default()
+    }
 }
 
 /// Load a Profession from `.at` source text, resolving `inherit` against the
@@ -273,6 +400,7 @@ pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError>
         // None fields with the builtin's values.
         let resolved = ProfessionConfig {
             name: Some(merged.name.clone().unwrap_or_else(|| base_builtin.name().to_string())),
+            description: merged.description.clone(),
             model: merged.model.clone(),
             model_tier: Some(
                 merged.model_tier.unwrap_or_else(|| base_builtin.model_tier()),
@@ -291,6 +419,11 @@ pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError>
                     base_builtin.memory_limit().unwrap_or(20)
                 }),
             ),
+            // Plan 004: carry through the new role fields (override-or-builtin).
+            allowed_tiers: Some(merged.allowed_tiers.clone().unwrap_or_else(|| base_builtin.allowed_tiers())),
+            skills: Some(merged.skills.clone().unwrap_or_else(|| base_builtin.skills())),
+            token_budget: merged.token_budget.or(base_builtin.token_budget()),
+            soul_file: merged.soul_file.clone(),
         };
 
         Ok(Arc::new(ConfigProfession::new(resolved, prompt)))
@@ -318,6 +451,66 @@ pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialize_and_reparse_role_roundtrips() {
+        // Round-trip the new Plan 004 fields: build a config, serialize to .at,
+        // re-parse, and assert every field survives.
+        let cfg = ProfessionConfig {
+            name: Some("precise-coder".into()),
+            description: Some("TDD-focused coder".into()),
+            inherit: Some("coder".into()),
+            model_tier: Some(ai_config::ModelTier::Max),
+            temperature: Some(0.2),
+            max_turns: Some(40),
+            skills: Some(vec!["test-driven-development".into(), "brainstorming".into()]),
+            allowed_tiers: Some(vec![
+                ai_config::ModelTier::Mid,
+                ai_config::ModelTier::Pro,
+                ai_config::ModelTier::Max,
+            ]),
+            token_budget: Some(2_000_000),
+            soul_file: Some("precise-coder.soul.md".into()),
+            ..Default::default()
+        };
+        let src = serialize_at_role(&cfg);
+        // The source is a parseable `role { … }` block.
+        let reparsed = parse_at_profession(&src).expect("re-parse must succeed");
+        assert_eq!(reparsed.name.as_deref(), Some("precise-coder"));
+        assert_eq!(reparsed.description.as_deref(), Some("TDD-focused coder"));
+        assert_eq!(reparsed.inherit.as_deref(), Some("coder"));
+        assert_eq!(reparsed.model_tier, Some(ai_config::ModelTier::Max));
+        assert!((reparsed.temperature.unwrap() - 0.2).abs() < 1e-9);
+        assert_eq!(reparsed.max_turns, Some(40));
+        assert_eq!(
+            reparsed.skills.unwrap(),
+            vec!["test-driven-development".to_string(), "brainstorming".to_string()]
+        );
+        assert_eq!(
+            reparsed.allowed_tiers.unwrap(),
+            vec![ai_config::ModelTier::Mid, ai_config::ModelTier::Pro, ai_config::ModelTier::Max]
+        );
+        assert_eq!(reparsed.token_budget, Some(2_000_000));
+        assert_eq!(reparsed.soul_file.as_deref(), Some("precise-coder.soul.md"));
+    }
+
+    #[test]
+    fn serialize_skips_unset_fields() {
+        // A minimal config (only name + tier) should emit only those fields.
+        let cfg = ProfessionConfig {
+            name: Some("lean".into()),
+            model_tier: Some(ai_config::ModelTier::Mid),
+            ..Default::default()
+        };
+        let src = serialize_at_role(&cfg);
+        assert!(src.contains("name : \"lean\""));
+        assert!(src.contains("model_tier : \"mid\""));
+        // Unset fields are absent.
+        assert!(!src.contains("token_budget"));
+        assert!(!src.contains("skills"));
+        assert!(!src.contains("allowed_tiers"));
+        assert!(!src.contains("soul_file"));
+    }
 
     #[test]
     fn parse_pure_config_profession() {

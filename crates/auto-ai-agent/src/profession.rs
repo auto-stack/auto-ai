@@ -58,6 +58,32 @@ pub trait Profession: Send + Sync {
     fn memory_limit(&self) -> Option<usize> {
         Some(20)
     }
+
+    /// Tiers a role may run at, as a constraint on mode/agent tier selection.
+    /// Empty (default) = no restriction (any tier allowed). When non-empty, a
+    /// mode's tier should fall within this set; the app may clamp otherwise.
+    ///
+    /// (Plan 004 — Agent Roles.)
+    fn allowed_tiers(&self) -> Vec<ModelTier> {
+        Vec::new()
+    }
+
+    /// Optional per-role token budget (cumulative across the run). `None`
+    /// (default) = unbounded. NOTE: as of Plan 004 this is **stored only** and
+    /// not yet enforced; reserved for a future BudgetTracker.
+    fn token_budget(&self) -> Option<u64> {
+        None
+    }
+
+    /// Per-role skill whitelist. Empty (default) = no constraint (when skills
+    /// are enabled for a mode, all installed skills are exposed). When
+    /// non-empty, only these skill names may be registered for agents using
+    /// this role.
+    ///
+    /// (Plan 004 — Agent Roles.)
+    fn skills(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -92,5 +118,9 @@ mod tests {
         assert_eq!(p.max_turns(), 10);
         assert!(p.allowed_tools().is_empty());
         assert_eq!(p.memory_limit(), Some(20));
+        // Plan 004 defaults — built-in roles get these without code changes.
+        assert!(p.allowed_tiers().is_empty()); // no tier restriction
+        assert_eq!(p.token_budget(), None); // unbounded / not enforced yet
+        assert!(p.skills().is_empty()); // no skill whitelist
     }
 }
