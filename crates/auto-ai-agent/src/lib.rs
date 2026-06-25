@@ -31,10 +31,13 @@ pub mod workflow;
 pub mod workflow_validator;
 
 pub use agent::{Agent, AgentResult, Client, StreamEvent, ToolCallRecord};
-pub use config::{load_profession, parse_at_profession, serialize_at_role, ConfigProfession, ProfessionConfig};
+pub use config::{load_profession, parse_at_profession, parse_tier_field, serialize_at_role, ConfigProfession, ProfessionConfig};
 pub use error::{AgentError, ToolError};
 pub use memory::Memory;
 pub use profession::Profession;
+// Re-export ModelTier so downstream crates (musk, …) can name the tier type
+// without depending on ai_config directly.
+pub use ai_config::ModelTier;
 pub use professions::{load_builtin, builtin_names, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
 pub use relay::RelayTarget;
 pub use roles::{RoleDetail, RoleRegistry, RoleSummary};

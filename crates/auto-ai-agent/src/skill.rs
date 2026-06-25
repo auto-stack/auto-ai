@@ -96,6 +96,15 @@ impl SkillRegistry {
         self.skills.get(name)
     }
 
+    /// Keep only skills whose name is in `whitelist` (in place). Used by the
+    /// Plan 004 Roles feature: a role's `skills` whitelist restricts which
+    /// installed skills are exposed to an agent.
+    pub fn retain(&mut self, whitelist: &[String]) {
+        let allow: std::collections::HashSet<&str> =
+            whitelist.iter().map(|s| s.as_str()).collect();
+        self.skills.retain(|name, _| allow.contains(name.as_str()));
+    }
+
     /// All skill names (no order guarantee).
     pub fn names(&self) -> Vec<String> {
         self.skills.keys().cloned().collect()

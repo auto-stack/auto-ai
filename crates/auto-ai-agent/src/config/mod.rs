@@ -21,5 +21,6 @@
 pub mod profession_config;
 
 pub use profession_config::{
-    load_profession, parse_at_profession, serialize_at_role, ConfigProfession, ProfessionConfig,
+    load_profession, parse_at_profession, parse_tier_field, serialize_at_role, ConfigProfession,
+    ProfessionConfig,
 };

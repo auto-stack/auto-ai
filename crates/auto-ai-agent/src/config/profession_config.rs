@@ -232,7 +232,10 @@ fn string_array(items: &[String]) -> Value {
 /// Parse a single tier name (case-insensitive) into a `ModelTier`.
 /// Returns None for an unrecognised name (rather than erroring) so a typo in
 /// `allowed_tiers` just drops that entry instead of failing the whole parse.
-fn parse_tier(s: &str) -> Option<ai_config::ModelTier> {
+///
+/// This is re-exported publicly (as `parse_tier_field`) so the musk API layer
+/// can parse tier strings from JSON request bodies the same way.
+pub fn parse_tier(s: &str) -> Option<ai_config::ModelTier> {
     match s.trim().to_ascii_lowercase().as_str() {
         "min" => Some(ai_config::ModelTier::Min),
         "lite" | "light" => Some(ai_config::ModelTier::Lite),
@@ -241,6 +244,11 @@ fn parse_tier(s: &str) -> Option<ai_config::ModelTier> {
         "max" | "heavy" => Some(ai_config::ModelTier::Max),
         _ => None,
     }
+}
+
+/// Public alias for [`parse_tier`], for downstream (musk API) use.
+pub fn parse_tier_field(s: &str) -> Option<ai_config::ModelTier> {
+    parse_tier(s)
 }
 
 // ── small Value readers (the auto-atom navigation pattern) ──────────────────
