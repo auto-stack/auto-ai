@@ -44,6 +44,21 @@ impl Memory {
         self.trim();
     }
 
+    /// Pre-load a sequence of (role, content) turns from a prior conversation.
+    ///
+    /// Used to rebuild an agent's context across stateless HTTP requests (e.g.
+    /// musk chat sessions): each prior user/assistant turn is appended so the
+    /// model sees the history. Trims once at the end. (Plan 008.)
+    pub fn extend_pairs<I, S>(&mut self, pairs: I)
+    where
+        I: IntoIterator<Item = (S, S)>,
+        S: AsRef<str>,
+    {
+        for (role, content) in pairs {
+            self.add(role.as_ref(), content.as_ref());
+        }
+    }
+
     /// All messages currently held (in order).
     pub fn messages(&self) -> &[Message] {
         &self.messages

@@ -165,6 +165,22 @@ impl Agent {
         }
     }
 
+    /// Pre-load conversation history (prior user/assistant turns) so the agent
+    /// continues a multi-turn session across a stateless boundary (e.g. an HTTP
+    /// chat request). Each pair is (role, content); role is "user" or
+    /// "assistant". Tool-role messages are skipped (they're replayed via the
+    /// assistant content's tool-call blocks, not as standalone turns).
+    ///
+    /// (Plan 008 — Chats web app.)
+    pub fn with_history<I, S>(mut self, history: I) -> Self
+    where
+        I: IntoIterator<Item = (S, S)>,
+        S: AsRef<str>,
+    {
+        self.memory.extend_pairs(history);
+        self
+    }
+
     /// Register a tool the agent may call.
     pub fn register_tool<T: crate::tool::Tool + 'static>(&mut self, tool: T) {
         self.tools.register(tool);
