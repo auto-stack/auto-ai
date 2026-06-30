@@ -38,7 +38,7 @@ pub use profession::Profession;
 // Re-export ModelTier so downstream crates (musk, …) can name the tier type
 // without depending on ai_config directly.
 pub use ai_config::ModelTier;
-pub use professions::{load_builtin, builtin_names, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
+pub use professions::{load_builtin, builtin_names, Assistant, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
 pub use relay::RelayTarget;
 pub use roles::{RoleDetail, RoleRegistry, RoleSummary};
 pub use skill::{Skill, SkillRegistry, SkillTool};

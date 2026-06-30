@@ -10,6 +10,7 @@
 //! [`Runner`] (execute/find) — are added for downstream Ash support.
 
 pub mod architect;
+pub mod assistant;
 pub mod coder;
 pub mod documenter;
 pub mod reviewer;
@@ -18,6 +19,7 @@ pub mod tester;
 pub mod translator;
 
 pub use architect::Architect;
+pub use assistant::Assistant;
 pub use coder::Coder;
 pub use documenter::Documenter;
 pub use reviewer::Reviewer;
@@ -35,6 +37,7 @@ use crate::profession::Profession;
 /// resolve an `inherit:` base.
 pub fn load_builtin(name: &str) -> Option<Arc<dyn Profession>> {
     let p: Arc<dyn Profession> = match name {
+        "assistant" => Arc::new(Assistant),
         "coder" => Arc::new(Coder),
         "architect" => Arc::new(Architect),
         "tester" => Arc::new(Tester),
@@ -50,6 +53,7 @@ pub fn load_builtin(name: &str) -> Option<Arc<dyn Profession>> {
 /// All built-in profession names, in a stable order.
 pub fn builtin_names() -> &'static [&'static str] {
     &[
+        "assistant",
         "coder",
         "architect",
         "tester",
@@ -80,6 +84,7 @@ mod tests {
     fn each_builtin_has_nonempty_prompt_and_known_marker() {
         // Each ported soul opens with a "# Soul of the <Role>" header.
         let markers = [
+            ("assistant", "Soul of the Assistant"),
             ("coder", "Soul of the Coder"),
             ("architect", "Soul of the Architect"),
             ("tester", "Soul of the Tester"),
