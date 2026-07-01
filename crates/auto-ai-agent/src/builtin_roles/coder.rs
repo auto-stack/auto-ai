@@ -1,17 +1,17 @@
-//! The Coder profession — writes/modifies implementation code.
+//! The Coder role — writes/modifies implementation code.
 //!
 //! Soul ported verbatim from AutoForge's `relay/souls/coder.md`. Defaults
 //! (max_turns=40, mid-tier model, moderate temperature) follow
-//! AutoForge's `relay/profession.rs`.
+//! AutoForge's `relay/role.rs`.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = include_str!("../../resources/souls/coder.md");
 
 /// The Coder: produces and edits implementation code.
 pub struct Coder;
 
-impl Profession for Coder {
+impl Role for Coder {
     fn name(&self) -> &str {
         "coder"
     }

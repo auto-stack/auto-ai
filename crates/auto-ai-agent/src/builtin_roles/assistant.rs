@@ -1,11 +1,11 @@
-//! The Assistant profession — the user's first point of contact.
+//! The Assistant role — the user's first point of contact.
 //!
 //! Handles direct conversation, answers questions, and performs lightweight
 //! tasks (read/search/check). Complex orchestration (handoff/relay) is the app
 //! layer's job. Soul adapted from AutoForge's `relay/souls/assistant.md`,
 //! stripped of orchestration semantics.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = include_str!("../../resources/souls/assistant.md");
 
@@ -13,7 +13,7 @@ const SOUL: &str = include_str!("../../resources/souls/assistant.md");
 /// and performs light tasks; defers complex work to the app's orchestration.
 pub struct Assistant;
 
-impl Profession for Assistant {
+impl Role for Assistant {
     fn name(&self) -> &str {
         "assistant"
     }

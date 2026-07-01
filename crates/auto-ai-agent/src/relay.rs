@@ -79,7 +79,7 @@ mod tests {
     }
 
     struct DummyProfession;
-    impl crate::Profession for DummyProfession {
+    impl crate::Role for DummyProfession {
         fn name(&self) -> &str {
             "dummy"
         }

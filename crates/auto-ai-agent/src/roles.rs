@@ -1,7 +1,7 @@
 //! Agent Role registry — user-configurable, persistable roles that generalize
-//! the compiled-in `Profession` library.
+//! the compiled-in `Role` library.
 //!
-//! A Role is the same idea as a built-in Profession (soul prompt + tier +
+//! A Role is the same idea as a built-in Role (soul prompt + tier +
 //! tools + temperature + …) but **editable at runtime**: roles live as
 //! `role { … }` blocks in `~/.config/autoos/roles/<name>.at`, with an optional
 //! sidecar Soul markdown file (`<name>.soul.md`). Built-in professions act as
@@ -14,10 +14,10 @@ use std::path::{Path, PathBuf};
 
 use ai_config::ModelTier;
 
-use crate::config::{parse_at_profession, serialize_at_role, ProfessionConfig};
+use crate::config::{parse_at_role, serialize_at_role, RoleConfig};
 use crate::error::AgentError;
-use crate::profession::Profession;
-use crate::professions::{builtin_names, load_builtin};
+use crate::role_def::Role;
+use crate::builtin_roles::{builtin_names, load_builtin};
 
 /// Directory holding user roles: `~/.config/autoos/roles/`.
 fn roles_dir() -> Option<PathBuf> {
@@ -59,7 +59,7 @@ pub struct RoleDetail {
     /// Whether the Soul came from a sidecar `.soul.md` (vs inline).
     pub soul_from_file: bool,
     /// The raw parsed config (for the editor to bind to form fields).
-    pub config: ProfessionConfig,
+    pub config: RoleConfig,
 }
 
 // ── registry ─────────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ impl RoleRegistry {
                             continue;
                         }
                     };
-                    match parse_at_profession(&content) {
+                    match parse_at_role(&content) {
                         Ok(cfg) => {
                             let name = cfg
                                 .name
@@ -164,20 +164,20 @@ impl RoleRegistry {
         Self { roles }
     }
 
-    /// Resolve a role by name into a live `Profession` (for agent building).
+    /// Resolve a role by name into a live `Role` (for agent building).
     /// Tries the built-in library first so `inherit:` chains resolve, then the
     /// on-disk config.
-    pub fn resolve_profession(&self, name: &str) -> Option<std::sync::Arc<dyn Profession>> {
-        // Built-in name → compiled Profession (keeps inherit chains working).
+    pub fn resolve_role(&self, name: &str) -> Option<std::sync::Arc<dyn Role>> {
+        // Built-in name → compiled Role (keeps inherit chains working).
         if let Some(prof) = load_builtin(name) {
             return Some(prof);
         }
-        // User role → parse + load_profession (which resolves inherit/soul).
+        // User role → parse + load_role (which resolves inherit/soul).
         let detail = self.roles.get(name)?;
-        // Reconstruct the on-disk .at source so load_profession can process the
-        // inherit chain; it expects a `role { }` / `profession { }` block.
+        // Reconstruct the on-disk .at source so load_role can process the
+        // inherit chain; it expects a `role { }` / `role { }` block.
         let src = serialize_at_role(&detail.config);
-        crate::config::load_profession(&src).ok()
+        crate::config::load_role(&src).ok()
     }
 
     /// List all role summaries (built-in + user), sorted: user roles first
@@ -204,7 +204,7 @@ impl RoleRegistry {
     pub fn save(
         &self,
         name: &str,
-        mut cfg: ProfessionConfig,
+        mut cfg: RoleConfig,
         soul_md: Option<&str>,
     ) -> Result<(), AgentError> {
         if load_builtin(name).is_some() {
@@ -273,10 +273,10 @@ impl RoleRegistry {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Read a built-in `Profession`'s trait methods back into a config struct, so
+/// Read a built-in `Role`'s trait methods back into a config struct, so
 /// the UI/API can present built-ins uniformly alongside user roles.
-fn profession_to_config(prof: &dyn Profession) -> ProfessionConfig {
-    ProfessionConfig {
+fn profession_to_config(prof: &dyn Role) -> RoleConfig {
+    RoleConfig {
         name: Some(prof.name().to_string()),
         description: None,
         model: Some(prof.model().to_string()),
@@ -320,7 +320,7 @@ fn profession_to_config(prof: &dyn Profession) -> ProfessionConfig {
 /// Resolve a role's Soul markdown: sidecar file first (if `soul_file` set and
 /// exists), else the inline `system_prompt`, else empty.
 /// Returns (markdown, came_from_file).
-fn resolve_soul(cfg: &ProfessionConfig, at_path: &Path) -> (String, bool) {
+fn resolve_soul(cfg: &RoleConfig, at_path: &Path) -> (String, bool) {
     if let Some(rel) = &cfg.soul_file {
         // sidecar path is relative to the .at's directory
         let sidecar = at_path
@@ -364,15 +364,15 @@ mod tests {
     #[test]
     fn resolve_builtin_profession() {
         let reg = RoleRegistry::load();
-        let prof = reg.resolve_profession("coder");
-        assert!(prof.is_some(), "coder should resolve to a built-in Profession");
+        let prof = reg.resolve_role("coder");
+        assert!(prof.is_some(), "coder should resolve to a built-in Role");
         assert_eq!(prof.unwrap().name(), "coder");
     }
 
     #[test]
     fn save_rejects_builtin_name() {
         let reg = RoleRegistry::load();
-        let cfg = ProfessionConfig {
+        let cfg = RoleConfig {
             name: Some("coder".into()),
             ..Default::default()
         };

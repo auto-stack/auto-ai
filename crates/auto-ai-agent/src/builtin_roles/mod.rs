@@ -1,12 +1,12 @@
-//! Built-in Profession library.
+//! Built-in Role library.
 //!
 //! System prompts are ported verbatim from AutoForge's `relay/souls/*.md`
-//! (the tuned "souls"). Each built-in Profession embeds its prompt via
+//! (the tuned "souls"). Each built-in Role embeds its prompt via
 //! `include_str!` from [`../../resources/souls`] and overrides the
 //! `model`/`temperature`/`max_turns` defaults with values informed by
-//! AutoForge's `relay/profession.rs`.
+//! AutoForge's `relay/role.rs`.
 //!
-//! Two professions with no Forge source — [`Translator`] (NL→command) and
+//! Two roles with no Forge source — [`Translator`] (NL→command) and
 //! [`Runner`] (execute/find) — are added for downstream Ash support.
 
 pub mod architect;
@@ -29,14 +29,14 @@ pub use translator::Translator;
 
 use std::sync::Arc;
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
-/// Look up a built-in Profession by its lowercase name.
+/// Look up a built-in Role by its lowercase name.
 ///
 /// Returns `None` for unknown names. Phase 4's `.at` loader uses this to
 /// resolve an `inherit:` base.
-pub fn load_builtin(name: &str) -> Option<Arc<dyn Profession>> {
-    let p: Arc<dyn Profession> = match name {
+pub fn load_builtin(name: &str) -> Option<Arc<dyn Role>> {
+    let p: Arc<dyn Role> = match name {
         "assistant" => Arc::new(Assistant),
         "coder" => Arc::new(Coder),
         "architect" => Arc::new(Architect),
@@ -50,7 +50,7 @@ pub fn load_builtin(name: &str) -> Option<Arc<dyn Profession>> {
     Some(p)
 }
 
-/// All built-in profession names, in a stable order.
+/// All built-in role names, in a stable order.
 pub fn builtin_names() -> &'static [&'static str] {
     &[
         "assistant",

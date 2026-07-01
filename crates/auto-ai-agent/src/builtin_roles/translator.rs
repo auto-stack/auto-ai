@@ -1,11 +1,11 @@
-//! The Translator profession — turns natural-language intent into a precise
+//! The Translator role — turns natural-language intent into a precise
 //! command or structured directive.
 //!
 //! No AutoForge source (Forge has no equivalent role). Intended as a front-end
-//! profession for Ash: the user describes what they want in plain language, and
+//! role for Ash: the user describes what they want in plain language, and
 //! the Translator emits a crisp, actionable command/target.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = "\
 # Soul of the Translator
@@ -39,7 +39,7 @@ You translate fuzzy human intent into a precise, runnable directive.
 /// The Translator: maps natural-language requests to precise commands.
 pub struct Translator;
 
-impl Profession for Translator {
+impl Role for Translator {
     fn name(&self) -> &str {
         "translator"
     }

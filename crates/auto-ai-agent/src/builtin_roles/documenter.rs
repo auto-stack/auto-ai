@@ -1,17 +1,17 @@
-//! The Documenter profession — writes docs/READMEs/explanations.
+//! The Documenter role — writes docs/READMEs/explanations.
 //!
 //! Soul ported verbatim from AutoForge's `relay/souls/documenter.md`. Defaults
 //! (max_turns=40, max-tier model, moderate temperature) follow AutoForge's
-//! `relay/profession.rs`.
+//! `relay/role.rs`.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = include_str!("../../resources/souls/documenter.md");
 
 /// The Documenter: produces documentation, READMEs, and explanations.
 pub struct Documenter;
 
-impl Profession for Documenter {
+impl Role for Documenter {
     fn name(&self) -> &str {
         "documenter"
     }

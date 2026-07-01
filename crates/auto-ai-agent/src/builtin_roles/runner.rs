@@ -1,10 +1,10 @@
-//! The Runner profession — executes commands and finds things.
+//! The Runner role — executes commands and finds things.
 //!
-//! No AutoForge source. Intended as a back-end profession for Ash: given a
+//! No AutoForge source. Intended as a back-end role for Ash: given a
 //! concrete directive, the Runner uses execution/search tools to carry it out
 //! and reports the outcome.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = "\
 # Soul of the Runner
@@ -37,7 +37,7 @@ End with one of:
 /// The Runner: executes directives via tools and reports the outcome.
 pub struct Runner;
 
-impl Profession for Runner {
+impl Role for Runner {
     fn name(&self) -> &str {
         "runner"
     }
@@ -56,7 +56,7 @@ impl Profession for Runner {
     }
     // allowed_tools() defaults to empty = all tools; the Runner is meant to
     // use execution/search tools, so the app registers those and leaves the
-    // profession open.
+    // role open.
 }
 
 #[cfg(test)]

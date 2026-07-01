@@ -1,4 +1,4 @@
-//! Parsing + inherit/merge for `.at` Profession config files.
+//! Parsing + inherit/merge for `.at` Role config files.
 
 use std::sync::Arc;
 
@@ -6,10 +6,10 @@ use auto_atom::{Atom, AtomParser};
 use auto_val::Value;
 
 use crate::error::AgentError;
-use crate::profession::Profession;
-use crate::professions::load_builtin;
+use crate::role_def::Role;
+use crate::builtin_roles::load_builtin;
 
-/// The parsed representation of a `profession { … }` block.
+/// The parsed representation of a `role { … }` block.
 ///
 /// Every field is optional so an `inherit`-based config only overrides what it
 /// sets. See `docs/auto-ai-agent-design.md` §4.4.
@@ -20,7 +20,7 @@ use crate::professions::load_builtin;
 /// auto-atom because `+` isn't an identifier character, so the policy is split
 /// into two props instead.)
 #[derive(Clone, Debug, Default)]
-pub struct ProfessionConfig {
+pub struct RoleConfig {
     pub name: Option<String>,
     pub description: Option<String>,
     pub model: Option<String>,
@@ -31,7 +31,7 @@ pub struct ProfessionConfig {
     pub max_turns: Option<usize>,
     pub system_prompt: Option<String>,
     pub system_prompt_append: Option<String>,
-    /// When set, the profession may use *only* these tools (replaces base).
+    /// When set, the role may use *only* these tools (replaces base).
     pub tools: Option<Vec<String>>,
     /// When set, these tools are *added* to the (possibly inherited) set.
     pub tools_append: Option<Vec<String>>,
@@ -49,13 +49,13 @@ pub struct ProfessionConfig {
     pub soul_file: Option<String>,
 }
 
-impl ProfessionConfig {
+impl RoleConfig {
     /// Merge `self` *over* `base`, applying the design-doc §4.4 rules:
     /// - scalar fields override when `Some`;
     /// - `system_prompt_append` is appended to the base prompt;
     /// - `tools` with any `+name` entry append to the base set; a plain list
     ///   (no `+` prefix anywhere) replaces the base set entirely.
-    pub fn merge_over(mut self, mut base: ProfessionConfig) -> ProfessionConfig {
+    pub fn merge_over(mut self, mut base: RoleConfig) -> RoleConfig {
         // Scalars: override when Some.
         base.name = self.name.take().or(base.name);
         base.description = self.description.take().or(base.description);
@@ -97,20 +97,20 @@ impl ProfessionConfig {
     }
 }
 
-/// Parse a single `profession { … }` block from `.at` source.
-pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError> {
+/// Parse a single `role { … }` block from `.at` source.
+pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
     let atom = AtomParser::parse(content).map_err(|e| {
-        AgentError::Config(format!("failed to parse profession .at: {e}"))
+        AgentError::Config(format!("failed to parse role .at: {e}"))
     })?;
 
     // Accept both `role { … }` (Plan 004 standard name) and the legacy
-    // `profession { … }` root — the on-disk format is otherwise identical, and
+    // `role { … }` root — the on-disk format is otherwise identical, and
     // `inherit:` chains may reference either.
     let node = match atom {
-        Atom::Node(n) if n.name.as_str() == "profession" || n.name.as_str() == "role" => n,
+        Atom::Node(n) if n.name.as_str() == "role" || n.name.as_str() == "role" => n,
         Atom::Node(n) => {
             return Err(AgentError::Config(format!(
-                "expected a 'role' (or legacy 'profession') block, found '{}'",
+                "expected a 'role' (or legacy 'role') block, found '{}'",
                 n.name
             )))
         }
@@ -122,7 +122,7 @@ pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError
         }
     };
 
-    let mut cfg = ProfessionConfig::default();
+    let mut cfg = RoleConfig::default();
     cfg.name = opt_string(&node, "name");
     cfg.description = opt_string(&node, "description");
     cfg.model = opt_string(&node, "model");
@@ -146,7 +146,7 @@ pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError
     Ok(cfg)
 }
 
-/// Serialize a [`ProfessionConfig`] back to round-trippable `.at` source for a
+/// Serialize a [`RoleConfig`] back to round-trippable `.at` source for a
 /// `role { … }` block. Only `Some` fields are emitted, so a partial config (e.g.
 /// one that only overrides a few inherited fields) stays minimal.
 ///
@@ -156,7 +156,7 @@ pub fn parse_at_profession(content: &str) -> Result<ProfessionConfig, AgentError
 /// NOTE: the Soul markdown itself is NOT serialized here — per the architecture
 /// it lives in a sidecar `<name>.soul.md` file; only the `soul_file` reference
 /// is written into `.at`.
-pub fn serialize_at_role(cfg: &ProfessionConfig) -> String {
+pub fn serialize_at_role(cfg: &RoleConfig) -> String {
     use auto_val::AtomSource;
     let mut node = auto_val::Node::new("role");
     if let Some(v) = &cfg.name {
@@ -305,27 +305,27 @@ fn opt_string_list(node: &auto_val::Node, key: &str) -> Option<Vec<String>> {
     }
 }
 
-// ── ConfigProfession: a Profession built from a merged config ───────────────
+// ── ConfigRole: a Role built from a merged config ───────────────
 
-/// A [`Profession`] whose behavior comes from a (possibly merged)
-/// [`ProfessionConfig`].
-pub struct ConfigProfession {
-    cfg: ProfessionConfig,
+/// A [`Role`] whose behavior comes from a (possibly merged)
+/// [`RoleConfig`].
+pub struct ConfigRole {
+    cfg: RoleConfig,
     /// The system prompt, with any `system_prompt_append` folded in. If this
-    /// profession `inherit`s a builtin, this is the builtin's prompt plus the
+    /// role `inherit`s a builtin, this is the builtin's prompt plus the
     /// append.
     prompt: String,
 }
 
-impl ConfigProfession {
+impl ConfigRole {
     /// Build directly from a fully-merged config. `prompt` must already have
-    /// any `system_prompt_append` applied (see [`load_profession`]).
-    pub(crate) fn new(cfg: ProfessionConfig, prompt: String) -> Self {
+    /// any `system_prompt_append` applied (see [`load_role`]).
+    pub(crate) fn new(cfg: RoleConfig, prompt: String) -> Self {
         Self { cfg, prompt }
     }
 }
 
-impl Profession for ConfigProfession {
+impl Role for ConfigRole {
     fn name(&self) -> &str {
         self.cfg.name.as_deref().unwrap_or("config")
     }
@@ -363,10 +363,10 @@ impl Profession for ConfigProfession {
     }
 }
 
-/// Load a Profession from `.at` source text, resolving `inherit` against the
+/// Load a Role from `.at` source text, resolving `inherit` against the
 /// built-in library.
-pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError> {
-    let cfg = parse_at_profession(content)?;
+pub fn load_role(content: &str) -> Result<Arc<dyn Role>, AgentError> {
+    let cfg = parse_at_role(content)?;
 
     if let Some(base_name) = &cfg.inherit {
         let base_builtin =
@@ -403,10 +403,10 @@ pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError>
 
         // Build a merged config carrying the resolved prompt + tools, and let
         // the other scalars (model/temperature/max_turns/memory_limit) fall
-        // through to ConfigProfession's defaults when None — but those defaults
+        // through to ConfigRole's defaults when None — but those defaults
         // should be the *builtin's* values, not the generic ones. Override the
         // None fields with the builtin's values.
-        let resolved = ProfessionConfig {
+        let resolved = RoleConfig {
             name: Some(merged.name.clone().unwrap_or_else(|| base_builtin.name().to_string())),
             description: merged.description.clone(),
             model: merged.model.clone(),
@@ -434,7 +434,7 @@ pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError>
             soul_file: merged.soul_file.clone(),
         };
 
-        Ok(Arc::new(ConfigProfession::new(resolved, prompt)))
+        Ok(Arc::new(ConfigRole::new(resolved, prompt)))
     } else {
         // No inherit: the config must supply its own system_prompt.
         let prompt = match &cfg.system_prompt {
@@ -448,11 +448,11 @@ pub fn load_profession(content: &str) -> Result<Arc<dyn Profession>, AgentError>
             }
             None => {
                 return Err(AgentError::Config(
-                    "profession config without 'inherit' must set 'system_prompt'".into(),
+                    "role config without 'inherit' must set 'system_prompt'".into(),
                 ))
             }
         };
-        Ok(Arc::new(ConfigProfession::new(cfg, prompt)))
+        Ok(Arc::new(ConfigRole::new(cfg, prompt)))
     }
 }
 
@@ -464,7 +464,7 @@ mod tests {
     fn serialize_and_reparse_role_roundtrips() {
         // Round-trip the new Plan 004 fields: build a config, serialize to .at,
         // re-parse, and assert every field survives.
-        let cfg = ProfessionConfig {
+        let cfg = RoleConfig {
             name: Some("precise-coder".into()),
             description: Some("TDD-focused coder".into()),
             inherit: Some("coder".into()),
@@ -483,7 +483,7 @@ mod tests {
         };
         let src = serialize_at_role(&cfg);
         // The source is a parseable `role { … }` block.
-        let reparsed = parse_at_profession(&src).expect("re-parse must succeed");
+        let reparsed = parse_at_role(&src).expect("re-parse must succeed");
         assert_eq!(reparsed.name.as_deref(), Some("precise-coder"));
         assert_eq!(reparsed.description.as_deref(), Some("TDD-focused coder"));
         assert_eq!(reparsed.inherit.as_deref(), Some("coder"));
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn serialize_skips_unset_fields() {
         // A minimal config (only name + tier) should emit only those fields.
-        let cfg = ProfessionConfig {
+        let cfg = RoleConfig {
             name: Some("lean".into()),
             model_tier: Some(ai_config::ModelTier::Mid),
             ..Default::default()
@@ -521,9 +521,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_pure_config_profession() {
+    fn parse_pure_config_role() {
         let src = r#"
-            profession {
+            role {
                 name : "my-coder"
                 model : "glm-4.6"
                 temperature : 0.25
@@ -532,7 +532,7 @@ mod tests {
                 tools : [read_file, write_file]
             }
         "#;
-        let cfg = parse_at_profession(src).unwrap();
+        let cfg = parse_at_role(src).unwrap();
         assert_eq!(cfg.name.as_deref(), Some("my-coder"));
         assert_eq!(cfg.model.as_deref(), Some("glm-4.6"));
         assert!((cfg.temperature.unwrap() - 0.25).abs() < 1e-9);
@@ -543,16 +543,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_non_profession_root() {
+    fn parse_rejects_non_role_root() {
         let src = "workflow { name : \"x\" }";
-        let err = parse_at_profession(src).unwrap_err();
+        let err = parse_at_role(src).unwrap_err();
         assert!(matches!(err, AgentError::Config(_)));
     }
 
     #[test]
-    fn load_pure_config_builds_profession() {
+    fn load_pure_config_builds_role() {
         let src = r#"
-            profession {
+            role {
                 name : "p"
                 model : "glm-4.6"
                 temperature : 0.4
@@ -561,7 +561,7 @@ mod tests {
                 tools : [a, b]
             }
         "#;
-        let p = load_profession(src).unwrap();
+        let p = load_role(src).unwrap();
         assert_eq!(p.name(), "p");
         assert_eq!(p.system_prompt(), "be precise");
         assert_eq!(p.model(), "glm-4.6");
@@ -572,8 +572,8 @@ mod tests {
 
     #[test]
     fn load_pure_config_without_prompt_errors() {
-        let src = r#"profession { name : "p" }"#;
-        let err = load_profession(src).err().unwrap();
+        let src = r#"role { name : "p" }"#;
+        let err = load_role(src).err().unwrap();
         assert!(matches!(err, AgentError::Config(_)));
     }
 
@@ -581,7 +581,7 @@ mod tests {
     fn load_inherit_overrides_model_and_temperature() {
         // Coder defaults: temperature 0.3, max_turns 40.
         let src = r#"
-            profession {
+            role {
                 name : "precise-coder"
                 inherit : "coder"
                 model : "glm-4.6-air"
@@ -589,7 +589,7 @@ mod tests {
                 max_turns : 5
             }
         "#;
-        let p = load_profession(src).unwrap();
+        let p = load_role(src).unwrap();
         assert_eq!(p.name(), "precise-coder");
         assert_eq!(p.model(), "glm-4.6-air"); // overridden
         assert!((p.temperature() - 0.1).abs() < 1e-9); // overridden
@@ -601,12 +601,12 @@ mod tests {
     #[test]
     fn load_inherit_keeps_unset_fields_from_builtin() {
         let src = r#"
-            profession {
+            role {
                 name : "x"
                 inherit : "coder"
             }
         "#;
-        let p = load_profession(src).unwrap();
+        let p = load_role(src).unwrap();
         // Nothing overridden → coder's values shine through.
         assert_eq!(p.max_turns(), 40);
         assert!((p.temperature() - 0.3).abs() < 1e-9);
@@ -616,13 +616,13 @@ mod tests {
     #[test]
     fn load_inherit_system_prompt_append() {
         let src = r#"
-            profession {
+            role {
                 name : "x"
                 inherit : "coder"
                 system_prompt_append : "ALWAYS add a doc comment."
             }
         "#;
-        let p = load_profession(src).unwrap();
+        let p = load_role(src).unwrap();
         let prompt = p.system_prompt();
         assert!(prompt.contains("Soul of the Coder"));
         assert!(prompt.contains("ALWAYS add a doc comment."));
@@ -635,13 +635,13 @@ mod tests {
         // Coder has no explicit allowed_tools (empty = all). With tools_append
         // we add to an empty base.
         let src = r#"
-            profession {
+            role {
                 name : "x"
                 inherit : "coder"
                 tools_append : [custom_tool]
             }
         "#;
-        let p = load_profession(src).unwrap();
+        let p = load_role(src).unwrap();
         assert!(p.allowed_tools().contains(&"custom_tool".to_string()));
     }
 
@@ -649,30 +649,30 @@ mod tests {
     fn load_inherit_replace_tool() {
         // Plain tool list (no +) replaces.
         let src = r#"
-            profession {
+            role {
                 name : "x"
                 inherit : "coder"
                 tools : [only_this]
             }
         "#;
-        let p = load_profession(src).unwrap();
+        let p = load_role(src).unwrap();
         assert_eq!(p.allowed_tools(), vec!["only_this".to_string()]);
     }
 
     #[test]
     fn load_inherit_unknown_builtin_errors() {
-        let src = r#"profession { name : "x", inherit : "nope" }"#;
-        let err = load_profession(src).err().unwrap();
+        let src = r#"role { name : "x", inherit : "nope" }"#;
+        let err = load_role(src).err().unwrap();
         assert!(matches!(err, AgentError::Config(_)));
     }
 
     #[test]
     fn merge_over_append_tools() {
-        let base = ProfessionConfig {
+        let base = RoleConfig {
             tools: Some(vec!["a".into(), "b".into()]),
             ..Default::default()
         };
-        let over = ProfessionConfig {
+        let over = RoleConfig {
             tools_append: Some(vec!["c".into()]),
             ..Default::default()
         };
@@ -685,11 +685,11 @@ mod tests {
 
     #[test]
     fn merge_over_replace_tools() {
-        let base = ProfessionConfig {
+        let base = RoleConfig {
             tools: Some(vec!["a".into()]),
             ..Default::default()
         };
-        let over = ProfessionConfig {
+        let over = RoleConfig {
             tools: Some(vec!["x".into(), "y".into()]),
             ..Default::default()
         };
@@ -699,11 +699,11 @@ mod tests {
 
     #[test]
     fn merge_over_accumulates_prompt_append() {
-        let base = ProfessionConfig {
+        let base = RoleConfig {
             system_prompt_append: Some("base-extra".into()),
             ..Default::default()
         };
-        let over = ProfessionConfig {
+        let over = RoleConfig {
             system_prompt_append: Some("mine-extra".into()),
             ..Default::default()
         };

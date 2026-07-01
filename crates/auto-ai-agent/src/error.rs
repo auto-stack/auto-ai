@@ -35,7 +35,7 @@ pub enum AgentError {
     /// The loop detected a tool being called identically in a tight cycle.
     #[error("loop detected: tool '{0}' called with identical args repeatedly")]
     LoopDetected(String),
-    /// A Profession or Workflow configuration was malformed (later phases).
+    /// A Role or Workflow configuration was malformed (later phases).
     #[error("config error: {0}")]
     Config(String),
 }

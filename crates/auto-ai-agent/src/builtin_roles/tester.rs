@@ -1,17 +1,17 @@
-//! The Tester profession — writes/runs tests, verifies behavior.
+//! The Tester role — writes/runs tests, verifies behavior.
 //!
 //! Soul ported verbatim from AutoForge's `relay/souls/tester.md`. Defaults
 //! (max_turns=40, pro-tier model, moderate temperature) follow AutoForge's
-//! `relay/profession.rs`.
+//! `relay/role.rs`.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = include_str!("../../resources/souls/tester.md");
 
 /// The Tester: produces tests, runs them, and reports failures precisely.
 pub struct Tester;
 
-impl Profession for Tester {
+impl Role for Tester {
     fn name(&self) -> &str {
         "tester"
     }

@@ -1,17 +1,17 @@
-//! The Reviewer profession — reviews code/design, catches issues.
+//! The Reviewer role — reviews code/design, catches issues.
 //!
 //! Soul ported verbatim from AutoForge's `relay/souls/reviewer.md`. Defaults
 //! (max_turns=50, max-tier model, low temperature for rigorous analysis)
-//! follow AutoForge's `relay/profession.rs`.
+//! follow AutoForge's `relay/role.rs`.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = include_str!("../../resources/souls/reviewer.md");
 
 /// The Reviewer: audits work, finds defects, and reports findings precisely.
 pub struct Reviewer;
 
-impl Profession for Reviewer {
+impl Role for Reviewer {
     fn name(&self) -> &str {
         "reviewer"
     }

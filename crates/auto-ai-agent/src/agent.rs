@@ -1,6 +1,6 @@
 //! The autonomous agent (Layer 3 core).
 //!
-//! An [`Agent`] binds a [`Profession`] (personality), a [`ToolRegistry`]
+//! An [`Agent`] binds a [`Role`] (personality), a [`ToolRegistry`]
 //! (capabilities), a [`Memory`] (conversation), and a [`Client`] (LLM
 //! transport) into a single ReAct loop in [`Agent::run`].
 //!
@@ -18,7 +18,7 @@ use auto_ai_client::{
 
 use crate::error::AgentError;
 use crate::memory::Memory;
-use crate::profession::Profession;
+use crate::role_def::Role;
 use crate::tool::{tool_to_definition, ToolRegistry};
 
 /// After how many identical (tool, args) repeats the loop bails out as a cycle.
@@ -107,7 +107,7 @@ pub struct AgentResult {
 
 /// An autonomous agent that drives an LLM toward a goal via a ReAct loop.
 pub struct Agent {
-    profession: Arc<dyn Profession>,
+    role: Arc<dyn Role>,
     tools: ToolRegistry,
     memory: Memory,
     client: Arc<dyn Client>,
@@ -122,12 +122,12 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Build a new agent from a Profession, an LLM transport, and the
-    /// Profession's memory-limit preference.
-    pub fn new<P: Profession + 'static>(profession: P, client: Arc<dyn Client>) -> Self {
-        let limit = profession.memory_limit();
+    /// Build a new agent from a Role, an LLM transport, and the
+    /// Role's memory-limit preference.
+    pub fn new<P: Role + 'static>(role: P, client: Arc<dyn Client>) -> Self {
+        let limit = role.memory_limit();
         Self {
-            profession: Arc::new(profession),
+            role: Arc::new(role),
             tools: ToolRegistry::new(),
             memory: Memory::new(limit),
             client,
@@ -137,7 +137,7 @@ impl Agent {
     }
 
     /// Inject project context (e.g. the contents of `.musk.md` or `CLAUDE.md`)
-    /// into the system prompt. It's prepended before the profession's soul, so
+    /// into the system prompt. It's prepended before the role's soul, so
     /// the agent starts every turn knowing the project's tech stack, conventions,
     /// and common commands — without having to re-explore from scratch.
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
@@ -211,9 +211,9 @@ impl Agent {
         &self.tools
     }
 
-    /// The Profession this agent embodies.
-    pub fn profession(&self) -> &dyn Profession {
-        self.profession.as_ref()
+    /// The Role this agent embodies.
+    pub fn role(&self) -> &dyn Role {
+        self.role.as_ref()
     }
 
     /// Current conversation memory (system prompt is injected at run time, not
@@ -231,12 +231,12 @@ impl Agent {
     ///
     /// Each turn: ask the model, execute any tool calls, feed results back.
     /// Stops when the model replies with plain text (no tool calls), the
-    /// Profession's `max_turns` is hit, or a tool-call cycle is detected.
+    /// Role's `max_turns` is hit, or a tool-call cycle is detected.
     pub async fn run(&mut self, task: &str) -> Result<AgentResult, AgentError> {
         // Seed the conversation with the user task.
         self.memory.add("user", task);
 
-        let max_turns = self.profession.max_turns();
+        let max_turns = self.role.max_turns();
         let mut result = AgentResult::default();
         // Track how many times each (tool, args) pair has recurred, for loop
         // detection (ported from AutoForge turn.rs:396-427).
@@ -333,7 +333,7 @@ impl Agent {
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
     ) -> Result<AgentResult, AgentError> {
         self.memory.add("user", task);
-        let max_turns = self.profession.max_turns();
+        let max_turns = self.role.max_turns();
         let mut result = AgentResult::default();
         let mut seen: HashMap<String, usize> = HashMap::new();
 
@@ -367,7 +367,7 @@ impl Agent {
             //
             // For MVP streaming we support the *single-turn final answer* path:
             // if tools are involved, fall back to non-streaming for that turn.
-            if !self.tools.is_empty() && self.profession.allowed_tools().is_empty()
+            if !self.tools.is_empty() && self.role.allowed_tools().is_empty()
                 || !self.tools.is_empty()
             {
                 // Re-run non-streaming to reliably capture tool_calls + usage.
@@ -456,40 +456,40 @@ impl Agent {
     }
 
     /// Build the completion request for the current turn: system prompt from
-    /// the Profession, the profession's tier/model, the full memory, and the
-    /// tools the Profession allows.
+    /// the Role, the role's tier/model, the full memory, and the
+    /// tools the Role allows.
     fn build_request(&self) -> CompletionRequest {
-        let allowed = self.profession.allowed_tools();
+        let allowed = self.role.allowed_tools();
         let visible = self.tools.filter(&allowed);
         let tool_defs = visible
             .iter()
             .map(|t| tool_to_definition(t.as_ref()))
             .collect();
 
-        // Model selection: if the profession pins a concrete model id (non-
+        // Model selection: if the role pins a concrete model id (non-
         // empty), use it. Otherwise emit a tier token ("tier:<tier>") that the
-        // daemon resolves to a concrete model from its config — so professions
+        // daemon resolves to a concrete model from its config — so roles
         // declare capability (tier), not a specific model.
         let model = {
-            let pinned = self.profession.model();
+            let pinned = self.role.model();
             if !pinned.is_empty() {
                 pinned.to_string()
             } else {
                 format!(
                     "tier:{}",
-                    self.profession.model_tier().display_name().to_ascii_lowercase()
+                    self.role.model_tier().display_name().to_ascii_lowercase()
                 )
             }
         };
 
-        // Build the system prompt: project context (if any) + profession soul +
+        // Build the system prompt: project context (if any) + role soul +
         // (if a SkillTool is registered) the available-skills directory.
         let mut system_prompt = String::new();
         if let Some(ctx) = &self.context_block {
             system_prompt.push_str(ctx);
             system_prompt.push_str("\n\n---\n\n");
         }
-        system_prompt.push_str(self.profession.system_prompt());
+        system_prompt.push_str(self.role.system_prompt());
         if let Some(block) = &self.skills_block {
             system_prompt.push_str(block);
         }
@@ -498,7 +498,7 @@ impl Agent {
             model,
             messages: self.memory.to_messages(),
             max_tokens: None,
-            temperature: Some(self.profession.temperature()),
+            temperature: Some(self.role.temperature()),
             system_prompt: Some(system_prompt),
             tools: tool_defs,
             stream: false,
@@ -519,14 +519,14 @@ mod tests {
     // Returns canned responses in order, so we can drive the ReAct loop
     // deterministically.
 
-    struct MockProfession;
+    struct MockRole;
 
-    impl Profession for MockProfession {
+    impl Role for MockRole {
         fn name(&self) -> &str {
             "mock"
         }
         fn system_prompt(&self) -> &str {
-            "you are a test profession"
+            "you are a test role"
         }
         fn max_turns(&self) -> usize {
             5
@@ -614,7 +614,7 @@ mod tests {
             tool_resp("add_one", "c1", json!({"n": 1})),
             text_resp("2"),
         ]);
-        let mut agent = Agent::new(MockProfession, client as Arc<dyn Client>);
+        let mut agent = Agent::new(MockRole, client as Arc<dyn Client>);
         agent.register_tool(AddOne);
 
         let result = agent.run("what is 1+1?").await.unwrap();
@@ -628,7 +628,7 @@ mod tests {
     #[tokio::test]
     async fn run_no_tools_immediate_answer() {
         let client = mock_client(vec![text_resp("hello!")]);
-        let mut agent = Agent::new(MockProfession, client as Arc<dyn Client>);
+        let mut agent = Agent::new(MockRole, client as Arc<dyn Client>);
         let result = agent.run("hi").await.unwrap();
         assert_eq!(result.turns, 1);
         assert_eq!(result.output, "hello!");
@@ -637,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_exceeds_max_turns() {
-        // Profession max_turns = 5. Feed 5 tool calls then it would still want
+        // Role max_turns = 5. Feed 5 tool calls then it would still want
         // a tool → should error with MaxTurnsExceeded.
         let client = mock_client(vec![
             tool_resp("add_one", "c1", json!({"n":1})),
@@ -646,7 +646,7 @@ mod tests {
             tool_resp("add_one", "c4", json!({"n":4})),
             tool_resp("add_one", "c5", json!({"n":5})),
         ]);
-        let mut agent = Agent::new(MockProfession, client as Arc<dyn Client>);
+        let mut agent = Agent::new(MockRole, client as Arc<dyn Client>);
         agent.register_tool(AddOne);
 
         let err = agent.run("keep going").await.unwrap_err();
@@ -664,7 +664,7 @@ mod tests {
             tool_resp("add_one", "c2", json!({"n":1})),
             tool_resp("add_one", "c3", json!({"n":1})),
         ]);
-        let mut agent = Agent::new(MockProfession, client as Arc<dyn Client>);
+        let mut agent = Agent::new(MockRole, client as Arc<dyn Client>);
         agent.register_tool(AddOne);
 
         let err = agent.run("loop").await.unwrap_err();
@@ -677,16 +677,16 @@ mod tests {
     #[test]
     fn build_request_carries_system_prompt_and_tools() {
         let client = mock_client(vec![]);
-        let mut agent = Agent::new(MockProfession, client as Arc<dyn Client>);
+        let mut agent = Agent::new(MockRole, client as Arc<dyn Client>);
         agent.register_tool(AddOne);
         agent.memory.add("user", "hi");
 
         let req = agent.build_request();
-        assert_eq!(req.system_prompt.as_deref(), Some("you are a test profession"));
-        // MockProfession's model() is empty → tier token emitted.
+        assert_eq!(req.system_prompt.as_deref(), Some("you are a test role"));
+        // MockRole's model() is empty → tier token emitted.
         assert_eq!(req.model, "tier:mid");
         assert!((req.temperature.unwrap() - 0.3).abs() < 1e-9);
-        // MockProfession.allowed_tools() is empty → all tools visible.
+        // MockRole.allowed_tools() is empty → all tools visible.
         assert_eq!(req.tools.len(), 1);
         assert_eq!(req.tools[0].name, "add_one");
         // Memory carries the seeded user message.
@@ -696,27 +696,27 @@ mod tests {
     #[test]
     fn build_request_injects_context_block() {
         let client = mock_client(vec![]);
-        // No context → bare profession prompt.
-        let mut agent = Agent::new(MockProfession, client.clone());
+        // No context → bare role prompt.
+        let mut agent = Agent::new(MockRole, client.clone());
         agent.memory.add("user", "hi");
         let req = agent.build_request();
-        assert!(req.system_prompt.as_deref().unwrap().starts_with("you are a test profession"));
+        assert!(req.system_prompt.as_deref().unwrap().starts_with("you are a test role"));
         assert!(!req.system_prompt.as_deref().unwrap().contains("PROJECT_CONTEXT"));
 
-        // With context → prepended before the profession soul.
-        let mut agent2 = Agent::new(MockProfession, client)
+        // With context → prepended before the role soul.
+        let mut agent2 = Agent::new(MockRole, client)
             .with_context("PROJECT_CONTEXT: this is a Rust project.");
         agent2.memory.add("user", "hi");
         let req2 = agent2.build_request();
         let sys = req2.system_prompt.as_deref().unwrap();
         assert!(sys.starts_with("PROJECT_CONTEXT"));
-        assert!(sys.contains("you are a test profession")); // profession still present
+        assert!(sys.contains("you are a test role")); // role still present
     }
 
     #[test]
     fn with_context_file_missing_is_noop() {
         let client = mock_client(vec![]);
-        let agent = Agent::new(MockProfession, client)
+        let agent = Agent::new(MockRole, client)
             .with_context_file("/nonexistent/context.md");
         // No panic, no context set.
         assert!(agent.context_block.is_none());
@@ -727,7 +727,7 @@ mod tests {
         let path = std::env::temp_dir().join("musk_ctx_file_test.md");
         std::fs::write(&path, "# Project\n\nThis is a test project.").unwrap();
         let client = mock_client(vec![]);
-        let agent = Agent::new(MockProfession, client)
+        let agent = Agent::new(MockRole, client)
             .with_context_file(&path);
         assert!(agent.context_block.is_some());
         assert!(agent.context_block.as_deref().unwrap().contains("test project"));
@@ -738,7 +738,7 @@ mod tests {
     fn build_request_injects_skill_block_when_skilltool_registered() {
         let client = mock_client(vec![]);
         // 1. No SkillTool → plain system prompt.
-        let mut agent = Agent::new(MockProfession, client.clone());
+        let mut agent = Agent::new(MockRole, client.clone());
         agent.memory.add("user", "hi");
         let req = agent.build_request();
         assert!(!req.system_prompt.as_deref().unwrap().contains("<available_skills>"));
@@ -757,12 +757,12 @@ mod tests {
         let registry = StdArc::new(SkillRegistry::scan(&tmp));
         let skill_tool = crate::SkillTool::new(registry);
 
-        let mut agent2 = Agent::new(MockProfession, client);
+        let mut agent2 = Agent::new(MockRole, client);
         agent2.register_skill_tool(skill_tool);
         agent2.memory.add("user", "hi");
         let req2 = agent2.build_request();
         let sys = req2.system_prompt.as_deref().unwrap();
-        assert!(sys.starts_with("you are a test profession"));
+        assert!(sys.starts_with("you are a test role"));
         assert!(sys.contains("<available_skills>"));
         assert!(sys.contains("demo"));
         assert!(sys.contains("a demo skill"));

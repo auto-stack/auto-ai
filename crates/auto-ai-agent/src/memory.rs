@@ -2,7 +2,7 @@
 //!
 //! A thin ring buffer over [`auto_ai_client::Message`] that keeps the system
 //! message(s) plus the most recent turns, trimming older history once the
-//! Profession's `memory_limit` is exceeded.
+//! Role's `memory_limit` is exceeded.
 
 use auto_ai_client::Message;
 

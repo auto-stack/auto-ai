@@ -1,7 +1,7 @@
 //! The Workflow engine (design doc §5–6).
 //!
 //! A [`Workflow`] chains [`Agent`]s into a multi-step plan: each step is a
-//! `relay` that loads a Profession, substitutes `$var` references from a
+//! `relay` that loads a Role, substitutes `$var` references from a
 //! shared context, optionally skips on a `condition`, runs an Agent, and
 //! stores its output. Steps run in topological order (by `depends_on`).
 //!
@@ -13,20 +13,20 @@
 //!     steps : [
 //!         relay {
 //!             id : "architect"
-//!             profession : "architect"
+//!             role : "architect"
 //!             input : "$user_request"
 //!             output : "$design_doc"
 //!         }
 //!         relay {
 //!             id : "coder"
-//!             profession : "coder"
+//!             role : "coder"
 //!             input : "implement based on:\n$design_doc"
 //!             output : "$code_result"
 //!             depends_on : ["architect"]
 //!         }
 //!         relay {
 //!             id : "reviewer"
-//!             profession : "reviewer"
+//!             role : "reviewer"
 //!             input : "review:\n$code_result"
 //!             output : "$review"
 //!             depends_on : ["coder"]
@@ -44,8 +44,8 @@ use auto_val::Value;
 
 use crate::agent::Client;
 use crate::error::AgentError;
-use crate::profession::Profession;
-use crate::professions::load_builtin;
+use crate::role_def::Role;
+use crate::builtin_roles::load_builtin;
 use crate::tool::Tool;
 use crate::Agent;
 
@@ -82,7 +82,7 @@ pub enum Gate {
 #[derive(Clone, Debug)]
 pub struct WorkflowStep {
     pub id: String,
-    pub profession: String,
+    pub role: String,
     pub input_template: String,
     pub output_var: String,
     pub depends_on: Vec<String>,
@@ -99,7 +99,7 @@ pub struct WorkflowStep {
 }
 
 impl WorkflowStep {
-    /// Run this step's profession as an Agent, returning its output.
+    /// Run this step's role as an Agent, returning its output.
     ///
     /// `profession_resolver` is `Arc<dyn Fn + Send + Sync>` so the returned
     /// future is `Send` (required for use in async runtimes like axum's).
@@ -108,13 +108,13 @@ impl WorkflowStep {
         context: &WorkflowContext,
         tools: &[Arc<dyn Tool>],
         client: &Arc<dyn Client>,
-        profession_resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync>,
+        profession_resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Role>, AgentError> + Send + Sync>,
     ) -> Result<String, AgentError> {
-        let profession = profession_resolver(&self.profession)?;
+        let role = profession_resolver(&self.role)?;
         let mut agent = Agent::new(
-            // Agent::new takes ownership via Profession + 'static. We hold an
-            // Arc<dyn Profession>, so wrap it in a thin Profession adapter.
-            ArcProfession(profession),
+            // Agent::new takes ownership via Role + 'static. We hold an
+            // Arc<dyn Role>, so wrap it in a thin Role adapter.
+            ArcProfession(role),
             client.clone(),
         );
         for tool in tools {
@@ -126,12 +126,12 @@ impl WorkflowStep {
     }
 }
 
-/// Wrap an `Arc<dyn Profession>` so it can be moved into `Agent::new`, which
-/// requires `P: Profession + 'static`. (Profession is object-safe; this struct
+/// Wrap an `Arc<dyn Role>` so it can be moved into `Agent::new`, which
+/// requires `P: Role + 'static`. (Role is object-safe; this struct
 /// is the owned adapter the Agent owns.)
-struct ArcProfession(Arc<dyn Profession>);
+struct ArcProfession(Arc<dyn Role>);
 
-impl Profession for ArcProfession {
+impl Role for ArcProfession {
     fn name(&self) -> &str {
         self.0.name()
     }
@@ -271,7 +271,7 @@ impl Workflow {
         let mut context = WorkflowContext::new(initial_input);
         let mut result = WorkflowResult::default();
 
-        let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync> =
+        let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Role>, AgentError> + Send + Sync> =
             Arc::new(|name: &str| resolve_profession(name));
 
         // Index-based loop so on_fail can rewind (retry an earlier step).
@@ -381,11 +381,11 @@ impl Workflow {
 
             on_event(WorkflowEvent::StepStart {
                 step_id: step.id.clone(),
-                profession: step.profession.clone(),
+                role: step.role.clone(),
                 input: context.substitute(&step.input_template),
             });
 
-            let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Profession>, AgentError> + Send + Sync> =
+            let resolver: Arc<dyn Fn(&str) -> Result<Arc<dyn Role>, AgentError> + Send + Sync> =
                 Arc::new(|name: &str| resolve_profession(name));
             let output = step.run(&context, tools, &client, resolver).await?;
 
@@ -417,7 +417,7 @@ pub enum WorkflowEvent {
     /// A step is about to run.
     StepStart {
         step_id: String,
-        profession: String,
+        role: String,
         input: String,
     },
     /// A step finished with this output.
@@ -435,20 +435,20 @@ pub enum WorkflowEvent {
     },
 }
 
-/// Resolve a profession name: builtin first, else `.at` profession by file
+/// Resolve a role name: builtin first, else `.at` role by file
 /// path, else error.
-fn resolve_profession(name: &str) -> Result<Arc<dyn Profession>, AgentError> {
+fn resolve_profession(name: &str) -> Result<Arc<dyn Role>, AgentError> {
     if let Some(p) = load_builtin(name) {
         return Ok(p);
     }
-    // Treat the name as a path to a .at profession file.
+    // Treat the name as a path to a .at role file.
     let content = std::fs::read_to_string(name).map_err(|e| {
         AgentError::Config(format!(
-            "profession '{}' is not a builtin and could not be read as a file: {e}",
+            "role '{}' is not a builtin and could not be read as a file: {e}",
             name
         ))
     })?;
-    crate::config::load_profession(&content)
+    crate::config::load_role(&content)
 }
 
 // ── Topological sort (Kahn's algorithm) ────────────────────────────────────
@@ -622,7 +622,7 @@ pub fn parse_at_workflow(content: &str) -> Result<Workflow, AgentError> {
 
 fn parse_relay_node(node: &auto_val::Node) -> Result<WorkflowStep, AgentError> {
     let id = opt_string_req(node, "id")?;
-    let profession = opt_string_req(node, "profession")?;
+    let role = opt_string_req(node, "role")?;
     let input_template = opt_string_req(node, "input")?;
     let output_var = opt_string_req(node, "output")?;
     let depends_on = opt_string_list(node, "depends_on").unwrap_or_default();
@@ -636,7 +636,7 @@ fn parse_relay_node(node: &auto_val::Node) -> Result<WorkflowStep, AgentError> {
     };
     Ok(WorkflowStep {
         id,
-        profession,
+        role,
         input_template,
         output_var,
         depends_on,
@@ -804,13 +804,13 @@ mod tests {
                 steps : [
                     relay {
                         id : "a"
-                        profession : "coder"
+                        role : "coder"
                         input : "$user_request"
                         output : "$a_out"
                     }
                     relay {
                         id : "b"
-                        profession : "coder"
+                        role : "coder"
                         input : "from a: $a_out"
                         output : "$b_out"
                         depends_on : ["a"]
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_non_workflow_root() {
-        let src = "profession { name : \"x\" }";
+        let src = "role { name : \"x\" }";
         assert!(parse_at_workflow(src).is_err());
     }
     #[test]
@@ -835,7 +835,7 @@ mod tests {
         let steps = vec![
             WorkflowStep {
                 id: "a".into(),
-                profession: "coder".into(),
+                role: "coder".into(),
                 input_template: "".into(),
                 output_var: "$a".into(),
                 depends_on: vec![],
@@ -847,7 +847,7 @@ mod tests {
             },
             WorkflowStep {
                 id: "b".into(),
-                profession: "coder".into(),
+                role: "coder".into(),
                 input_template: "".into(),
                 output_var: "$b".into(),
                 depends_on: vec!["a".into()],
@@ -867,7 +867,7 @@ mod tests {
         let steps = vec![
             WorkflowStep {
                 id: "a".into(),
-                profession: "x".into(),
+                role: "x".into(),
                 input_template: "".into(),
                 output_var: "$a".into(),
                 depends_on: vec!["b".into()],
@@ -879,7 +879,7 @@ mod tests {
             },
             WorkflowStep {
                 id: "b".into(),
-                profession: "x".into(),
+                role: "x".into(),
                 input_template: "".into(),
                 output_var: "$b".into(),
                 depends_on: vec!["a".into()],
@@ -898,7 +898,7 @@ mod tests {
     fn topo_sort_unknown_dependency_errors() {
         let steps = vec![WorkflowStep {
             id: "a".into(),
-            profession: "x".into(),
+            role: "x".into(),
             input_template: "".into(),
             output_var: "$a".into(),
             depends_on: vec!["nope".into()],
@@ -940,13 +940,13 @@ mod tests {
                 steps : [
                     relay {
                         id : "a"
-                        profession : "coder"
+                        role : "coder"
                         input : "$user_request"
                         output : "$a_out"
                     }
                     relay {
                         id : "b"
-                        profession : "coder"
+                        role : "coder"
                         input : "GOT: $a_out"
                         output : "$b_out"
                         depends_on : ["a"]
@@ -978,13 +978,13 @@ mod tests {
                 steps : [
                     relay {
                         id : "first"
-                        profession : "coder"
+                        role : "coder"
                         input : "$user_request"
                         output : "$first_out"
                     }
                     relay {
                         id : "second"
-                        profession : "coder"
+                        role : "coder"
                         input : "should not run"
                         output : "$second_out"
                         depends_on : ["first"]
@@ -1010,10 +1010,10 @@ mod tests {
             workflow {
                 name : "diamond"
                 steps : [
-                    relay { id : "a", profession : "coder", input : "$user_request", output : "$a" }
-                    relay { id : "b", profession : "coder", input : "$a", output : "$b", depends_on : ["a"] }
-                    relay { id : "c", profession : "coder", input : "$a", output : "$c", depends_on : ["a"] }
-                    relay { id : "d", profession : "coder", input : "$b $c", output : "$d", depends_on : ["b", "c"] }
+                    relay { id : "a", role : "coder", input : "$user_request", output : "$a" }
+                    relay { id : "b", role : "coder", input : "$a", output : "$b", depends_on : ["a"] }
+                    relay { id : "c", role : "coder", input : "$a", output : "$c", depends_on : ["a"] }
+                    relay { id : "d", role : "coder", input : "$b $c", output : "$d", depends_on : ["b", "c"] }
                 ]
             }
             "#,
@@ -1032,7 +1032,7 @@ mod tests {
         let src = r#"
             workflow {
                 steps : [
-                    relay { id : "a", profession : "coder", input : "x" }
+                    relay { id : "a", role : "coder", input : "x" }
                 ]
             }
         "#;
@@ -1047,7 +1047,7 @@ mod tests {
                 steps : [
                     relay {
                         id : "reviewer"
-                        profession : "reviewer"
+                        role : "reviewer"
                         input : "review"
                         output : "$review"
                         validate : [
@@ -1078,7 +1078,7 @@ mod tests {
         let src = r#"
             workflow {
                 steps : [
-                    relay { id : "a", profession : "coder", input : "x", output : "$y" }
+                    relay { id : "a", role : "coder", input : "x", output : "$y" }
                 ]
             }
         "#;
@@ -1136,7 +1136,7 @@ mod tests {
             name: "test".into(),
             steps: vec![WorkflowStep {
                 id: "checker".into(),
-                profession: "coder".into(),
+                role: "coder".into(),
                 input_template: "say hi".into(),
                 output_var: "$out".into(),
                 depends_on: vec![],

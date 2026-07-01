@@ -1,24 +1,24 @@
-//! The [`Profession`] trait (design doc §3.1).
+//! The [`Role`] trait (design doc §3.1).
 //!
-//! A Profession bundles the *personality* of an agent: its system prompt
+//! A Role bundles the *personality* of an agent: its system prompt
 //! (the tuned "soul") plus a model **tier** + temperature/turn-budget/tool
-//! policy. Built-in Professions live in [`crate::professions`]; `.at`-config
+//! policy. Built-in Professions live in [`crate::builtin_roles`]; `.at`-config
 //! Professions build on top.
 //!
-//! **Model selection via tier** (ported from auto-forge): a Profession declares
-//! the capability tier it needs ([`Profession::model_tier`]); the daemon
+//! **Model selection via tier** (ported from auto-forge): a Role declares
+//! the capability tier it needs ([`Role::model_tier`]); the daemon
 //! resolves that tier to a concrete model at request time (see
 //! `ai_config::tier`). This decouples "what capability" from "which model id"
-//! — swap models by editing config, not code. [`Profession::model`] is an
+//! — swap models by editing config, not code. [`Role::model`] is an
 //! optional concrete-id override (empty = use the tier).
 
 use ai_config::ModelTier;
 
-/// A Profession describes how an agent should behave.
+/// A Role describes how an agent should behave.
 ///
-/// Only [`Profession::name`] and [`Profession::system_prompt`] are required;
+/// Only [`Role::name`] and [`Role::system_prompt`] are required;
 /// every other method has a sensible default that an implementor overrides.
-pub trait Profession: Send + Sync {
+pub trait Role: Send + Sync {
     /// Role name ("coder", "reviewer", ...).
     fn name(&self) -> &str;
 
@@ -32,7 +32,7 @@ pub trait Profession: Send + Sync {
     }
 
     /// Optional concrete model id override. Empty (default) = "resolve via
-    /// [`Self::model_tier`]". Set this only when a profession must pin a
+    /// [`Self::model_tier`]". Set this only when a role must pin a
     /// specific model regardless of tier resolution.
     fn model(&self) -> &str {
         ""
@@ -90,13 +90,13 @@ pub trait Profession: Send + Sync {
 mod tests {
     use super::*;
 
-    /// A minimal Profession for trait-level tests; the real library lives in
-    /// `crate::professions`.
+    /// A minimal Role for trait-level tests; the real library lives in
+    /// `crate::builtin_roles`.
     struct StubProfession {
         prompt: String,
     }
 
-    impl Profession for StubProfession {
+    impl Role for StubProfession {
         fn name(&self) -> &str {
             "stub"
         }

@@ -1,8 +1,8 @@
 //! Runtime model validation for Professions.
 //!
-//! A Profession names a model (e.g. `"glm-4.6"`) that the daemon must be able
-//! to serve. [`validate_profession_model`] loads the client config
-//! (`~/.config/autoos/ai-client.at`) and checks the Profession's model exists
+//! A Role names a model (e.g. `"glm-4.6"`) that the daemon must be able
+//! to serve. [`validate_role_model`] loads the client config
+//! (`~/.config/autoos/ai-client.at`) and checks the Role's model exists
 //! in some provider, failing fast with a clear message instead of a confusing
 //! daemon 404 at run time.
 //!
@@ -11,16 +11,16 @@
 //! warning rather than fatal.
 
 use crate::error::AgentError;
-use crate::profession::Profession;
+use crate::role_def::Role;
 
-/// Validate that a Profession's `model()` is configured in the client config.
+/// Validate that a Role's `model()` is configured in the client config.
 ///
 /// Reads `~/.config/autoos/ai-client.at` (single-root `client { … }` format),
 /// parses it via `ai-config`, and checks `model` against every provider's
 /// `models` list.
-pub fn validate_profession_model(profession: &dyn Profession) -> Result<(), AgentError> {
+pub fn validate_role_model(role: &dyn Role) -> Result<(), AgentError> {
     let cfg = load_client_config()?;
-    ai_config::validate_model_exists(&cfg, profession.model()).map_err(AgentError::Config)
+    ai_config::validate_model_exists(&cfg, role.model()).map_err(AgentError::Config)
 }
 
 /// Load the client config from the standard path. Errors if the file is
@@ -39,7 +39,7 @@ mod tests {
     use super::*;
 
     struct FixedModel(&'static str);
-    impl Profession for FixedModel {
+    impl Role for FixedModel {
         fn name(&self) -> &str {
             "fixed"
         }
@@ -78,12 +78,12 @@ mod tests {
 
     #[test]
     fn load_client_config_missing_home_is_clean_error() {
-        // validate_profession_model must return a Config error (not panic)
+        // validate_role_model must return a Config error (not panic)
         // when the config file isn't present. We point HOME elsewhere by
-        // validating against a Profession whose model we don't check — the
+        // validating against a Role whose model we don't check — the
         // failure happens at the file-read step regardless.
         let p = FixedModel("glm-4.6");
-        let res = validate_profession_model(&p);
+        let res = validate_role_model(&p);
         // Either the user's real config validates, or it errors cleanly —
         // never panics.
         match res {

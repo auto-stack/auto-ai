@@ -1,17 +1,17 @@
-//! The Architect profession — designs structure/specs.
+//! The Architect role — designs structure/specs.
 //!
 //! Soul ported verbatim from AutoForge's `relay/souls/architect.md`. Defaults
 //! (max_turns=40, max-tier model, low temperature for determinism) follow
-//! AutoForge's `relay/profession.rs`.
+//! AutoForge's `relay/role.rs`.
 
-use crate::profession::Profession;
+use crate::role_def::Role;
 
 const SOUL: &str = include_str!("../../resources/souls/architect.md");
 
 /// The Architect: designs architecture and writes specs/section-structure.
 pub struct Architect;
 
-impl Profession for Architect {
+impl Role for Architect {
     fn name(&self) -> &str {
         "architect"
     }

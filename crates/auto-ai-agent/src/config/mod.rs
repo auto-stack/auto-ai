@@ -1,10 +1,10 @@
-//! `.at` (Atom) configuration parsing for Professions, using the shared
+//! `.at` (Atom) configuration parsing for Roles, using the shared
 //! [`auto_atom`] parser (the same one AutoForge uses).
 //!
-//! Format (one root `profession { … }` block per file):
+//! Format (one root `role { … }` block per file):
 //!
 //! ```text
-//! profession {
+//! role {
 //!     name : "coder"
 //!     model : "glm-4.6"
 //!     temperature : 0.2
@@ -18,9 +18,9 @@
 //!
 //! See `docs/auto-ai-agent-design.md` §4.4 for the inherit/merge semantics.
 
-pub mod profession_config;
+pub mod role_config;
 
-pub use profession_config::{
-    load_profession, parse_at_profession, parse_tier_field, serialize_at_role, ConfigProfession,
-    ProfessionConfig,
+pub use role_config::{
+    load_role, parse_at_role, parse_tier_field, serialize_at_role, ConfigRole,
+    RoleConfig,
 };

@@ -2,7 +2,7 @@
 //!
 //! Apps register concrete tools (file IO, shell, search, ...) and the
 //! [`crate::Agent`] exposes them to the model as callable functions. A
-//! [`Profession`][crate::Profession] can restrict which tools are visible via
+//! [`Role`][crate::Role] can restrict which tools are visible via
 //! `allowed_tools()`.
 
 use std::collections::HashMap;
@@ -87,7 +87,7 @@ impl ToolRegistry {
     }
 
     /// All tools whose name is in `filter`. If `filter` is empty, returns all
-    /// tools (matches the Profession `allowed_tools()` "empty = all" rule).
+    /// tools (matches the Role `allowed_tools()` "empty = all" rule).
     pub fn filter(&self, filter: &[String]) -> Vec<Arc<dyn Tool>> {
         if filter.is_empty() {
             return self.tools.values().cloned().collect();
