@@ -75,6 +75,9 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/config", get(config_page))
         .route("/v1/config/data", get(config_data).put(config_update))
         .route("/v1/config/test", post(config_test))
+        // Service registry (aaid as AutoOS service discovery + launch hub).
+        .route("/v1/services", get(services_list))
+        .route("/v1/services/{id}/ensure", post(services_ensure))
         // Federation remote: serve remoteEntry.js explicitly, and use
         // fallback_service for chunk files (./__federation_expose_*.js etc.)
         .route_service("/remoteEntry.js", static_service.clone())
@@ -578,4 +581,52 @@ async fn usage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         })
         .collect();
     Json(json!({"usage": apps}))
+}
+
+// ── Service Registry endpoints ──────────────────────────────────────────────
+
+/// `GET /v1/services` — list all registered services with live status.
+async fn services_list() -> impl IntoResponse {
+    let reg = crate::services::ServiceRegistry::load();
+    let mut services = Vec::new();
+    for svc in reg.list() {
+        let running = crate::services::probe_url_async(&svc.url, &svc.ready_path).await;
+        services.push(json!({
+            "id": svc.id,
+            "name": svc.name,
+            "url": svc.url,
+            "running": running,
+        }));
+    }
+    Json(json!({"services": services}))
+}
+
+/// `POST /v1/services/{id}/ensure` — ensure a service is running (start if
+/// needed), return its URL. Blocking: may take up to 15s if the service needs
+/// to be started.
+async fn services_ensure(
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let reg = crate::services::ServiceRegistry::load();
+    let id_for_closure = id.clone();
+    // Run the blocking ensure in a spawn_blocking so we don't stall the async
+    // runtime while waiting for the service to come up.
+    let result = tokio::task::spawn_blocking(move || reg.ensure(&id_for_closure))
+        .await
+        .map_err(|e| format!("internal: {e}"));
+
+    match result {
+        Ok(Ok(url)) => Json(json!({"status": "running", "url": url, "id": id}))
+            .into_response(),
+        Ok(Err(e)) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "error", "id": id, "error": e})),
+        )
+            .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "error", "id": id, "error": e})),
+        )
+            .into_response(),
+    }
 }

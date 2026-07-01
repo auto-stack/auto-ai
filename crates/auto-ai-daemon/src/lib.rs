@@ -19,6 +19,7 @@ pub mod format;
 pub mod pool;
 pub mod provider;
 pub mod server;
+pub mod services;
 pub mod sse;
 pub mod tracker;
 
