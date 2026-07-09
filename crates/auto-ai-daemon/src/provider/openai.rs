@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde_json::Value;
 
 use super::AiProvider;
 use crate::sse::SseParser;
@@ -200,16 +201,61 @@ impl AiProvider for OpenAiProvider {
         let mut parser = SseParser::new();
         let mut content = String::new();
 
+        // Accumulate tool_calls from SSE delta chunks (Plan 006).
+        #[derive(Default)]
+        struct AccumToolCall {
+            id: String,
+            name: String,
+            arguments: String,
+        }
+        let mut tool_call_accum: Vec<AccumToolCall> = Vec::new();
+        let mut finish_reason: Option<String> = None;
+
+        let process_json = |json: &serde_json::Value,
+                            content: &mut String,
+                            tool_call_accum: &mut Vec<AccumToolCall>,
+                            finish_reason: &mut Option<String>,
+                            on_delta: &Arc<dyn Fn(String) + Send + Sync>| {
+            if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                content.push_str(delta);
+                on_delta(delta.to_string());
+            }
+            if let Some(finish) = json["choices"][0]["finish_reason"].as_str() {
+                *finish_reason = Some(finish.to_string());
+            }
+            // Parse tool_calls deltas (incremental by index).
+            if let Some(tcs) = json["choices"][0]["delta"]["tool_calls"].as_array() {
+                for tc in tcs {
+                    let index = tc["index"].as_u64().map(|v| v as usize).unwrap_or(0);
+                    while tool_call_accum.len() <= index {
+                        tool_call_accum.push(AccumToolCall::default());
+                    }
+                    let accum = &mut tool_call_accum[index];
+                    if let Some(id) = tc["id"].as_str() {
+                        accum.id = id.to_string();
+                    }
+                    if let Some(name) = tc["function"]["name"].as_str() {
+                        accum.name = name.to_string();
+                    }
+                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                        accum.arguments.push_str(args);
+                    }
+                }
+            }
+        };
+
         while let Some(chunk_result) = stream.next().await {
             let bytes = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
             let data_events = parser.push(&bytes);
-
             for data in data_events {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                    if let Some(delta) = json["choices"][0]["delta"]["content"].as_str().map(|s| s.to_string()) {
-                        content.push_str(&delta);
-                        on_delta(delta);
-                    }
+                    process_json(
+                        &json,
+                        &mut content,
+                        &mut tool_call_accum,
+                        &mut finish_reason,
+                        &on_delta,
+                    );
                 }
             }
         }
@@ -217,17 +263,31 @@ impl AiProvider for OpenAiProvider {
         // Flush remaining.
         for data in parser.finish() {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str().map(|s| s.to_string()) {
-                    content.push_str(&delta);
-                    on_delta(delta);
-                }
+                process_json(
+                    &json,
+                    &mut content,
+                    &mut tool_call_accum,
+                    &mut finish_reason,
+                    &on_delta,
+                );
             }
         }
 
+        // Convert accumulated tool_calls into ToolCall structs.
+        let tool_calls: Vec<ToolCall> = tool_call_accum
+            .into_iter()
+            .filter(|tc| !tc.name.is_empty())
+            .map(|tc| ToolCall {
+                id: tc.id,
+                name: tc.name,
+                input: serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null),
+            })
+            .collect();
+
         Ok(CompletionResponse {
             content,
-            tool_calls: Vec::new(),
-            stop_reason: None,
+            tool_calls,
+            stop_reason: finish_reason,
             usage: None,
             model: req.model.clone(),
             error: None,

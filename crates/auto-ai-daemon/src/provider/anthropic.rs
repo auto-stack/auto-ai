@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde_json::Value;
 
 use super::AiProvider;
 use crate::sse::SseParser;
@@ -182,16 +183,78 @@ impl AiProvider for AnthropicProvider {
         let mut parser = SseParser::new();
         let mut content = String::new();
 
+        // Accumulate tool_use blocks from Anthropic SSE (Plan 006).
+        // content_block_start declares id+name; content_block_delta delivers
+        // input_json_delta fragments that we concatenate.
+        #[derive(Default)]
+        struct ToolBlock {
+            id: String,
+            name: String,
+            input_json: String,
+        }
+        let mut tool_blocks: Vec<ToolBlock> = Vec::new();
+        let mut stop_reason: Option<String> = None;
+
+        let process_json = |json: &serde_json::Value,
+                            content: &mut String,
+                            tool_blocks: &mut Vec<ToolBlock>,
+                            stop_reason: &mut Option<String>,
+                            on_delta: &Arc<dyn Fn(String) + Send + Sync>| {
+            let event_type = json["type"].as_str().unwrap_or("");
+
+            match event_type {
+                "content_block_delta" => {
+                    if let Some(text) = json["delta"]["text"].as_str() {
+                        content.push_str(text);
+                        on_delta(text.to_string());
+                    }
+                    // Tool input JSON fragments.
+                    if let Some(partial) = json["delta"]["partial_json"].as_str() {
+                        let index = json["index"].as_u64().map(|v| v as usize).unwrap_or(0);
+                        while tool_blocks.len() <= index {
+                            tool_blocks.push(ToolBlock::default());
+                        }
+                        tool_blocks[index].input_json.push_str(partial);
+                    }
+                }
+                "content_block_start" => {
+                    if json["content_block"]["type"] == "tool_use" {
+                        let index = json["index"].as_u64().map(|v| v as usize).unwrap_or(0);
+                        while tool_blocks.len() <= index {
+                            tool_blocks.push(ToolBlock::default());
+                        }
+                        let block = &mut tool_blocks[index];
+                        block.id = json["content_block"]["id"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string();
+                        block.name = json["content_block"]["name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                }
+                "message_delta" => {
+                    if let Some(stop) = json["delta"]["stop_reason"].as_str() {
+                        *stop_reason = Some(stop.to_string());
+                    }
+                }
+                _ => {}
+            }
+        };
+
         while let Some(chunk_result) = stream.next().await {
             let bytes = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
             let data_events = parser.push(&bytes);
-
             for data in data_events {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                    if let Some(text) = json["delta"]["text"].as_str().map(|s| s.to_string()) {
-                        content.push_str(&text);
-                        on_delta(text);
-                    }
+                    process_json(
+                        &json,
+                        &mut content,
+                        &mut tool_blocks,
+                        &mut stop_reason,
+                        &on_delta,
+                    );
                 }
             }
         }
@@ -199,17 +262,31 @@ impl AiProvider for AnthropicProvider {
         // Flush remaining.
         for data in parser.finish() {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Some(text) = json["delta"]["text"].as_str().map(|s| s.to_string()) {
-                    content.push_str(&text);
-                    on_delta(text);
-                }
+                process_json(
+                    &json,
+                    &mut content,
+                    &mut tool_blocks,
+                    &mut stop_reason,
+                    &on_delta,
+                );
             }
         }
 
+        // Convert accumulated tool blocks into ToolCall structs.
+        let tool_calls: Vec<ToolCall> = tool_blocks
+            .into_iter()
+            .filter(|tb| !tb.name.is_empty())
+            .map(|tb| ToolCall {
+                id: tb.id,
+                name: tb.name,
+                input: serde_json::from_str(&tb.input_json).unwrap_or(serde_json::Value::Null),
+            })
+            .collect();
+
         Ok(CompletionResponse {
             content,
-            tool_calls: Vec::new(),
-            stop_reason: None,
+            tool_calls,
+            stop_reason,
             usage: None,
             model: req.model.clone(),
             error: None,

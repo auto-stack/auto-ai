@@ -92,7 +92,7 @@ impl AiClient {
         &self,
         req: &CompletionRequest,
         on_event: impl Fn(serde_json::Value) + Send + 'static,
-    ) -> Result<String, ClientError> {
+    ) -> Result<CompletionResponse, ClientError> {
         let mut req = req.clone();
         req.stream = true;
 
@@ -116,6 +116,11 @@ impl AiClient {
         let mut stream = resp.bytes_stream();
         let mut sse = SseBuffer::new();
         let mut full = String::new();
+        // Collect tool_calls + metadata from the done event (Plan 006).
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut stop_reason: Option<String> = None;
+        let mut usage: Option<Usage> = None;
+        let mut model = String::new();
 
         while let Some(chunk_result) = stream.next().await {
             let bytes = chunk_result.map_err(|e| ClientError::Http(e.to_string()))?;
@@ -123,6 +128,21 @@ impl AiClient {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data_line) {
                     if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
                         full.push_str(text);
+                    }
+                    // Parse done event for tool_calls + usage + model.
+                    if value.get("type").and_then(|t| t.as_str()) == Some("done") {
+                        if let Some(tcs) = value.get("tool_calls").and_then(|t| t.as_array()) {
+                            tool_calls = tcs.iter().map(|tc| ToolCall {
+                                id: tc["id"].as_str().unwrap_or("").to_string(),
+                                name: tc["name"].as_str().unwrap_or("").to_string(),
+                                input: tc["input"].clone(),
+                            }).collect();
+                        }
+                        stop_reason = value.get("stop_reason").and_then(|t| t.as_str()).map(String::from);
+                        model = value.get("model").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                        if let Some(u) = value.get("usage") {
+                            usage = serde_json::from_value(u.clone()).ok();
+                        }
                     }
                     on_event(value);
                 }
@@ -133,11 +153,32 @@ impl AiClient {
                 if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
                     full.push_str(text);
                 }
+                if value.get("type").and_then(|t| t.as_str()) == Some("done") {
+                    if let Some(tcs) = value.get("tool_calls").and_then(|t| t.as_array()) {
+                        tool_calls = tcs.iter().map(|tc| ToolCall {
+                            id: tc["id"].as_str().unwrap_or("").to_string(),
+                            name: tc["name"].as_str().unwrap_or("").to_string(),
+                            input: tc["input"].clone(),
+                        }).collect();
+                    }
+                    stop_reason = value.get("stop_reason").and_then(|t| t.as_str()).map(String::from);
+                    model = value.get("model").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                    if let Some(u) = value.get("usage") {
+                        usage = serde_json::from_value(u.clone()).ok();
+                    }
+                }
                 on_event(value);
             }
         }
 
-        Ok(full)
+        Ok(CompletionResponse {
+            content: full,
+            tool_calls,
+            stop_reason,
+            usage,
+            model,
+            error: None,
+        })
     }
 
     /// Always true now (the client is daemon-only).

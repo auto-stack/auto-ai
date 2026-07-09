@@ -216,7 +216,17 @@ async fn streaming_response(
                 }
                 let _ = tx.try_send(format!(
                     "data: {}\n\n",
-                    json!({"type": "done", "model": resp.model, "usage": resp.usage})
+                    json!({
+                        "type": "done",
+                        "model": resp.model,
+                        "usage": resp.usage,
+                        "tool_calls": resp.tool_calls.iter().map(|tc| json!({
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.input,
+                        })).collect::<Vec<_>>(),
+                        "stop_reason": resp.stop_reason,
+                    })
                 ));
             }
             Err(e) => {
