@@ -15,10 +15,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use auto_ai_agent::{Agent, Client, Profession, Tool, ToolError};
+use auto_ai_agent::{Agent, Client, Role, Tool, ToolError};
 
-struct EchoProfession;
-impl Profession for EchoProfession {
+struct EchoRole;
+impl Role for EchoRole {
     fn name(&self) -> &str {
         "echo-test"
     }
@@ -50,16 +50,30 @@ impl Tool for EchoTool {
 #[tokio::test]
 #[ignore = "requires live LLM access (daemon/config + API key)"]
 async fn live_react_one_tool_call() {
-    // Build the real client. If no daemon/config is present, soft-skip.
-    let client = match auto_ai_client::AiClient::new() {
-        Ok(c) => Arc::new(c),
+    // Build the real client. Use with_url to avoid the blocking ensure_daemon
+    // (which creates a nested tokio runtime inside #[tokio::test]).
+    // If the daemon isn't running at the default URL, soft-skip.
+    let client = Arc::new(auto_ai_client::AiClient::with_url(
+        "http://127.0.0.1:17654",
+    ));
+    // Quick liveness probe.
+    match client.complete(&auto_ai_client::CompletionRequest {
+        messages: vec![],
+        model: "tier:min".into(),
+        max_tokens: None,
+        temperature: None,
+        tools: vec![],
+        system_prompt: None,
+        stream: false,
+    }).await {
+        Ok(_) => {}
         Err(e) => {
-            eprintln!("skipping live test — no client: {e}");
+            eprintln!("skipping live test — daemon unreachable: {e}");
             return;
         }
-    };
+    }
 
-    let mut agent = Agent::new(EchoProfession, client as Arc<dyn Client>);
+    let mut agent = Agent::new(EchoRole, client as Arc<dyn Client>);
     agent.register_tool(EchoTool);
 
     let result = agent.run("Please echo the word: hello").await;
