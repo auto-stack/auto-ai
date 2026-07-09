@@ -32,14 +32,10 @@ impl Role for Assistant {
         12
     }
     fn allowed_tools(&self) -> Vec<String> {
-        // Lightweight tool set — the assistant reads/searches/checks but
-        // doesn't write by default. The app's mode config can expand this.
-        vec![
-            "read_file".into(),
-            "search".into(),
-            "list_dir".into(),
-            "run_command".into(),
-        ]
+        // As the default chat entry point, the assistant gets the full tool set
+        // (empty = no filtering). The mode's tool whitelist already constrains
+        // which tools are registered; the role shouldn't further restrict them.
+        Vec::new()
     }
 }
 
