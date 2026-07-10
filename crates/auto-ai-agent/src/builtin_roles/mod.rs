@@ -9,21 +9,33 @@
 //! Two roles with no Forge source — [`Translator`] (NL→command) and
 //! [`Runner`] (execute/find) — are added for downstream Ash support.
 
+pub mod advisor;
 pub mod architect;
 pub mod assistant;
 pub mod coder;
 pub mod documenter;
+pub mod gofer;
+pub mod planner;
 pub mod reviewer;
 pub mod runner;
+pub mod super_advisor;
+pub mod super_coder;
+pub mod super_tester;
 pub mod tester;
 pub mod translator;
 
+pub use advisor::Advisor;
 pub use architect::Architect;
 pub use assistant::Assistant;
 pub use coder::Coder;
 pub use documenter::Documenter;
+pub use gofer::Gofer;
+pub use planner::Planner;
 pub use reviewer::Reviewer;
 pub use runner::Runner;
+pub use super_advisor::SuperAdvisor;
+pub use super_coder::SuperCoder;
+pub use super_tester::SuperTester;
 pub use tester::Tester;
 pub use translator::Translator;
 
@@ -45,6 +57,12 @@ pub fn load_builtin(name: &str) -> Option<Arc<dyn Role>> {
         "documenter" => Arc::new(Documenter),
         "translator" => Arc::new(Translator),
         "runner" => Arc::new(Runner),
+        "advisor" => Arc::new(Advisor),
+        "planner" => Arc::new(Planner),
+        "gofer" => Arc::new(Gofer),
+        "super-advisor" => Arc::new(SuperAdvisor),
+        "super-coder" => Arc::new(SuperCoder),
+        "super-tester" => Arc::new(SuperTester),
         _ => return None,
     };
     Some(p)
@@ -61,6 +79,12 @@ pub fn builtin_names() -> &'static [&'static str] {
         "documenter",
         "translator",
         "runner",
+        "advisor",
+        "planner",
+        "gofer",
+        "super-advisor",
+        "super-coder",
+        "super-tester",
     ]
 }
 
@@ -90,6 +114,12 @@ mod tests {
             ("tester", "Soul of the Tester"),
             ("reviewer", "Soul of the Reviewer"),
             ("documenter", "Soul of the Documenter"),
+            ("advisor", "Soul of the Advisor"),
+            ("planner", "Soul of the Planner"),
+            ("gofer", "Soul of the Gofer"),
+            ("super-advisor", "Soul of the Super Advisor"),
+            ("super-coder", "Soul of the Super Coder"),
+            ("super-tester", "Soul of the Super Tester"),
         ];
         for (name, marker) in markers {
             let p = load_builtin(name).unwrap();
