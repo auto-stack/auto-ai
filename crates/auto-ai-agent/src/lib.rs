@@ -20,6 +20,7 @@ pub mod agent;
 pub mod config;
 pub mod error;
 pub mod memory;
+pub mod orchestration;
 pub mod role_def;
 pub mod builtin_roles;
 pub mod relay;
@@ -45,3 +46,7 @@ pub use skill::{Skill, SkillRegistry, SkillTool};
 pub use tool::{Tool, ToolRegistry};
 pub use validate::{load_client_config, validate_role_model};
 pub use workflow::{parse_at_workflow, Workflow, WorkflowContext, WorkflowEvent, WorkflowResult, WorkflowStep};
+pub use orchestration::{
+    BudgetAction, BudgetStrategy, BudgetTracker, TokenBudget,
+    ContextPointers, Decision, HandoffDocument, Question, TokenUsage, WorkProduct,
+};
