@@ -1,0 +1,17 @@
+[package]
+name = "auto-ai-cli"
+version = "0.1.0"
+edition = "2021"
+description = "auto-ai-cli — interactive agent demo for the AutoOS AI stack"
+
+[[bin]]
+name = "auto-ai-cli"
+path = "src/main.rs"
+
+[dependencies]
+auto-ai-agent = { path = "../auto-ai-agent" }
+auto-ai-client = { path = "../auto-ai-client" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+async-trait = "0.1"
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
