@@ -121,6 +121,9 @@ impl auto_ai_agent::Role for OwnedRole {
     fn allowed_tiers(&self) -> Vec<auto_ai_agent::ModelTier> { self.0.allowed_tiers() }
     fn token_budget(&self) -> Option<u64> { self.0.token_budget() }
     fn skills(&self) -> Vec<String> { self.0.skills() }
+    fn handoff_to(&self) -> Vec<String> { self.0.handoff_to() }
+    fn dispatchable_to(&self) -> Vec<String> { self.0.dispatchable_to() }
+    fn approval_gates(&self) -> Vec<String> { self.0.approval_gates() }
 }
 
 /// One-shot task: run the agent and print the result.

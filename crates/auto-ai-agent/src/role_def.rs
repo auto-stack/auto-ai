@@ -84,6 +84,29 @@ pub trait Role: Send + Sync {
     fn skills(&self) -> Vec<String> {
         Vec::new()
     }
+
+    // ── Orchestration fields (Plan 008 Phase 4) ────────────────────────────
+    // These enable multi-agent pipeline routing. Defaults are empty (= no
+    // restrictions), so existing roles need no changes. Built-in roles can
+    // override to declare their handoff/dispatch topology.
+
+    /// Roles this role can hand off the baton to (pipeline step transition).
+    /// Empty = no restriction (any role can follow).
+    fn handoff_to(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Roles this role can dispatch sub-tasks to (synchronous delegation).
+    /// Empty = no dispatch allowed.
+    fn dispatchable_to(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Handoff targets that require human approval before proceeding.
+    /// Empty = all handoffs are automatic.
+    fn approval_gates(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

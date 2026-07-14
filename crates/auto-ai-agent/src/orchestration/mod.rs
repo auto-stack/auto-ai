@@ -13,11 +13,13 @@
 //! without reimplementing the state machine, budget, or handoff logic.
 
 pub mod budget;
+pub mod driver;
 pub mod flow;
 pub mod handoff;
 pub mod pipeline;
 
 pub use budget::{BudgetAction, BudgetStrategy, BudgetTracker, TokenBudget};
+pub use driver::{AgentFactory, PipelineDriver, PipelineEvent};
 pub use flow::{ExitRouting, FlowSpec, FlowStep, GateDecision as FlowGateDecision, GateType};
 pub use handoff::{
     ContextPointers, Decision, HandoffDocument, Question, TokenUsage, WorkProduct,
