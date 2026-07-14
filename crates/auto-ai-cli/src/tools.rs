@@ -1,4 +1,4 @@
-//! Built-in tools for auto-ai-cli — a minimal read-only + command set.
+//! Built-in tools for auto-ai-cli — read + write + command set.
 //! Demonstrates how to implement the Tool trait for a new app.
 
 use async_trait::async_trait;
@@ -18,6 +18,53 @@ impl Tool for ReadFile {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
         let path = args["path"].as_str().ok_or_else(|| ToolError::Args("missing 'path'".into()))?;
         std::fs::read_to_string(path).map_err(|e| ToolError::Exec(format!("read '{path}': {e}")))
+    }
+}
+
+/// Write text to a file (overwrites; creates parent dirs).
+pub struct WriteFile;
+
+#[async_trait]
+impl Tool for WriteFile {
+    fn name(&self) -> &str { "write_file" }
+    fn description(&self) -> &str { "Write text content to a file, overwriting if it exists. Parent directories are created automatically." }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string","description":"file path"},"content":{"type":"string","description":"text content"}},"required":["path","content"]})
+    }
+    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        let path = args["path"].as_str().ok_or_else(|| ToolError::Args("missing 'path'".into()))?;
+        let content = args["content"].as_str().ok_or_else(|| ToolError::Args("missing 'content'".into()))?;
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| ToolError::Exec(format!("mkdir: {e}")))?;
+            }
+        }
+        std::fs::write(path, content).map_err(|e| ToolError::Exec(format!("write '{path}': {e}")))?;
+        Ok(format!("wrote {} bytes to {}", content.len(), path))
+    }
+}
+
+/// Replace a unique string in a file (precise edit, not full overwrite).
+pub struct EditFile;
+
+#[async_trait]
+impl Tool for EditFile {
+    fn name(&self) -> &str { "edit_file" }
+    fn description(&self) -> &str { "Replace a unique string in a file. The old_string must appear exactly once (ambiguous matches error)." }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string","description":"file to edit"},"old_string":{"type":"string","description":"exact text to find (must be unique)"},"new_string":{"type":"string","description":"replacement text"}},"required":["path","old_string","new_string"]})
+    }
+    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        let path = args["path"].as_str().ok_or_else(|| ToolError::Args("missing 'path'".into()))?;
+        let old = args["old_string"].as_str().ok_or_else(|| ToolError::Args("missing 'old_string'".into()))?;
+        let new = args["new_string"].as_str().ok_or_else(|| ToolError::Args("missing 'new_string'".into()))?;
+        let content = std::fs::read_to_string(path).map_err(|e| ToolError::Exec(format!("read '{path}': {e}")))?;
+        let count = content.matches(old).count();
+        if count == 0 { return Err(ToolError::Exec(format!("old_string not found in '{path}'"))); }
+        if count > 1 { return Err(ToolError::Exec(format!("old_string appears {count} times; must be unique."))); }
+        let new_content = content.replacen(old, new, 1);
+        std::fs::write(path, &new_content).map_err(|e| ToolError::Exec(format!("write: {e}")))?;
+        Ok(format!("edited '{path}'"))
     }
 }
 

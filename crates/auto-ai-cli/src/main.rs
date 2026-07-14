@@ -97,6 +97,8 @@ fn build_agent(role_name: &str, client: Arc<dyn Client>) -> Result<Agent, String
     // needs Role + 'static. We use a thin wrapper.
     let mut agent = Agent::new(OwnedRole(role), client);
     agent.register_tool(tools::ReadFile);
+    agent.register_tool(tools::WriteFile);
+    agent.register_tool(tools::EditFile);
     agent.register_tool(tools::ListDir);
     agent.register_tool(tools::Search);
     agent.register_tool(tools::RunCommand);
