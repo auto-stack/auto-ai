@@ -277,10 +277,28 @@ impl AiProvider for OpenAiProvider {
         let tool_calls: Vec<ToolCall> = tool_call_accum
             .into_iter()
             .filter(|tc| !tc.name.is_empty())
-            .map(|tc| ToolCall {
-                id: tc.id,
-                name: tc.name,
-                input: serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null),
+            .map(|tc| {
+                let input = if tc.arguments.is_empty() {
+                    serde_json::Value::Object(serde_json::Map::new())
+                } else {
+                    match serde_json::from_str(&tc.arguments) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                "streaming: failed to parse tool_call arguments for '{}': {} (args len={})",
+                                tc.name, e, tc.arguments.len()
+                            );
+                            // Try wrapping as a single "content" field — sometimes
+                            // the model sends raw text instead of JSON.
+                            serde_json::json!({"_raw": tc.arguments})
+                        }
+                    }
+                };
+                ToolCall {
+                    id: tc.id,
+                    name: tc.name,
+                    input,
+                }
             })
             .collect();
 
