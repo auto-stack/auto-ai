@@ -223,6 +223,34 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
         if input.is_empty() { continue; }
         if input == "exit" || input == "quit" { break; }
 
+        // Slash commands.
+        if input.starts_with('/') {
+            match input {
+                "/config" | "/settings" => {
+                    open_config(&client).await;
+                    continue;
+                }
+                "/help" => {
+                    print_slash_help();
+                    continue;
+                }
+                "/roles" => {
+                    println!("\nAvailable roles:");
+                    for name in builtin_names() {
+                        if let Some(r) = load_builtin(name) {
+                            println!("  {name:<14} tier={:<4} max_turns={}", 
+                                format!("{:?}", r.model_tier()).to_lowercase(), r.max_turns());
+                        }
+                    }
+                    continue;
+                }
+                _ => {
+                    println!("Unknown command: {input}. Type /help for commands.");
+                    continue;
+                }
+            }
+        }
+
         let current_turn = turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         println!("\nassistant ───");
 
@@ -503,4 +531,64 @@ async fn run_pipeline_flow(mode: &str, task: &str, client: &Arc<dyn Client>) -> 
     });
 
     driver.drive(task, on_event).await.map_err(|e| format_agent_error(&e))
+}
+
+/// Open the AutoOS settings UI (auto-os-config) in the browser.
+/// Uses aaid's service registry to ensure it's running first.
+async fn open_config(client: &Arc<dyn Client>) {
+    let daemon_url = std::env::var("AAID_URL").unwrap_or_else(|_| "http://127.0.0.1:17654".into());
+    let ensure_url = format!("{}/v1/services/os-config/ensure", daemon_url);
+    println!("\n  Opening AutoOS Settings…");
+    // Try aaid service registry.
+    match reqwest::Client::new().post(&ensure_url).timeout(std::time::Duration::from_secs(20)).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                let url = val.get("url").and_then(|u| u.as_str()).unwrap_or("http://localhost:17700");
+                let status = val.get("status").and_then(|s| s.as_str()).unwrap_or("running");
+                if status == "running" {
+                    let full = format!("{}/", url);
+                    println!("  ✓ AutoOS Settings ready at {full}");
+                    let _ = open_browser(&full);
+                    return;
+                }
+            }
+            println!("  ⚠ aaid returned unexpected response. Try opening http://localhost:17700 manually.");
+        }
+        Ok(resp) => {
+            println!("  ⚠ aaid responded HTTP {}. Is os-config installed?", resp.status());
+        }
+        Err(_) => {
+            // aaid not reachable — try direct.
+            println!("  ⚠ aaid not reachable at {daemon_url}. Trying direct…");
+            let url = "http://localhost:17700/";
+            let _ = open_browser(url);
+            println!("  Opened {url} (if os-config isn't running, start it: cd auto-os-config && npm run dev)");
+        }
+    }
+}
+
+/// Open a URL in the default browser (cross-platform).
+fn open_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn()?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).spawn()?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(url).spawn()?;
+    }
+    Ok(())
+}
+
+/// Print available slash commands.
+fn print_slash_help() {
+    println!("\n  Slash commands:");
+    println!("    /config   Open AutoOS Settings in browser");
+    println!("    /roles    List available built-in roles");
+    println!("    /help     Show this help");
+    println!("    exit/quit Leave the chat");
 }
