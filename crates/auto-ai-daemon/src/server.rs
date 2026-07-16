@@ -137,22 +137,25 @@ async fn chat_completions(
                 req.model = c.model.clone();
             }
             None => {
-                // Fallback: try legacy default-provider resolution.
                 if let Some(resolved) = resolve_tier_model(&req.model, &state.cfg()) {
                     provider_name = state.cfg().default_provider.clone();
                     req.model = resolved;
                 } else {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(json!({"error": {"message": format!("could not resolve tier '{}' — no candidates in tier_routing and no default_provider fallback", req.model)}})),
+                        Json(json!({"error": {"message": format!("could not resolve tier '{}' — no candidates", req.model)}})),
                     )
                         .into_response();
                 }
             }
         }
     } else {
-        // Concrete model id — use default provider (or find which provider has it).
-        provider_name = state.cfg().default_provider.clone();
+        // Concrete model id — search all providers to find which one has it.
+        let cfg = state.cfg();
+        let found = cfg.providers.iter()
+            .find(|(_, pc)| pc.models.iter().any(|m| m.id == req.model))
+            .map(|(name, _)| name.clone());
+        provider_name = found.unwrap_or_else(|| cfg.default_provider.clone());
     }
 
     // Acquire concurrency permit for the chosen provider.
