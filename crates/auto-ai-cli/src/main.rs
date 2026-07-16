@@ -534,13 +534,47 @@ async fn run_pipeline_flow(mode: &str, task: &str, client: &Arc<dyn Client>) -> 
 }
 
 /// Open the AutoOS settings UI (auto-os-config) in the browser.
-/// Uses aaid's service registry to ensure it's running first.
-async fn open_config(client: &Arc<dyn Client>) {
+/// Uses aaid's service registry to ensure ALL required services are running:
+/// os-config (:17700) + musk (:8080, provides Roles/Skills/Agents config pages)
+/// + aaid itself (:17654, provides AI Daemon config page).
+async fn open_config(_client: &Arc<dyn Client>) {
     let daemon_url = std::env::var("AAID_URL").unwrap_or_else(|_| "http://127.0.0.1:17654".into());
-    let ensure_url = format!("{}/v1/services/os-config/ensure", daemon_url);
-    println!("\n  Opening AutoOS Settings…");
-    // Try aaid service registry.
-    match reqwest::Client::new().post(&ensure_url).timeout(std::time::Duration::from_secs(20)).send().await {
+    let http = reqwest::Client::new();
+    println!("\n  Starting AutoOS Settings…");
+
+    // Ensure musk backend (provides Roles/Skills/Agents/Auto Musk config pages).
+    match http.post(format!("{}/v1/services/musk-web/ensure", daemon_url))
+        .timeout(std::time::Duration::from_secs(20)).send().await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            println!("  ✓ Musk web ready");
+        }
+        _ => {
+            println!("  ⚠ Musk backend not reachable — Roles/Skills pages won't load.");
+            println!("    Start it: cd auto-musk/backend && cargo run -p musk -- serve");
+        }
+    }
+
+    // Note: musk-web (:3333) is the frontend SPA, not the backend (:8080).
+    // The config pages are served by musk serve (:8080). We need to ensure
+    // the backend is running. aaid's registry has musk-web (:3333) but not
+    // the backend (:8080) — so we check :8080 directly.
+    match http.get("http://127.0.0.1:8080/api/health")
+        .timeout(std::time::Duration::from_secs(3)).send().await
+    {
+        Ok(r) if r.status().is_success() => {
+            println!("  ✓ Musk backend (:8080) ready");
+        }
+        _ => {
+            println!("  ⚠ Musk backend (:8080) not running — config pages won't load.");
+            println!("    Start it: cd auto-musk/backend && cargo run -p musk -- serve");
+        }
+    }
+
+    // Ensure os-config (:17700) — the settings UI host.
+    match http.post(format!("{}/v1/services/os-config/ensure", daemon_url))
+        .timeout(std::time::Duration::from_secs(20)).send().await
+    {
         Ok(resp) if resp.status().is_success() => {
             if let Ok(val) = resp.json::<serde_json::Value>().await {
                 let url = val.get("url").and_then(|u| u.as_str()).unwrap_or("http://localhost:17700");
@@ -552,13 +586,12 @@ async fn open_config(client: &Arc<dyn Client>) {
                     return;
                 }
             }
-            println!("  ⚠ aaid returned unexpected response. Try opening http://localhost:17700 manually.");
+            println!("  ⚠ Unexpected response from aaid. Try http://localhost:17700 manually.");
         }
         Ok(resp) => {
             println!("  ⚠ aaid responded HTTP {}. Is os-config installed?", resp.status());
         }
         Err(_) => {
-            // aaid not reachable — try direct.
             println!("  ⚠ aaid not reachable at {daemon_url}. Trying direct…");
             let url = "http://localhost:17700/";
             let _ = open_browser(url);
