@@ -28,6 +28,11 @@ impl Role for Architect {
     fn max_turns(&self) -> usize {
         40
     }
+    /// Architect can hand off to planner (for detailed task breakdown)
+    /// or coder (for direct implementation).
+    fn handoff_to(&self) -> Vec<String> {
+        vec!["planner".into(), "coder".into()]
+    }
 }
 
 #[cfg(test)]

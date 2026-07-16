@@ -121,6 +121,7 @@ impl AiClient {
         let mut stop_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
         let mut model = String::new();
+        let mut error_msg: Option<String> = None;
 
         while let Some(chunk_result) = stream.next().await {
             let bytes = chunk_result.map_err(|e| ClientError::Http(e.to_string()))?;
@@ -128,6 +129,13 @@ impl AiClient {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data_line) {
                     if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
                         full.push_str(text);
+                    }
+                    // Parse error event from SSE stream (Plan 008 — error propagation).
+                    if value.get("type").and_then(|t| t.as_str()) == Some("error") {
+                        error_msg = value
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .map(String::from);
                     }
                     // Parse done event for tool_calls + usage + model.
                     if value.get("type").and_then(|t| t.as_str()) == Some("done") {
@@ -153,6 +161,13 @@ impl AiClient {
                 if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
                     full.push_str(text);
                 }
+                // Parse error event from SSE stream (Plan 008 — error propagation).
+                if value.get("type").and_then(|t| t.as_str()) == Some("error") {
+                    error_msg = value
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .map(String::from);
+                }
                 if value.get("type").and_then(|t| t.as_str()) == Some("done") {
                     if let Some(tcs) = value.get("tool_calls").and_then(|t| t.as_array()) {
                         tool_calls = tcs.iter().map(|tc| ToolCall {
@@ -177,7 +192,7 @@ impl AiClient {
             stop_reason,
             usage,
             model,
-            error: None,
+            error: error_msg,
         })
     }
 

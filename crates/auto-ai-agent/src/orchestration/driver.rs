@@ -58,6 +58,9 @@ pub trait AgentFactory: Send + Sync {
 pub struct PipelineDriver<F: AgentFactory> {
     engine: PipelineEngine,
     factory: F,
+    /// Optional gate handler. When a human gate is encountered, this is called
+    /// to decide the gate outcome. If `None`, gates are auto-approved.
+    gate_handler: Option<Box<dyn Fn(&str) -> GateDecision + Send + Sync>>,
 }
 
 impl<F: AgentFactory> PipelineDriver<F> {
@@ -69,7 +72,20 @@ impl<F: AgentFactory> PipelineDriver<F> {
         // a synthetic initial handoff so the factory can inject it.
         let _ = task; // The factory receives role_id + handoff=None for step 0;
                       // it should use the task directly (passed separately).
-        Self { engine, factory }
+        Self { engine, factory, gate_handler: None }
+    }
+
+    /// Set a custom gate handler. When a human gate is encountered during
+    /// `drive()`, this handler is called with the step_id to decide whether
+    /// to Approve or Reject (with feedback).
+    ///
+    /// If no handler is set, gates are auto-approved.
+    pub fn with_gate_handler(
+        mut self,
+        handler: Box<dyn Fn(&str) -> GateDecision + Send + Sync>,
+    ) -> Self {
+        self.gate_handler = Some(handler);
+        self
     }
 
     /// Run the pipeline to completion (or until a gate/pause/failure).
@@ -157,14 +173,20 @@ impl<F: AgentFactory> PipelineDriver<F> {
                             return Ok(()); // Paused is not an error — app can resume.
                         }
                         AdvanceResult::WaitForHuman { step_id } => {
-                            on_event(PipelineEvent::GateWaiting { step_id });
-                            // In a CLI, we'd prompt the user here. In an HTTP
-                            // server, we'd return and wait for a POST /gate.
-                            // For now, auto-approve (apps override this behavior).
-                            let gate_result = self.engine.resolve_gate(GateDecision::Approve);
+                            on_event(PipelineEvent::GateWaiting {
+                                step_id: step_id.clone(),
+                            });
+                            let decision = if let Some(ref handler) = self.gate_handler {
+                                handler(&step_id)
+                            } else {
+                                GateDecision::Approve
+                            };
+                            let gate_result = self.engine.resolve_gate(decision);
                             if let AdvanceResult::Failed { error } = gate_result {
-                                on_event(PipelineEvent::Failed { error });
-                                return Err(AgentError::Config("gate resolution failed".into()));
+                                on_event(PipelineEvent::Failed { error: error.clone() });
+                                return Err(AgentError::Config(
+                                    "gate resolution failed".into(),
+                                ));
                             }
                             // Continue the loop — the next advance() will execute the step.
                         }
@@ -186,9 +208,15 @@ impl<F: AgentFactory> PipelineDriver<F> {
                     return Ok(());
                 }
                 AdvanceResult::WaitForHuman { step_id } => {
-                    on_event(PipelineEvent::GateWaiting { step_id });
-                    // Auto-approve for now (apps can override).
-                    let gate_result = self.engine.resolve_gate(GateDecision::Approve);
+                    on_event(PipelineEvent::GateWaiting {
+                        step_id: step_id.clone(),
+                    });
+                    let decision = if let Some(ref handler) = self.gate_handler {
+                        handler(&step_id)
+                    } else {
+                        GateDecision::Approve
+                    };
+                    let gate_result = self.engine.resolve_gate(decision);
                     if let AdvanceResult::Failed { error } = gate_result {
                         on_event(PipelineEvent::Failed { error });
                         return Err(AgentError::Config("gate resolution failed".into()));
@@ -201,7 +229,7 @@ impl<F: AgentFactory> PipelineDriver<F> {
     /// Construct a HandoffDocument from an agent's result.
     fn build_handoff(
         &self,
-        step_id: &str,
+        _step_id: &str,
         role_id: &str,
         result: &AgentResult,
         content: &str,

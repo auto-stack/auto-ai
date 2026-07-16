@@ -5,6 +5,7 @@
 //!   auto-ai-cli chat --role coder       REPL with a specific built-in role
 //!   auto-ai-cli run "<task>"            One-shot task (default role: assistant)
 //!   auto-ai-cli run --role reviewer "<task>"
+//!   auto-ai-cli pipeline "<task>"       Multi-agent pipeline (assistant→coder→reviewer)
 //!   auto-ai-cli roles                   List available built-in roles
 //!
 //! Prerequisites: `aaid` must be running (cargo run -p auto-ai-daemon).
@@ -16,7 +17,11 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
-use auto_ai_agent::{builtin_names, load_builtin, Agent, Client, StreamEvent};
+use auto_ai_agent::{
+    builtin_names, load_builtin, Agent, Client, StreamEvent,
+    AgentFactory, FlowSpec, FlowStep, GateType, GateDecision,
+    HandoffDocument, PipelineDriver, PipelineEvent,
+};
 use auto_ai_client::AiClient;
 
 #[derive(Parser)]
@@ -38,6 +43,10 @@ enum Cmd {
         task: String,
         #[arg(long, default_value = "assistant")]
         role: String,
+    },
+    /// Run a multi-agent pipeline (Plan 008 orchestration demo).
+    Pipeline {
+        task: String,
     },
     /// List available built-in roles.
     Roles,
@@ -69,6 +78,13 @@ fn main() {
         Cmd::Chat { role } => {
             let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
             if let Err(e) = rt.block_on(chat_loop(&role)) {
+                eprintln!("auto-ai-cli: {e}");
+                std::process::exit(1);
+            }
+        }
+        Cmd::Pipeline { task } => {
+            let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
+            if let Err(e) = rt.block_on(run_pipeline(&task)) {
                 eprintln!("auto-ai-cli: {e}");
                 std::process::exit(1);
             }
@@ -134,7 +150,7 @@ async fn run_task(task: &str, role: &str) -> Result<(), String> {
     let role_display = role.to_string();
     println!("auto-ai-cli: running role '{role_display}' on task:\n  {task}\n");
 
-    let result = agent.run(task).await.map_err(|e| format!("agent failed: {e}"))?;
+    let result = agent.run(task).await.map_err(|e| format_agent_error(&e))?;
 
     println!(
         "──── result ({} turn{}, {} tool call{}) ────",
@@ -211,11 +227,201 @@ async fn chat_loop(role: &str) -> Result<(), String> {
         match agent.run_stream(input, on_event).await {
             Ok(_) => {}
             Err(e) => {
-                eprintln!(
-                    "\n  [agent error] {e}\n  (session continues; type another message or 'exit')"
-                );
+                eprintln!("\n{}", format_agent_error(&e));
+                eprintln!("  (session continues; type another message or 'exit')");
             }
         }
     }
     Ok(())
+}
+
+// ── Error formatting ──────────────────────────────────────────────────────
+
+/// Human-friendly error rendering. Detects rate limits, auth failures, and
+/// network issues, showing actionable guidance instead of raw JSON.
+fn format_agent_error(e: &dyn std::fmt::Display) -> String {
+    let msg = e.to_string();
+
+    // ── Rate limit / quota exhausted ────────────────────────────────────
+    if msg.contains("429") || msg.contains("rate_limit") || msg.contains("使用上限") {
+        let reset_hint = extract_zhipu_reset_time(&msg);
+        let mut out = String::from(
+            "🚫 API quota exhausted (rate limit / 429).\n",
+        );
+        if !reset_hint.is_empty() {
+            out.push_str(&format!("   {reset_hint}\n"));
+        }
+        out.push_str(
+            "   Tips:\n\
+             • Wait for quota to reset\n\
+             • Switch model:  auto-ai-cli chat --role coder  (uses Max tier)\n\
+             • Check usage:  visit https://open.bigmodel.cn"
+        );
+        return out;
+    }
+
+    // ── Authentication ──────────────────────────────────────────────────
+    if msg.contains("401") || msg.contains("Unauthorized")
+        || msg.contains("api_key") || msg.contains("invalid key")
+    {
+        return format!(
+            "🔑 Authentication failed.\n\
+             The API key in ~/.config/autoos/ai-daemon.at may be invalid.\n\
+             Details: {msg}"
+        );
+    }
+
+    // ── Network / connection ────────────────────────────────────────────
+    if msg.contains("connection") || msg.contains("timeout")
+        || msg.contains("refused") || msg.contains("dns")
+    {
+        return format!(
+            "🌐 Network error — cannot reach the LLM API.\n\
+             Check: curl http://127.0.0.1:17654/\n\
+             Details: {msg}"
+        );
+    }
+
+    // ── Daemon not running ──────────────────────────────────────────────
+    if msg.contains("daemon") {
+        return format!(
+            "⚙️  Daemon (aaid) issue.\n\
+             Start it:  cargo run -p auto-ai-daemon\n\
+             Details: {msg}"
+        );
+    }
+
+    // ── Generic fallback ────────────────────────────────────────────────
+    format!("❌ {msg}")
+}
+
+/// Try to extract the quota-reset time from a Zhipu rate-limit error message.
+fn extract_zhipu_reset_time(msg: &str) -> String {
+    // Pattern: "您的限额将在 YYYY-MM-DD HH:MM:SS 重置"
+    if let Some(start) = msg.find("您的限额将在 ") {
+        let rest = &msg[start + "您的限额将在 ".len()..];
+        if let Some(end) = rest.find(" 重置") {
+            return format!("Quota resets at: {}", &rest[..end]);
+        }
+    }
+    // Pattern: "quota will reset at …"
+    for kw in &["reset at", "resets at"] {
+        if let Some(pos) = msg.to_lowercase().find(kw) {
+            let snippet: String = msg[pos..].chars().take(60).collect();
+            return snippet;
+        }
+    }
+    String::new()
+}
+
+// ── Pipeline (Plan 008 Phase 8) ───────────────────────────────────────────
+
+/// Agent factory for the CLI — uses the same `build_agent` as chat/run.
+struct CliAgentFactory {
+    client: Arc<dyn Client>,
+}
+
+impl AgentFactory for CliAgentFactory {
+    fn build_agent(
+        &self,
+        role_id: &str,
+        _handoff: Option<&HandoffDocument>,
+    ) -> Result<Agent, String> {
+        build_agent(role_id, self.client.clone())
+    }
+}
+
+/// Built-in demo flow: assistant → coder → reviewer (with human gate).
+fn create_demo_flow() -> FlowSpec {
+    let mut flow = FlowSpec::new("demo-pipeline");
+    flow.add_step(FlowStep::new("triage", "assistant"));
+    flow.add_step(FlowStep::new("implementation", "coder"));
+    flow.add_step(FlowStep::new("review", "reviewer").with_gate(GateType::Human));
+    flow
+}
+
+/// Run a multi-agent pipeline with streaming output and interactive gate.
+async fn run_pipeline(task: &str) -> Result<(), String> {
+    let client = build_client();
+    let factory = CliAgentFactory {
+        client: client.clone(),
+    };
+    let flow = create_demo_flow();
+
+    // Interactive gate handler — prompts the user for approval.
+    let gate_handler: Box<dyn Fn(&str) -> GateDecision + Send + Sync> =
+        Box::new(|step_id: &str| {
+            println!();
+            println!("⏸  Gate: step '{step_id}' requires human approval.");
+            print!("   Approve? [Y/n/r(eject)]: ");
+            let _ = io::stdout().flush();
+            let mut line = String::new();
+            if io::stdin().lock().read_line(&mut line).is_err() {
+                return GateDecision::Approve; // EOF → approve
+            }
+            match line.trim().to_lowercase().as_str() {
+                "r" | "reject" | "n" | "no" => {
+                    print!("   Reason: ");
+                    let _ = io::stdout().flush();
+                    let mut fb = String::new();
+                    let _ = io::stdin().lock().read_line(&mut fb);
+                    GateDecision::Reject {
+                        feedback: fb.trim().to_string(),
+                    }
+                }
+                _ => GateDecision::Approve,
+            }
+        });
+
+    let mut driver = PipelineDriver::new(flow, factory, task)
+        .with_gate_handler(gate_handler);
+
+    let task_owned = task.to_string();
+
+    // Streaming event callback.
+    let on_event: Arc<dyn Fn(PipelineEvent) + Send + Sync> = Arc::new(move |ev| match ev {
+        PipelineEvent::StepStarted { step_id, role_id } => {
+            println!("\n━━━ Step: {step_id} ({role_id}) ━━━");
+        }
+        PipelineEvent::Delta { text } => {
+            print!("{text}");
+            let _ = io::stdout().flush();
+        }
+        PipelineEvent::Tool { tool, result } => {
+            let preview: String = result.chars().take(80).collect();
+            let ellipsis = if result.len() > 80 { "…" } else { "" };
+            println!("\n  [tool] {tool} → {preview}{ellipsis}");
+        }
+        PipelineEvent::StepCompleted { step_id, handoff } => {
+            let summary: String = handoff.summary.chars().take(120).collect();
+            let ellipsis = if handoff.summary.len() > 120 { "…" } else { "" };
+            println!(
+                "\n✓ Step '{step_id}' complete → {}{}",
+                summary, ellipsis
+            );
+        }
+        PipelineEvent::GateWaiting { .. } => {
+            // The gate_handler already prompts; this is just a note.
+        }
+        PipelineEvent::Completed => {
+            println!("\n══════ Pipeline completed ══════");
+        }
+        PipelineEvent::Failed { error } => {
+            eprintln!("\n✗ Pipeline failed: {error}");
+        }
+        PipelineEvent::Paused { step_id, reason } => {
+            println!("\n⏸  Pipeline paused at '{step_id}': {reason}");
+        }
+        PipelineEvent::BudgetWarning { remaining } => {
+            println!("\n⚠  Budget warning: {remaining} tokens remaining");
+        }
+    });
+
+    println!("auto-ai-cli pipeline:\n  {task_owned}\n");
+    println!("Flow: assistant → coder → reviewer");
+
+    driver
+        .drive(&task_owned, on_event)
+        .await
+        .map_err(|e| format_agent_error(&e))
 }

@@ -356,6 +356,13 @@ impl Agent {
                 .await?;
 
             let content = stream_resp.content;
+            // Propagate SSE-stream error events from the daemon (Plan 008 fix).
+            if let Some(err) = stream_resp.error {
+                on_event(StreamEvent::Error {
+                    message: err.clone(),
+                });
+                return Err(AgentError::Config(err));
+            }
             if let Some(u) = &stream_resp.usage {
                 result.total_tokens += u.total_tokens() as u64;
             }

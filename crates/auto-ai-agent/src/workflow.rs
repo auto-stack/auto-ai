@@ -1,5 +1,10 @@
 //! The Workflow engine (design doc §5–6).
 //!
+//! **Deprecated (Plan 008):** Prefer [`crate::orchestration::PipelineEngine`]
+//! which is a strict superset (real gate enforcement, budget tracking, loop
+//! caps, pause/resume/rerun, handoff auto-correction). This `Workflow` module
+//! is kept for backward compatibility but should not be used for new code.
+//!
 //! A [`Workflow`] chains [`Agent`]s into a multi-step plan: each step is a
 //! `relay` that loads a Role, substitutes `$var` references from a
 //! shared context, optionally skips on a `condition`, runs an Agent, and
@@ -36,6 +41,9 @@
 //! }
 //! ```
 
+// This module is deprecated wholesale; suppress internal usage warnings.
+#![allow(deprecated)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -51,6 +59,7 @@ use crate::Agent;
 
 /// What to do when a step's validators fail: retry an earlier step, up to
 /// `max` times. Beyond that, the whole workflow fails.
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 #[derive(Clone, Debug)]
 pub struct RetrySpec {
     /// The step id to jump back to (re-run it and everything after).
@@ -61,6 +70,7 @@ pub struct RetrySpec {
 
 /// Per-step tool guard: restrict which tools this step's agent may use.
 /// `allow` empty = inherit all; `forbid` removes specific tools.
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 #[derive(Clone, Debug, Default)]
 pub struct ToolGuard {
     pub allow: Vec<String>,
@@ -68,6 +78,7 @@ pub struct ToolGuard {
 }
 
 /// Whether a step needs human approval before proceeding.
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Gate {
     /// Automatic — validators pass → continue (default).
@@ -79,6 +90,7 @@ pub enum Gate {
 }
 
 /// A single relay step in a workflow.
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 #[derive(Clone, Debug)]
 pub struct WorkflowStep {
     pub id: String,
@@ -159,6 +171,7 @@ impl Role for ArcProfession {
 }
 
 /// The shared key→value context a workflow step reads from and writes to.
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 #[derive(Clone, Debug, Default)]
 pub struct WorkflowContext {
     vars: HashMap<String, String>,
@@ -242,6 +255,7 @@ fn utf8_len_at(bytes: &[u8], idx: usize) -> usize {
 }
 
 /// The outcome of [`Workflow::run`].
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 #[derive(Clone, Debug, Default)]
 pub struct WorkflowResult {
     /// Each step id → its textual output (skipped steps are absent).
@@ -253,6 +267,7 @@ pub struct WorkflowResult {
 }
 
 /// A parsed workflow, ready to run.
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 pub struct Workflow {
     pub name: String,
     pub steps: Vec<WorkflowStep>,
@@ -412,6 +427,7 @@ impl Workflow {
 }
 
 /// Progress events emitted by [`Workflow::run_with_progress`].
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 #[derive(Clone, Debug)]
 pub enum WorkflowEvent {
     /// A step is about to run.
@@ -573,6 +589,7 @@ fn evaluate_condition(expr: &str, ctx: &WorkflowContext) -> bool {
 // ── .at parsing ────────────────────────────────────────────────────────────
 
 /// Parse a `workflow { … }` block from `.at` source.
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 pub fn parse_at_workflow(content: &str) -> Result<Workflow, AgentError> {
     let atom = AtomParser::parse(content)
         .map_err(|e| AgentError::Config(format!("failed to parse workflow .at: {e}")))?;

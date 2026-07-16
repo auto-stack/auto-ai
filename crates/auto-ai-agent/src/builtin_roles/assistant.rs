@@ -37,6 +37,11 @@ impl Role for Assistant {
         // which tools are registered; the role shouldn't further restrict them.
         Vec::new()
     }
+    /// Assistant is the triage entry point — hands off to coder, architect,
+    /// or reviewer depending on the task.
+    fn handoff_to(&self) -> Vec<String> {
+        vec!["coder".into(), "architect".into(), "reviewer".into()]
+    }
 }
 
 #[cfg(test)]

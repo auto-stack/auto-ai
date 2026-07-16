@@ -28,6 +28,10 @@ impl Role for Coder {
     fn max_turns(&self) -> usize {
         40
     }
+    /// Coder can hand off to tester (for test runs) or reviewer (for code review).
+    fn handoff_to(&self) -> Vec<String> {
+        vec!["tester".into(), "reviewer".into()]
+    }
 }
 
 #[cfg(test)]

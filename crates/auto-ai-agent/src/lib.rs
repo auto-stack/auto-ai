@@ -28,6 +28,7 @@ pub mod roles;
 pub mod skill;
 pub mod tool;
 pub mod validate;
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
 pub mod workflow;
 pub mod workflow_validator;
 
@@ -45,8 +46,17 @@ pub use roles::{RoleDetail, RoleRegistry, RoleSummary};
 pub use skill::{Skill, SkillRegistry, SkillTool};
 pub use tool::{Tool, ToolRegistry};
 pub use validate::{load_client_config, validate_role_model};
+#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
+#[allow(deprecated)]
 pub use workflow::{parse_at_workflow, Workflow, WorkflowContext, WorkflowEvent, WorkflowResult, WorkflowStep};
 pub use orchestration::{
     BudgetAction, BudgetStrategy, BudgetTracker, TokenBudget,
     ContextPointers, Decision, HandoffDocument, Question, TokenUsage, WorkProduct,
+    // Flow types (Phase 8)
+    FlowSpec, FlowStep, GateType, ExitRouting,
+    // Pipeline types (Phase 8)
+    GateDecision, PipelineEngine, PipelineStatus, PipelineMode,
+    AdvanceResult, StepRecord,
+    // Driver types (Phase 8)
+    AgentFactory, PipelineDriver, PipelineEvent,
 };

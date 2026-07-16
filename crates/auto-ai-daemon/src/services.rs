@@ -54,7 +54,7 @@ impl ServiceRegistry {
                 ServiceEntry {
                     id: "musk-web".into(),
                     name: "Auto Musk Web".into(),
-                    url: "http://localhost:8090".into(),
+                    url: "http://localhost:3333".into(),
                     start_cmd: "npm run dev".into(),
                     cwd_hint: "auto-musk/web".into(),
                     ready_path: "/".into(),
