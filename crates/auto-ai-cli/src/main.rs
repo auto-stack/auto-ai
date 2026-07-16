@@ -1,16 +1,16 @@
 //! auto-ai-cli — interactive agent demo for the AutoOS AI stack.
 //!
 //! Usage:
-//!   auto-ai-cli chat                    Interactive REPL (default role: assistant)
-//!   auto-ai-cli chat --role coder       REPL with a specific built-in role
+//!   auto-ai-cli chat                    Interactive REPL (assistant auto-routes)
+//!   auto-ai-cli chat --mode relay       Force a specific execution mode
 //!   auto-ai-cli run "<task>"            One-shot task (default role: assistant)
-//!   auto-ai-cli run --role reviewer "<task>"
-//!   auto-ai-cli pipeline "<task>"       Multi-agent pipeline (assistant→coder→reviewer)
+//!   auto-ai-cli pipeline "<task>"       Multi-agent pipeline demo
 //!   auto-ai-cli roles                   List available built-in roles
 //!
 //! Prerequisites: `aaid` must be running (cargo run -p auto-ai-daemon).
 
-mod tools;
+pub mod tools;
+mod spawn_pipeline;
 
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use auto_ai_agent::{
-    builtin_names, load_builtin, Agent, Client, StreamEvent,
+    builtin_names, load_builtin, Agent, Client, StreamEvent, Tool,
     AgentFactory, FlowSpec, FlowStep, GateType, GateDecision,
     HandoffDocument, PipelineDriver, PipelineEvent,
 };
@@ -33,10 +33,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Interactive multi-turn chat REPL.
+    /// Interactive multi-turn chat REPL (assistant auto-routes to normal/superpowers/relay).
     Chat {
-        #[arg(long, default_value = "assistant")]
-        role: String,
+        /// Execution mode: normal (auto-route), superpowers, relay.
+        #[arg(long, default_value = "normal")]
+        mode: String,
     },
     /// Run a single task (one-shot).
     Run {
@@ -75,9 +76,9 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Cmd::Chat { role } => {
+        Cmd::Chat { mode } => {
             let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
-            if let Err(e) = rt.block_on(chat_loop(&role)) {
+            if let Err(e) = rt.block_on(chat_loop(&mode)) {
                 eprintln!("auto-ai-cli: {e}");
                 std::process::exit(1);
             }
@@ -101,7 +102,9 @@ fn build_client() -> Arc<dyn Client> {
 }
 
 /// Build an agent from a built-in role name, register the demo tools.
-fn build_agent(role_name: &str, client: Arc<dyn Client>) -> Result<Agent, String> {
+/// When `with_pipeline` is true, also registers the spawn_pipeline tool
+/// (enables the assistant to auto-route to superpowers/relay flows).
+fn build_agent(role_name: &str, client: Arc<dyn Client>, with_pipeline: bool) -> Result<Agent, String> {
     let role = load_builtin(role_name)
         .ok_or_else(|| {
             format!(
@@ -111,19 +114,22 @@ fn build_agent(role_name: &str, client: Arc<dyn Client>) -> Result<Agent, String
         })?;
     // OwnedRole wrapper: load_builtin returns Arc<dyn Role>, but Agent::new
     // needs Role + 'static. We use a thin wrapper.
-    let mut agent = Agent::new(OwnedRole(role), client);
+    let mut agent = Agent::new(OwnedRole(role), client.clone());
     agent.register_tool(tools::ReadFile);
     agent.register_tool(tools::WriteFile);
     agent.register_tool(tools::EditFile);
     agent.register_tool(tools::ListDir);
     agent.register_tool(tools::Search);
     agent.register_tool(tools::RunCommand);
+    if with_pipeline {
+        agent.register_tool(spawn_pipeline::SpawnPipeline::new(client));
+    }
     Ok(agent)
 }
 
 /// Thin wrapper to satisfy Agent::new's `P: Role + 'static` bound.
 /// (load_builtin returns Arc<dyn Role>; Arc<dyn Trait> doesn't impl the trait.)
-struct OwnedRole(Arc<dyn auto_ai_agent::Role>);
+pub struct OwnedRole(Arc<dyn auto_ai_agent::Role>);
 
 impl auto_ai_agent::Role for OwnedRole {
     fn name(&self) -> &str { self.0.name() }
@@ -145,7 +151,7 @@ impl auto_ai_agent::Role for OwnedRole {
 /// One-shot task: run the agent and print the result.
 async fn run_task(task: &str, role: &str) -> Result<(), String> {
     let client = build_client();
-    let mut agent = build_agent(role, client)?;
+    let mut agent = build_agent(role, client, false)?;
 
     let role_display = role.to_string();
     println!("auto-ai-cli: running role '{role_display}' on task:\n  {task}\n");
@@ -173,15 +179,36 @@ async fn run_task(task: &str, role: &str) -> Result<(), String> {
 }
 
 /// Interactive multi-turn chat REPL with streaming output.
-async fn chat_loop(role: &str) -> Result<(), String> {
+/// mode: "normal" (assistant auto-routes), "superpowers", "relay".
+async fn chat_loop(mode: &str) -> Result<(), String> {
     let client = build_client();
-    let mut agent = build_agent(role, client)?;
-    let role_display = role.to_string();
+
+    // If a specific mode is requested, start the pipeline directly.
+    if mode == "superpowers" || mode == "relay" {
+        println!("auto-ai-cli — mode: {mode} (pipeline will start on first message)");
+        let stdin = io::stdin();
+        loop {
+            print!("\ntask> ");
+            io::stdout().flush().ok();
+            let mut line = String::new();
+            let n = stdin.lock().read_line(&mut line).map_err(|e| e.to_string())?;
+            if n == 0 { break; }
+            let task = line.trim();
+            if task.is_empty() { continue; }
+            if task == "exit" || task == "quit" { break; }
+            run_pipeline_flow(mode, task, &client).await?;
+        }
+        return Ok(());
+    }
+
+    // Normal mode: assistant with spawn_pipeline tool (auto-routes).
+    let mut agent = build_agent("assistant", client.clone(), true)?;
 
     println!(
-        "auto-ai-cli chat — role '{}' (exit/quit or Ctrl-D to leave)",
-        role_display
+        "auto-ai-cli chat — mode: normal (assistant auto-routes)"
     );
+    println!("  The assistant will decide: direct answer, superpowers, or relay.");
+    println!("  (exit/quit or Ctrl-D to leave)");
 
     let stdin = io::stdin();
     let turn = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -197,7 +224,7 @@ async fn chat_loop(role: &str) -> Result<(), String> {
         if input == "exit" || input == "quit" { break; }
 
         let current_turn = turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        println!("\n{} ───", role_display);
+        println!("\nassistant ───");
 
         // Streaming on_event callback.
         let on_event: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(move |ev| {
@@ -327,7 +354,7 @@ impl AgentFactory for CliAgentFactory {
         role_id: &str,
         _handoff: Option<&HandoffDocument>,
     ) -> Result<Agent, String> {
-        build_agent(role_id, self.client.clone())
+        build_agent(role_id, self.client.clone(), false)
     }
 }
 
@@ -424,4 +451,56 @@ async fn run_pipeline(task: &str) -> Result<(), String> {
         .drive(&task_owned, on_event)
         .await
         .map_err(|e| format_agent_error(&e))
+}
+
+/// Run a named pipeline flow (superpowers / relay) directly.
+/// Used by `chat --mode superpowers/relay`.
+async fn run_pipeline_flow(mode: &str, task: &str, client: &Arc<dyn Client>) -> Result<(), String> {
+    use auto_ai_agent::{AgentFactory, PipelineDriver, PipelineEvent};
+
+    let flow = spawn_pipeline::flow_for(mode)
+        .ok_or_else(|| format!("unknown mode '{mode}'"))?;
+    let factory = spawn_pipeline::CliAgentFactory::new(client.clone());
+    let mut driver = PipelineDriver::new(flow, factory, task);
+
+    println!("\n┌─ pipeline: {mode} ─────────────────");
+    println!("│ task: {task}");
+    println!("│");
+
+    let on_event: Arc<dyn Fn(PipelineEvent) + Send + Sync> = Arc::new(|ev| {
+        match ev {
+            PipelineEvent::StepStarted { step_id, role_id } => {
+                println!("│ ▶ step '{step_id}' (role: {role_id})");
+            }
+            PipelineEvent::Delta { text } => {
+                print!("{text}");
+                let _ = io::stdout().flush();
+            }
+            PipelineEvent::Tool { tool, result } => {
+                let preview: String = result.chars().take(60).collect();
+                println!("\n│   [tool] {tool} → {preview}…");
+            }
+            PipelineEvent::StepCompleted { step_id, .. } => {
+                println!("\n│ ✓ step '{step_id}' done");
+            }
+            PipelineEvent::Completed => {
+                println!("│");
+                println!("└─ pipeline complete ──────────────────");
+            }
+            PipelineEvent::Failed { error } => {
+                println!("│ ✗ failed: {error}");
+            }
+            PipelineEvent::Paused { reason, .. } => {
+                println!("│ ⏸ paused: {reason}");
+            }
+            PipelineEvent::GateWaiting { .. } => {
+                println!("│ ⏸ gate (auto-approving…)");
+            }
+            PipelineEvent::BudgetWarning { remaining } => {
+                println!("│ ⚠ budget: {remaining} tokens left");
+            }
+        }
+    });
+
+    driver.drive(task, on_event).await.map_err(|e| format_agent_error(&e))
 }
