@@ -548,6 +548,28 @@ fn build_daemon_at(body: &serde_json::Value, current: &DaemonConfig) -> Result<S
         }
     }
 
+    // Serialize tier_routing if present in the request.
+    if let Some(routing) = body["tier_routing"].as_object() {
+        if !routing.is_empty() {
+            out.push_str("    tier_routing {\n");
+            for (tier, cands_val) in routing {
+                if let Some(cands) = cands_val.as_array() {
+                    let items: Vec<String> = cands.iter()
+                        .filter_map(|c| {
+                            let p = c.get("provider")?.as_str()?;
+                            let m = c.get("model")?.as_str()?;
+                            Some(format!("{{ provider : \"{p}\", model : \"{m}\" }}"))
+                        })
+                        .collect();
+                    if !items.is_empty() {
+                        out.push_str(&format!("        {tier} : [{}]\n", items.join(", ")));
+                    }
+                }
+            }
+            out.push_str("    }\n\n");
+        }
+    }
+
     out.push_str("}\n");
     Ok(out)
 }

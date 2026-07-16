@@ -75,6 +75,7 @@ fn load_from_env() -> DaemonConfig {
         providers,
         default_provider,
         default_model,
+        tier_routing: ai_config::loader::TierRouting::default(),
     }
 }
 

@@ -29,14 +29,35 @@ pub struct TierRouter {
 }
 
 impl TierRouter {
-    /// Build a router from the daemon config. If `tier_routing` is absent
-    /// in the config, the router is empty and `resolve` will fall back to
-    /// the legacy default-provider behavior.
+    /// Build a router from the daemon config. If `tier_routing` is explicitly
+    /// configured in the .at file, use it. Otherwise auto-derive from providers
+    /// (default_provider's models first, others as fallbacks).
     pub fn from_config(config: &DaemonConfig) -> Self {
-        // The tier_routing is not yet parsed from .at — it's a future config
-        // addition. For now, we auto-derive it from the providers: each
-        // provider's models are grouped by tier, and candidates are ordered
-        // with the default_provider first.
+        // 1. If explicit tier_routing is configured, use it directly.
+        if !config.tier_routing.is_empty() {
+            let mut routing: HashMap<ModelTier, Vec<TierCandidate>> = HashMap::new();
+            for (tier_name, candidates) in &config.tier_routing.routes {
+                let tier = match tier_name.as_str() {
+                    "min" => ModelTier::Min,
+                    "lite" | "light" => ModelTier::Lite,
+                    "mid" => ModelTier::Mid,
+                    "pro" | "large" => ModelTier::Pro,
+                    "max" | "heavy" => ModelTier::Max,
+                    _ => continue,
+                };
+                let tc: Vec<TierCandidate> = candidates.iter()
+                    .map(|c| TierCandidate {
+                        provider: c.provider.clone(),
+                        model: c.model.clone(),
+                    })
+                    .collect();
+                routing.insert(tier, tc);
+            }
+            tracing::info!("tier_router: using explicit tier_routing from config ({} tiers)", routing.len());
+            return Self { routing };
+        }
+
+        // 2. Auto-derive from providers (legacy behavior).
         let mut routing: HashMap<ModelTier, Vec<TierCandidate>> = HashMap::new();
 
         // Default provider's models go first per tier.

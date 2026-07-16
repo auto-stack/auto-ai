@@ -61,6 +61,8 @@ pub struct DaemonConfig {
     pub providers: HashMap<String, ProviderConfig>,
     pub default_provider: String,
     pub default_model: String,
+    /// Explicit tier routing table. When non-empty, overrides auto-derivation.
+    pub tier_routing: TierRouting,
 }
 
 impl Default for DaemonConfig {
@@ -72,6 +74,7 @@ impl Default for DaemonConfig {
             providers: HashMap::new(),
             default_provider: String::new(),
             default_model: String::new(),
+            tier_routing: TierRouting::default(),
         }
     }
 }
@@ -102,7 +105,31 @@ pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
     })
 }
 
-/// Parse `ai-daemon.at` content (root must be `daemon { … }`).
+/// A single tier routing candidate: provider + model.
+#[derive(Clone, Debug)]
+pub struct TierRouteCandidate {
+    pub provider: String,
+    pub model: String,
+}
+
+/// Tier routing table: tier name → ordered candidate list (primary first).
+/// When present in the config, overrides auto-derivation.
+#[derive(Clone, Debug, Default)]
+pub struct TierRouting {
+    pub routes: HashMap<String, Vec<TierRouteCandidate>>,
+}
+
+impl TierRouting {
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+
+    pub fn candidates(&self, tier: &str) -> Option<&[TierRouteCandidate]> {
+        self.routes.get(tier).map(|v| v.as_slice())
+    }
+}
+
+/// Parse `daemon { … }` content (root must be `daemon { … }`).
 pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
     let node = root_node(content, "daemon")?;
 
@@ -119,6 +146,7 @@ pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
     cfg.default_provider = opt_str(&node, "default_provider").unwrap_or_default();
     cfg.default_model = opt_str(&node, "default_model").unwrap_or_default();
     cfg.providers = parse_provider_blocks(&node);
+    cfg.tier_routing = parse_tier_routing(&node);
 
     if cfg.default_provider.is_empty() && !cfg.providers.is_empty() {
         cfg.default_provider = cfg.providers.keys().next().cloned().unwrap_or_default();
@@ -148,6 +176,52 @@ fn root_node(content: &str, expected: &str) -> Result<Node, ConfigError> {
             "expected a '{expected}' root node, found {other:?}"
         ))),
     }
+}
+
+/// Parse the `tier_routing { … }` child block from a daemon config.
+///
+/// Format:
+/// ```text
+/// tier_routing {
+///     max : [{ provider : "zhipu", model : "glm-5.2" }, { provider : "deepseek", model : "v4-pro" }]
+///     mid : [{ provider : "zhipu", model : "glm-5-turbo" }]
+/// }
+/// ```
+fn parse_tier_routing(node: &Node) -> TierRouting {
+    let mut routing = TierRouting::default();
+
+    // Find the tier_routing child node.
+    for (_key, kid) in node.kids_iter() {
+        if let Kid::Node(tr_node) = kid {
+            if tr_node.name.as_str() != "tier_routing" {
+                continue;
+            }
+            // Each prop is a tier name → array of candidates.
+            for (tier_key, tier_val) in tr_node.props_iter() {
+                let tier_name = tier_key.to_string();
+                if let Value::Array(arr) = tier_val {
+                    let candidates: Vec<TierRouteCandidate> = arr.values.iter()
+                        .filter_map(|v| {
+                            if let Value::Obj(o) = v {
+                                let provider = o.get("provider")
+                                    .and_then(|val| match val { Value::Str(s) => Some(s.to_string()), _ => None })?;
+                                let model = o.get("model")
+                                    .and_then(|val| match val { Value::Str(s) => Some(s.to_string()), _ => None })?;
+                                Some(TierRouteCandidate { provider, model })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !candidates.is_empty() {
+                        routing.routes.insert(tier_name, candidates);
+                    }
+                }
+            }
+        }
+    }
+
+    routing
 }
 
 /// Walk a node's children, turning each `name { … }` block into a
