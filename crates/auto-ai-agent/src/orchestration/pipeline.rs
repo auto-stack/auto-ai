@@ -135,7 +135,7 @@ fn now_secs() -> u64 {
 
 impl PipelineEngine {
     pub fn new(flow: FlowSpec, run_id: impl Into<String>) -> Self {
-        Self::with_budget(flow, run_id, TokenBudget::new(10_000_000))
+        Self::with_budget(flow, run_id, TokenBudget::default())
     }
 
     pub fn with_budget(
@@ -273,10 +273,24 @@ impl PipelineEngine {
         self.cumulative_tokens += handoff.token_usage.step_tokens;
         self.budget_tracker.record(&role_id, handoff.token_usage.step_tokens, 0);
 
-        if self.budget_tracker.check(&role_id) == BudgetAction::HardStop {
-            let error = format!("Budget exceeded: {} / {}", self.budget_tracker.cumulative, self.budget_tracker.run_budget.limit);
-            self.status = PipelineStatus::Failed { error: error.clone() };
-            return AdvanceResult::Failed { error };
+        // Budget monitoring — log warnings, but don't block tasks.
+        // The high default limit (100M) means this is effectively advisory.
+        match self.budget_tracker.check(&role_id) {
+            crate::orchestration::budget::BudgetAction::HardStop => {
+                tracing::warn!(
+                    "PIPELINE BUDGET EXCEEDED: {} tokens spent (limit: {}). \
+                     Task continues — this is a monitoring warning, not a hard stop.",
+                    self.budget_tracker.cumulative, self.budget_tracker.run_budget.limit
+                );
+                // Log but don't fail — let the task complete.
+            }
+            crate::orchestration::budget::BudgetAction::Warning { remaining } => {
+                tracing::warn!(
+                    "pipeline budget warning: {} tokens remaining (step '{}')",
+                    remaining, role_id
+                );
+            }
+            _ => {}
         }
 
         let next = self.resolve_next_step(&step_id, &exit);
@@ -448,13 +462,18 @@ mod tests {
     }
 
     #[test]
-    fn budget_hardstop() {
+    fn budget_exceeded_logs_but_continues() {
+        // Budget is now advisory (monitoring), not a hard stop.
+        // A task that exceeds budget should continue, not fail.
         let mut eng = PipelineEngine::with_budget(two_step_flow(), "run-6", TokenBudget::new(100));
         eng.advance();
         let mut h = handoff("assistant", "coder");
         h.token_usage.step_tokens = 200;
         let r = eng.submit_handoff(h);
-        assert!(matches!(r, AdvanceResult::Failed { .. }));
+        // Should NOT fail — budget is advisory now.
+        assert!(!matches!(r, AdvanceResult::Failed { .. }));
+        // Should continue to next step.
+        assert!(matches!(r, AdvanceResult::ExecuteStep { .. }) | matches!(r, AdvanceResult::Completed));
     }
 
     #[test]

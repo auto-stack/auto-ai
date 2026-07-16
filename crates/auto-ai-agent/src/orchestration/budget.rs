@@ -16,7 +16,11 @@ pub struct TokenBudget {
 
 impl Default for TokenBudget {
     fn default() -> Self {
-        Self::new(20_000_000)
+        // Very high default — budget is for monitoring/logging, not for
+        // blocking tasks. The agent should run to completion (or until the
+        // user interrupts). Set a finite number to catch pathological runaway
+        // (e.g. an infinite retry loop burning tokens).
+        Self::new(100_000_000) // 100M tokens — ~$150 at typical rates
     }
 }
 
