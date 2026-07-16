@@ -34,14 +34,22 @@ pub struct ProviderConfig {
 impl ProviderConfig {
     /// Resolve the API key: direct string takes precedence, else read the env
     /// var named by `key_env`. `None` if neither is available.
+    ///
+    /// For providers that don't require authentication (e.g. local Ollama),
+    /// returns a placeholder `"no-key-needed"` instead of None, so the daemon
+    /// doesn't reject the provider for having no key.
     pub fn resolve_key(&self) -> Option<String> {
         if let Some(key) = &self.api_key {
+            if key.is_empty() {
+                return Some("no-key-needed".into());
+            }
             return Some(key.clone());
         }
         if let Some(env_name) = &self.key_env {
-            return std::env::var(env_name).ok();
+            return std::env::var(env_name).ok().or_else(|| Some("no-key-needed".into()));
         }
-        None
+        // No api_key and no key_env → placeholder for local/no-auth providers.
+        Some("no-key-needed".into())
     }
 }
 
