@@ -1,7 +1,7 @@
 //! auto-ai-cli — interactive agent demo for the AutoOS AI stack.
 //!
 //! Usage:
-//!   auto-ai-cli chat                    Interactive REPL (assistant auto-routes)
+//!   auto-ai-cli chat                    TUI chat (assistant auto-routes)
 //!   auto-ai-cli chat --mode relay       Force a specific execution mode
 //!   auto-ai-cli run "<task>"            One-shot task (default role: assistant)
 //!   auto-ai-cli pipeline "<task>"       Multi-agent pipeline demo
@@ -9,6 +9,8 @@
 //!
 //! Prerequisites: `aaid` must be running (cargo run -p auto-ai-daemon).
 
+pub mod chat_model;
+pub mod tui;
 pub mod tools;
 mod spawn_pipeline;
 
@@ -78,9 +80,19 @@ fn main() {
         }
         Cmd::Chat { mode } => {
             let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
-            if let Err(e) = rt.block_on(chat_loop(&mode)) {
-                eprintln!("auto-ai-cli: {e}");
-                std::process::exit(1);
+            // Normal mode → TUI. Forced mode → legacy text REPL.
+            if mode == "normal" {
+                // Launch TUI.
+                if let Err(e) = rt.block_on(tui::run_tui_chat(|| build_agent("assistant", build_client(), true), "assistant")) {
+                    eprintln!("auto-ai-cli: {e}");
+                    std::process::exit(1);
+                }
+            } else {
+                // Legacy text-based chat for superpowers/relay modes.
+                if let Err(e) = rt.block_on(chat_loop(&mode)) {
+                    eprintln!("auto-ai-cli: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Pipeline { task } => {
