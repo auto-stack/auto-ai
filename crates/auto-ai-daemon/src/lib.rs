@@ -21,12 +21,14 @@ pub mod provider;
 pub mod server;
 pub mod services;
 pub mod sse;
+pub mod tier_router;
 pub mod tracker;
 
 pub use config::DaemonConfig;
 pub use pool::ConcurrencyManager;
 pub use provider::{AiProvider, ProviderRegistry};
 pub use server::AppState;
+pub use tier_router::{TierCandidate, TierRouter};
 pub use tracker::UsageTracker;
 
 /// Error from an LLM API call (used by the provider layer).

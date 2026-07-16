@@ -107,6 +107,15 @@ pub trait Role: Send + Sync {
     fn approval_gates(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// Preferred provider for this role's LLM requests. None = use the
+    /// daemon's tier_routing (default). Set this when a role needs a specific
+    /// provider's capabilities (e.g. vision → "kimi").
+    ///
+    /// (Multi-Provider Model Routing — Phase 3)
+    fn preferred_provider(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]

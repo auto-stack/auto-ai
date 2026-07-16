@@ -27,6 +27,7 @@ pub struct AppState {
     pub pool: ConcurrencyManager,
     pub tracker: UsageTracker,
     pub current_model: std::sync::Mutex<String>,
+    pub tier_router: crate::tier_router::TierRouter,
 }
 
 impl AppState {
@@ -35,12 +36,14 @@ impl AppState {
             .expect("daemon config must have at least one provider");
         let pool = ConcurrencyManager::from_config(&config);
         let current_model = config.default_model.clone();
+        let tier_router = crate::tier_router::TierRouter::from_config(&config);
         Self {
             config: std::sync::Arc::new(std::sync::RwLock::new(config)),
             registry,
             pool,
             tracker: UsageTracker::new(),
             current_model: std::sync::Mutex::new(current_model),
+            tier_router,
         }
     }
 
@@ -103,44 +106,88 @@ async fn chat_completions(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
-    let provider_name = state.cfg().default_provider.clone();
 
-    // Acquire concurrency permit.
+    // Resolve the request's model + provider.
+    let mut req = req;
+    let provider_name;
+    let is_tier_request = req.model.starts_with("tier:");
+
+    if is_tier_request {
+        // Parse tier from "tier:<tier>" token.
+        let tier_name = req.model.strip_prefix("tier:").unwrap_or("").trim().to_ascii_lowercase();
+        let tier = match tier_name.as_str() {
+            "min" => ai_config::ModelTier::Min,
+            "lite" | "light" => ai_config::ModelTier::Lite,
+            "mid" => ai_config::ModelTier::Mid,
+            "pro" | "large" => ai_config::ModelTier::Pro,
+            "max" | "heavy" => ai_config::ModelTier::Max,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": {"message": format!("unknown tier '{tier_name}'")}})),
+                )
+                    .into_response();
+            }
+        };
+        // Use TierRouter to find the best candidate.
+        let candidate = state.tier_router.resolve(tier, None);
+        match candidate {
+            Some(c) => {
+                provider_name = c.provider.clone();
+                req.model = c.model.clone();
+            }
+            None => {
+                // Fallback: try legacy default-provider resolution.
+                if let Some(resolved) = resolve_tier_model(&req.model, &state.cfg()) {
+                    provider_name = state.cfg().default_provider.clone();
+                    req.model = resolved;
+                } else {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": {"message": format!("could not resolve tier '{}' — no candidates in tier_routing and no default_provider fallback", req.model)}})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    } else {
+        // Concrete model id — use default provider (or find which provider has it).
+        provider_name = state.cfg().default_provider.clone();
+    }
+
+    // Acquire concurrency permit for the chosen provider.
     let permit = match state.pool.acquire(&provider_name).await {
         Some(p) => p,
         None => {
+            // Fallback: try other providers that have a model for this tier.
+            if is_tier_request {
+                let tier_name = req.model.strip_prefix("tier:").unwrap_or("");
+                // Already resolved model — can't fallback easily here.
+                // For now, just return unavailable.
+            }
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": {"message": "concurrency pool unavailable"}})),
+                Json(json!({"error": {"message": format!("concurrency pool unavailable for provider '{}'", provider_name)}})),
             )
                 .into_response();
         }
     };
 
-    // Resolve the request's model: a "tier:<tier>" token → concrete model id
-    // (the agent emits a tier token when the profession didn't pin a model).
-    // Falls through unchanged for concrete model ids.
-    let mut req = req;
-    if req.model.starts_with("tier:") {
-        if let Some(resolved) = resolve_tier_model(&req.model, &state.cfg()) {
-            req.model = resolved;
-        } else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": {"message": format!("could not resolve tier '{}' — configure models with tiers in ai-daemon.at", req.model)}})),
-            )
-                .into_response();
-        }
-    }
-
-    let provider = match state.registry.default_provider() {
-        Ok(p) => p.clone(),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": {"message": format!("{e}")}})),
-            )
-                .into_response();
+    // Get the provider object for the chosen provider name.
+    let provider = match state.registry.get(&provider_name) {
+        Some(p) => p.clone(),
+        None => {
+            // Fallback to default provider.
+            match state.registry.default_provider() {
+                Ok(p) => p.clone(),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": {"message": format!("{e}")}})),
+                    )
+                        .into_response();
+                }
+            }
         }
     };
 
