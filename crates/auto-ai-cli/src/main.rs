@@ -261,10 +261,30 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                     print!("{text}");
                     let _ = io::stdout().flush();
                 }
-                StreamEvent::Tool { tool, result, .. } => {
-                    let preview: String = result.chars().take(80).collect();
+                StreamEvent::Tool { tool, args, result, .. } => {
+                    // Show the tool name + key args (for debugging).
+                    let arg_preview = if tool == "run_command" {
+                        args.get("cmd").and_then(|c| c.as_str())
+                            .map(|c| format!(" cmd={}", &c.chars().take(60).collect::<String>()))
+                            .unwrap_or_default()
+                    } else if tool == "write_file" || tool == "edit_file" {
+                        args.get("path").and_then(|p| p.as_str())
+                            .map(|p| format!(" path={p}"))
+                            .unwrap_or_default()
+                    } else if tool == "read_file" {
+                        args.get("path").and_then(|p| p.as_str())
+                            .map(|p| format!(" path={p}"))
+                            .unwrap_or_default()
+                    } else if tool == "spawn_pipeline" {
+                        let flow = args.get("flow").and_then(|f| f.as_str()).unwrap_or("?");
+                        format!(" flow={flow}")
+                    } else {
+                        String::new()
+                    };
+                    let result_preview: String = result.lines().next().unwrap_or("").chars().take(80).collect();
                     let ellipsis = if result.len() > 80 { "…" } else { "" };
-                    println!("\n  [tool] {tool} → {preview}{ellipsis}");
+                    println!("\n  [tool] {tool}{arg_preview}");
+                    println!("  │ {result_preview}{ellipsis}");
                 }
                 StreamEvent::Done { result } => {
                     let n = result.tool_calls.len();

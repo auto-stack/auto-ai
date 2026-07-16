@@ -137,7 +137,13 @@ const ALLOWED_PREFIXES: &[&str] = &[
 impl Tool for RunCommand {
     fn name(&self) -> &str { "run_command" }
     fn description(&self) -> &str {
-        "Run a shell command and return stdout+stderr. Whitelisted commands (cargo/npm/git status/echo/…) run directly; others are PAUSED for approval. Pass \"force\": true to override."
+        "Run a shell command and return stdout+stderr. \
+         IMPORTANT: This is a Windows cmd.exe environment. \
+         - Use `python` not `python3` \
+         - Do NOT use heredoc (<<EOF), &&, or Unix pipes with complex syntax \
+         - Do NOT use `python -c` for multi-line code — write a file and run it \
+         - Paths: use forward slashes or backslashes, avoid /tmp/ \
+         Whitelisted commands run directly; others need \"force\": true."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"cmd":{"type":"string","description":"the shell command"},"force":{"type":"boolean","description":"skip whitelist check (after user approval)"}},"required":["cmd"]})
