@@ -83,7 +83,7 @@ fn main() {
             // Normal mode → TUI. Forced mode → legacy text REPL.
             if mode == "normal" {
                 // Launch TUI.
-                if let Err(e) = rt.block_on(tui::run_tui_chat(|| build_agent("assistant", build_client(), true), "assistant")) {
+                if let Err(e) = rt.block_on(tui::run_tui_chat("assistant")) {
                     eprintln!("auto-ai-cli: {e}");
                     std::process::exit(1);
                 }
