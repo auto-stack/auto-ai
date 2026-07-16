@@ -29,7 +29,11 @@ impl Role for Assistant {
         0.3
     }
     fn max_turns(&self) -> usize {
-        12
+        // 20 turns: enough for exploring files + answering. The assistant is a
+        // general-purpose chat role — it needs more room than a narrowly-focused
+        // specialist. Previous value (12) was too tight for "read files then answer"
+        // workflows, causing premature max-turns exhaustion.
+        20
     }
     fn allowed_tools(&self) -> Vec<String> {
         // As the default chat entry point, the assistant gets the full tool set
@@ -53,6 +57,6 @@ mod tests {
         let a = Assistant;
         assert_eq!(a.name(), "assistant");
         assert!(a.system_prompt().contains("Soul of the Assistant"));
-        assert_eq!(a.max_turns(), 12);
+        assert_eq!(a.max_turns(), 20);
     }
 }

@@ -339,6 +339,21 @@ impl Agent {
 
         for turn in 0..max_turns {
             result.turns = turn + 1;
+
+            // Warn when approaching the turn limit so the model can wrap up.
+            let remaining = max_turns - turn;
+            if remaining <= 3 && remaining > 1 {
+                let msg = format!(
+                    "⚠️ You have {} turns remaining. If you have enough information, \
+                     provide your final answer now. Do not start reading more files.",
+                    remaining - 1
+                );
+                self.memory.add("system", &msg);
+                on_event(StreamEvent::Delta {
+                    text: format!("\n  ⚠️ {} turns remaining — wrapping up.\n", remaining - 1),
+                });
+            }
+
             let req = self.build_request();
 
             // Single streaming request — text deltas + tool_calls both surface
