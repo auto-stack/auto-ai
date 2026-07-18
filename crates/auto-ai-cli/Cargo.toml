@@ -19,3 +19,8 @@ reqwest = { version = "0.12", features = ["json"] }
 ratatui = "0.29"
 crossterm = "0.28"
 tui-textarea = "0.7"
+chrono = "0.4"
+tui-markdown = "0.3"
+# Same ratatui-core that tui-markdown 0.3 uses, so we can name its types when
+# converting its `Text`/`Line`/`Span` into this project's ratatui-0.29 types.
+ratatui-core = "0.1"

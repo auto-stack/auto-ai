@@ -9,6 +9,7 @@
 //! deterministic mock in tests.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -70,8 +71,20 @@ impl Client for AiClient {
 /// Events emitted by [`Agent::run_stream`] as the ReAct loop progresses.
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
-    /// A chunk of the model's text output.
+    /// A chunk of the model's text output (final answer text only —
+    /// intermediate ReAct reasoning is emitted as [`Self::Thinking`]).
     Delta { text: String },
+    /// A chunk of the model's reasoning text — emitted for text produced
+    /// during an intermediate (tool-calling) turn, so consumers can render
+    /// "thinking" separately from the final answer.
+    Thinking { text: String },
+    /// A tool is about to be executed (the request has been parsed, the tool
+    /// call is starting). Emitted before [`Self::Tool`] so consumers can show
+    /// a "running…" state.
+    ToolStart {
+        tool: String,
+        args: serde_json::Value,
+    },
     /// A tool was called and produced a result.
     Tool {
         tool: String,
@@ -80,6 +93,9 @@ pub enum StreamEvent {
     },
     /// The loop finished successfully (carries the full result).
     Done { result: AgentResult },
+    /// The run was cancelled by the user (partial results may already have
+    /// been produced and emitted via earlier events).
+    Cancelled { result: AgentResult },
     /// The loop failed.
     Error { message: String },
 }
@@ -328,9 +344,18 @@ impl Agent {
     /// Like [`Agent::run`], but streams events as the loop progresses.
     ///
     /// Events emitted (via `on_event`):
-    /// - [`StreamEvent::Delta`] — a text chunk from the model's final answer.
-    /// - [`StreamEvent::Tool`] — a tool was called (with its result).
+    /// - [`StreamEvent::Delta`] — a text chunk from the model's output (both
+    ///   intermediate ReAct reasoning and the final answer stream as `Delta`;
+    ///   consumers can tell them apart because tool turns are bracketed by
+    ///   [`StreamEvent::ToolStart`] / [`StreamEvent::Tool`] events).
+    /// - [`StreamEvent::ToolStart`] — a tool call is about to run (so
+    ///   consumers can show a "running…" state).
+    /// - [`StreamEvent::Tool`] — a tool was called and produced a result.
     /// - [`StreamEvent::Done`] — the loop finished (with the full result).
+    /// - [`StreamEvent::Cancelled`] — the run was cancelled (carries partial
+    ///   results). Set `cancel` to `true` to request cancellation; it is
+    ///   honored at safe checkpoints (between turns, after an LLM response,
+    ///   before a tool execution) so memory stays consistent.
     /// - [`StreamEvent::Error`] — the loop failed.
     ///
     /// Implementation note: each ReAct turn is a separate request. We stream
@@ -341,6 +366,7 @@ impl Agent {
         &mut self,
         task: &str,
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+        cancel: Arc<AtomicBool>,
     ) -> Result<AgentResult, AgentError> {
         self.memory.add("user", task);
         let soft_limit = self.role.max_turns();
@@ -349,6 +375,12 @@ impl Agent {
         let mut seen: HashMap<String, usize> = HashMap::new();
 
         for turn in 0..hard_limit {
+            // Cancel checkpoint 1: stop before starting a new ReAct turn.
+            // (Memory is consistent here — the previous turn, if any, is done.)
+            if cancel.load(Ordering::SeqCst) {
+                on_event(StreamEvent::Cancelled { result: result.clone() });
+                return Ok(result);
+            }
             result.turns = turn + 1;
 
             // Soft limit warning: when exceeding the role's max_turns, log it
@@ -390,6 +422,17 @@ impl Agent {
                 }))
                 .await?;
 
+            // Cancel checkpoint 2: stop after the LLM responded, before
+            // consuming it. (The response was fully received — no partial
+            // memory writes this turn yet.)
+            if cancel.load(Ordering::SeqCst) {
+                if let Some(u) = &stream_resp.usage {
+                    result.total_tokens += u.total_tokens() as u64;
+                }
+                on_event(StreamEvent::Cancelled { result: result.clone() });
+                return Ok(result);
+            }
+
             let content = stream_resp.content;
             // Propagate SSE-stream error events from the daemon (Plan 008 fix).
             if let Some(err) = stream_resp.error {
@@ -403,6 +446,14 @@ impl Agent {
             }
 
             if !stream_resp.tool_calls.is_empty() {
+                // Cancel checkpoint 3: stop before recording/executing tool
+                // calls. This is the last consistent point — once we write the
+                // ToolUse blocks to memory below, the matching ToolResults must
+                // follow, so we bail out *before* any of that.
+                if cancel.load(Ordering::SeqCst) {
+                    on_event(StreamEvent::Cancelled { result: result.clone() });
+                    return Ok(result);
+                }
                 // Record assistant turn + execute tools.
                 let mut blocks: Vec<ContentBlock> = Vec::new();
                 if !content.is_empty() {
@@ -429,6 +480,12 @@ impl Agent {
                         });
                         return Err(AgentError::LoopDetected(tc.name.clone()));
                     }
+                    // Signal that this tool is about to run, so consumers can
+                    // show a "running…" indicator before execution completes.
+                    on_event(StreamEvent::ToolStart {
+                        tool: tc.name.clone(),
+                        args: tc.input.clone(),
+                    });
                     let outcome =
                         match self.tools.execute(&tc.name, &tc.input).await {
                             Ok(o) => o,

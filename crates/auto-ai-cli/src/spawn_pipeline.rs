@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use auto_ai_agent::{
     Agent, AgentFactory, Client, FlowSpec, FlowStep, PipelineDriver, PipelineEvent,
-    Tool, ToolError, HandoffDocument,
+    RoleRegistry, Tool, ToolError, HandoffDocument,
 };
 
 /// Build a flow spec for a named mode.
@@ -56,7 +56,9 @@ impl AgentFactory for CliAgentFactory {
         role_id: &str,
         handoff: Option<&auto_ai_agent::HandoffDocument>,
     ) -> Result<Agent, String> {
-        let role = auto_ai_agent::load_builtin(role_id)
+        let registry = RoleRegistry::load();
+        let role = registry
+            .resolve_role(role_id)
             .ok_or_else(|| format!("unknown role '{role_id}'"))?;
         let mut agent = Agent::new(crate::OwnedRole(role), self.client.clone());
         agent.register_tool(crate::tools::ReadFile);

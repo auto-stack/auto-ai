@@ -10,27 +10,36 @@
 //! Prerequisites: `aaid` must be running (cargo run -p auto-ai-daemon).
 
 pub mod chat_model;
+pub mod markdown;
 pub mod tui;
 pub mod tools;
 mod spawn_pipeline;
 
 use std::io::{self, BufRead, Write};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use auto_ai_agent::{
-    builtin_names, load_builtin, Agent, Client, StreamEvent, Tool,
+    Agent, Client, StreamEvent, Tool,
     AgentFactory, FlowSpec, FlowStep, GateType, GateDecision,
-    HandoffDocument, PipelineDriver, PipelineEvent,
+    HandoffDocument, PipelineDriver, PipelineEvent, RoleRegistry,
 };
 use auto_ai_client::AiClient;
 
 #[derive(Parser)]
-#[command(name = "auto-ai-cli", version, about = "Interactive agent demo for the AutoOS AI stack")]
+#[command(
+    name = "auto-ai-cli",
+    version,
+    about = "Interactive agent demo for the AutoOS AI stack",
+    // No subcommand → default to `chat` (like common interactive CLIs).
+    subcommand_required = false,
+    arg_required_else_help = false,
+)]
 struct Cli {
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -57,18 +66,19 @@ enum Cmd {
 
 fn main() {
     let cli = Cli::parse();
-    match cli.cmd {
+    // No subcommand → default to `chat` (normal/TUI mode).
+    match cli.cmd.unwrap_or(Cmd::Chat { mode: "normal".into() }) {
         Cmd::Roles => {
-            println!("Built-in roles:");
-            for name in builtin_names() {
-                if let Some(r) = load_builtin(name) {
-                    println!(
-                        "  {name:<14} tier={:<4} max_turns={:<3} tools={}",
-                        format!("{:?}", r.model_tier()).to_lowercase(),
-                        r.max_turns(),
-                        if r.allowed_tools().is_empty() { "all" } else { "restricted" }
-                    );
-                }
+            let registry = RoleRegistry::load();
+            println!("Available roles:");
+            for s in registry.list() {
+                let kind = if s.is_builtin { "builtin" } else { "user" };
+                println!(
+                    "  {name:<14} tier={tier:<4} [{kind}]",
+                    name = s.name,
+                    tier = format!("{:?}", s.tier).to_lowercase(),
+                    kind = kind,
+                );
             }
         }
         Cmd::Run { task, role } => {
@@ -108,24 +118,98 @@ fn main() {
 /// Build the client. Use with_url to avoid the blocking ensure_daemon
 /// (which creates a nested tokio runtime).
 fn build_client() -> Arc<dyn Client> {
-    Arc::new(AiClient::with_url(
-        std::env::var("AAID_URL").unwrap_or_else(|_| "http://127.0.0.1:17654".into()),
-    ))
+    Arc::new(AiClient::with_url(daemon_url()))
 }
 
-/// Build an agent from a built-in role name, register the demo tools.
+/// Resolve the aaid daemon URL (env override or default).
+fn daemon_url() -> String {
+    std::env::var("AAID_URL").unwrap_or_else(|_| "http://127.0.0.1:17654".into())
+}
+
+// ── Startup banner (Session ID + debug info) ──────────────────────────────
+
+/// Generate a zero-dependency session id: `session_YYYYMMDD-HHMMSS-PID`.
+/// Uses `SystemTime` (Unix epoch) converted to civil time via the
+/// well-known days-from-civil algorithm, plus the OS process id. This is
+/// both human-readable (so logs are easy to scan) and unique enough per run.
+fn generate_session_id() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let pid = std::process::id();
+
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hh, mm, ss) = (
+        (rem / 3600) as u32,
+        ((rem % 3600) / 60) as u32,
+        (rem % 60) as u32,
+    );
+    let (y, mo, d) = civil_from_days(days);
+    format!("session-{y:04}{mo:02}{d:02}-{hh:02}{mm:02}{ss:02}-{pid}")
+}
+
+/// Convert days since 1970-01-01 to (year, month, day) — Howard Hinnant's
+/// days_from_civil algorithm in reverse. Pure arithmetic, no deps.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468; // shift epoch from 1970-01-01 to 0000-03-01
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as i64; // [0, 146096]: day of era
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]: month offset from March
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Build the startup banner shown by every interactive subcommand.
+/// Resolves `role` (e.g. "assistant") to surface the model tier/id in use.
+pub fn build_banner(role: &str) -> String {
+    let dir = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "?".into());
+    let session = generate_session_id();
+    let version = env!("CARGO_PKG_VERSION");
+    let daemon = daemon_url();
+
+    // Model line: resolve role → tier (+ concrete model override if set).
+    let model_line = {
+        let registry = RoleRegistry::load();
+        let resolved = registry.resolve_role(role);
+        match resolved {
+            Some(r) => {
+                let tier = format!("{:?}", r.model_tier()).to_lowercase();
+                let model = r.model();
+                let model_desc = if model.is_empty() { "auto".into() } else { model.to_string() };
+                format!("{role} (tier={tier}, model={model_desc})")
+            }
+            None => format!("{role} (unresolved)"),
+        }
+    };
+
+    format!(
+        "┌─ auto-ai-cli ───────────────────────────────\n\
+         │  Directory: {dir}\n\
+         │  Session:   {session}\n\
+         │  Model:     {model_line}\n\
+         │  Daemon:    {daemon}\n\
+         │  Version:   {version}\n\
+         └──────────────────────────────────────────────"
+    )
+}
+
+/// Build an agent from a role name, resolving user overrides when available.
 /// When `with_pipeline` is true, also registers the spawn_pipeline tool
 /// (enables the assistant to auto-route to superpowers/relay flows).
 fn build_agent(role_name: &str, client: Arc<dyn Client>, with_pipeline: bool) -> Result<Agent, String> {
-    let role = load_builtin(role_name)
-        .ok_or_else(|| {
-            format!(
-                "unknown role '{role_name}'. Available: {}",
-                builtin_names().join(", ")
-            )
-        })?;
-    // OwnedRole wrapper: load_builtin returns Arc<dyn Role>, but Agent::new
-    // needs Role + 'static. We use a thin wrapper.
+    let registry = RoleRegistry::load();
+    let role = registry
+        .resolve_role(role_name)
+        .ok_or_else(|| format!("unknown role '{role_name}'"))?;
+    // OwnedRole wrapper: Agent::new needs Role + 'static.
     let mut agent = Agent::new(OwnedRole(role), client.clone());
     agent.register_tool(tools::ReadFile);
     agent.register_tool(tools::WriteFile);
@@ -166,6 +250,7 @@ async fn run_task(task: &str, role: &str) -> Result<(), String> {
     let mut agent = build_agent(role, client, false)?;
 
     let role_display = role.to_string();
+    println!("{}", build_banner(&role_display));
     println!("auto-ai-cli: running role '{role_display}' on task:\n  {task}\n");
 
     let result = agent.run(task).await.map_err(|e| format_agent_error(&e))?;
@@ -197,6 +282,7 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
 
     // If a specific mode is requested, start the pipeline directly.
     if mode == "superpowers" || mode == "relay" {
+        println!("{}", build_banner("assistant"));
         println!("auto-ai-cli — mode: {mode} (pipeline will start on first message)");
         let stdin = io::stdin();
         loop {
@@ -216,6 +302,7 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
     // Normal mode: assistant with spawn_pipeline tool (auto-routes).
     let mut agent = build_agent("assistant", client.clone(), true)?;
 
+    println!("{}", build_banner("assistant"));
     println!(
         "auto-ai-cli chat — mode: normal (assistant auto-routes)"
     );
@@ -247,12 +334,15 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                     continue;
                 }
                 "/roles" => {
+                    let registry = RoleRegistry::load();
                     println!("\nAvailable roles:");
-                    for name in builtin_names() {
-                        if let Some(r) = load_builtin(name) {
-                            println!("  {name:<14} tier={:<4} max_turns={}", 
-                                format!("{:?}", r.model_tier()).to_lowercase(), r.max_turns());
-                        }
+                    for s in registry.list() {
+                        let kind = if s.is_builtin { "builtin" } else { "user" };
+                        println!("  {name:<14} tier={tier:<4} [{kind}]",
+                            name = s.name,
+                            tier = format!("{:?}", s.tier).to_lowercase(),
+                            kind = kind,
+                        );
                     }
                     continue;
                 }
@@ -272,6 +362,22 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                 StreamEvent::Delta { text } => {
                     print!("{text}");
                     let _ = io::stdout().flush();
+                }
+                StreamEvent::Thinking { text } => {
+                    // Intermediate ReAct reasoning — print dimmed so it's
+                    // visually distinct from the final answer delta stream.
+                    print!("\x1b[2m{text}\x1b[0m");
+                    let _ = io::stdout().flush();
+                }
+                StreamEvent::ToolStart { tool, args } => {
+                    let hint = match tool.as_str() {
+                        "run_command" => args.get("cmd").and_then(|c| c.as_str())
+                            .map(|c| c.chars().take(60).collect::<String>()).unwrap_or_default(),
+                        "write_file" | "edit_file" | "read_file" | "list_dir" =>
+                            args.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string(),
+                        _ => String::new(),
+                    };
+                    println!("\n  [running] {tool}  {hint}…");
                 }
                 StreamEvent::Tool { tool, args, result, .. } => {
                     // Show the tool name + key args (for debugging).
@@ -308,10 +414,16 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                 StreamEvent::Error { message } => {
                     println!("\n  [error] {message}");
                 }
+                // The legacy text REPL doesn't support cancellation; the TUI is
+                // the only consumer that wires up a real cancel handle.
+                StreamEvent::Cancelled { .. } => {
+                    println!("\n  [cancelled]");
+                }
             }
         });
 
-        match agent.run_stream(input, on_event).await {
+        let no_cancel = Arc::new(AtomicBool::new(false));
+        match agent.run_stream(input, on_event, no_cancel).await {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("\n{}", format_agent_error(&e));
@@ -504,6 +616,7 @@ async fn run_pipeline(task: &str) -> Result<(), String> {
         }
     });
 
+    println!("{}", build_banner("assistant"));
     println!("auto-ai-cli pipeline:\n  {task_owned}\n");
     println!("Flow: assistant → coder → reviewer");
 

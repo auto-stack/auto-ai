@@ -1,31 +1,44 @@
 //! TUI rendering and event loop using ratatui + crossterm.
 //!
-//! (Plan 010 — TUI Phase 3-4)
-//!
-//! Architecture:
-//! - Main loop: render + poll keyboard + drain stream channel
-//! - Agent.run_stream runs inline but yields between turns via the poll loop.
-//!   During streaming, the on_event callback pushes deltas through mpsc,
-//!   and the main loop renders them on the next poll cycle (50ms).
+//! Architecture (streaming-first):
+//! - A **resident background task** owns the `Agent` (so its memory survives
+//!   across turns). The main loop talks to it over two channels:
+//!     • `input_tx`  (String)            — main → task: a user message to run.
+//!     • `stream_tx` (StreamEvent)       — task → main: streaming events.
+//! - The main loop runs every ~50ms: drain stream events → advance the
+//!   spinner → render → poll keyboard. Because rendering is *not* blocked on
+//!   `agent.run_stream`, text deltas show up on screen as they arrive.
+//! - An assistant turn is rendered as an ordered list of content blocks
+//!   (● 回答 / 💭 思考 / 工具(细分) / ⏳ 运行中), each with a uniform shape and
+//!   a blank line between blocks.
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Borders, ListState, Padding, Paragraph};
+// NOTE: ratatui's `Block` is referenced via the fully-qualified path
+// `ratatui::widgets::Block` because this module also uses `chat_model::Block`
+// (a content block in the chat model). Importing both unqualified collides.
 use ratatui::Terminal;
 use tui_textarea::TextArea;
 use tokio::sync::mpsc;
 
 use auto_ai_agent::{Agent, StreamEvent};
 
-use crate::chat_model::{ChatLine, ChatLog};
+use crate::chat_model::{Block, ChatLine, ChatLog, ToolBlock};
+
+/// Spinner frames cycled while the assistant is "thinking" (no text yet).
+const SPINNER_FRAMES: [&str; 3] = [".", "..", "..."];
+const SPINNER_INTERVAL: Duration = Duration::from_millis(400);
 
 /// App state for the TUI.
 pub struct App {
@@ -40,21 +53,24 @@ pub struct App {
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
     pub auto_scroll: bool,
+    /// Current spinner animation frame (advanced while streaming).
+    pub spinner_frame: usize,
+    /// When the spinner last advanced.
+    pub last_spinner_tick: Instant,
+    /// Cancel handle for the turn currently executing (set when a message is
+    /// sent, cleared when the turn ends). Esc sets the flag to true.
+    pub current_cancel: Option<Arc<AtomicBool>>,
+    /// Manual scroll offset (top line index into the chat). Used when
+    /// [`Self::auto_scroll`] is false (i.e. the user is reviewing history).
+    pub scroll_offset: usize,
 }
 
 impl App {
     pub fn new(role: &str) -> Self {
-        let mut input = TextArea::default();
-        input.set_placeholder_text("Type a message... (Enter=send, Shift+Enter=newline)");
-        input.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Input ")
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
+        let now = Instant::now();
         Self {
             chat: ChatLog::new(),
-            input,
+            input: new_input_textarea(),
             role: role.into(),
             turn: 0,
             tool_count: 0,
@@ -64,21 +80,51 @@ impl App {
             history: Vec::new(),
             history_idx: None,
             auto_scroll: true,
+            spinner_frame: 0,
+            last_spinner_tick: now,
+            current_cancel: None,
+            scroll_offset: 0,
         }
     }
 
     fn take_input(&mut self) -> String {
         let text: String = self.input.lines().join("\n");
-        self.input = TextArea::default();
-        self.input.set_placeholder_text("Type a message... (Enter=send, Shift+Enter=newline)");
-        self.input.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Input ")
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
+        self.input = new_input_textarea();
         text
     }
+
+    /// Advance the spinner if enough time elapsed. Called every render cycle.
+    fn tick_spinner(&mut self) {
+        if !self.is_streaming {
+            return;
+        }
+        if self.last_spinner_tick.elapsed() >= SPINNER_INTERVAL {
+            self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+            self.last_spinner_tick = Instant::now();
+        }
+    }
+
+    /// The current spinner dots string (e.g. "...").
+    fn spinner_str(&self) -> &'static str {
+        SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+}
+
+fn new_input_textarea() -> TextArea<'static> {
+    let mut input = TextArea::default();
+    input.set_placeholder_text("Type a message... (Enter=send, Shift+Enter=newline)");
+    input.set_block(input_block());
+    input
+}
+
+/// Build the input box's block. Uses 1-column left padding so typed text (and
+/// the placeholder) doesn't sit flush against the border.
+fn input_block() -> ratatui::widgets::Block<'static> {
+    ratatui::widgets::Block::default()
+        .borders(Borders::ALL)
+        .title(" Input ")
+        .border_style(Style::default().fg(Color::DarkGray))
+        .padding(Padding::left(1))
 }
 
 /// Run the TUI chat loop with a real agent.
@@ -86,62 +132,54 @@ pub async fn run_tui_chat(role: &str) -> Result<(), String> {
     enable_raw_mode().map_err(|e| format!("raw mode: {e}"))?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).map_err(|e| format!("alt screen: {e}"))?;
+    // Enable mouse capture so the scroll wheel pans the chat log (the
+    // terminal's own scrollback isn't available under the alt screen).
+    execute!(stdout, event::EnableMouseCapture).map_err(|e| format!("mouse capture: {e}"))?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|e| format!("terminal: {e}"))?;
 
     let mut app = App::new(role);
-    app.chat.add_system("Welcome to auto-ai-cli TUI. Type a message and press Enter.");
+    // Startup banner as the first chat line: Session/Dir/Model/Daemon/Version
+    // (visible throughout the session — scroll up to review).
+    app.chat.add_system(&format!(
+        "{}\nWelcome to auto-ai-cli TUI. Type a message and press Enter.",
+        crate::build_banner("assistant")
+    ));
 
     let client = crate::build_client();
-    let mut agent = crate::build_agent("assistant", client, true)
+    let agent = crate::build_agent("assistant", client, true)
         .map_err(|e| format!("build agent: {e}"))?;
 
-    // Channel: agent's on_event callback → main loop.
+    // Two channels bridging the main loop and the resident agent task:
+    //   input_tx  — main → task: (user message, cancel handle for this turn).
+    //   stream_tx — task → main: StreamEvents from run_stream.
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<(String, Arc<AtomicBool>)>();
     let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<StreamEvent>();
+
+    // Resident agent task: owns the agent (memory persists across turns),
+    // runs one `run_stream` per incoming (message, cancel) pair.
+    let join_handle = tokio::spawn(async move {
+        let mut agent = agent;
+        while let Some((text, cancel)) = input_rx.recv().await {
+            let tx = stream_tx.clone();
+            let on_event: Arc<dyn Fn(StreamEvent) + Send + Sync> =
+                Arc::new(move |ev| { let _ = tx.send(ev); });
+            // run_stream errors surface as StreamEvent::Error already; a hard
+            // failure just ends this turn (the task stays alive for the next).
+            let _ = agent.run_stream(&text, on_event, cancel).await;
+        }
+    });
+
     let mut list_state = ListState::default();
 
-    // Pending user text to send to agent.
-    let mut pending_input: Option<String> = None;
-
     loop {
-        // ── Drain streaming events first (so we render fresh data). ──
+        // ── Drain all streaming events. ──
         while let Ok(ev) = stream_rx.try_recv() {
             handle_stream_event(&mut app, ev);
         }
 
-        // ── If pending input, run the agent turn (blocking until done). ──
-        if let Some(text) = pending_input.take() {
-            if !app.is_streaming {
-                app.chat.start_assistant();
-                app.is_streaming = true;
-                app.turn += 1;
-                app.auto_scroll = true;
-
-                // Render once to show "assistant ───" before blocking.
-                update_list_state(&mut list_state, &app);
-                terminal.draw(|f| render_app(f, &app, &mut list_state)).ok();
-
-                let tx = stream_tx.clone();
-                let on_event: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(move |ev| {
-                    let _ = tx.send(ev);
-                });
-
-                match agent.run_stream(&text, on_event).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        let msg = format!("{e}");
-                        app.chat.add_error(&format_agent_error(&msg));
-                        app.is_streaming = false;
-                    }
-                }
-                // Flush remaining events.
-                while let Ok(ev) = stream_rx.try_recv() {
-                    handle_stream_event(&mut app, ev);
-                }
-            }
-        }
-
         // ── Render. ──
+        app.tick_spinner();
         update_list_state(&mut list_state, &app);
         terminal.draw(|f| render_app(f, &app, &mut list_state)).ok();
 
@@ -149,54 +187,113 @@ pub async fn run_tui_chat(role: &str) -> Result<(), String> {
             break;
         }
 
-        // ── Poll keyboard (50ms). ──
+        // ── Poll input (50ms): keyboard + mouse wheel. ──
         if event::poll(std::time::Duration::from_millis(50)).map_err(|e| format!("poll: {e}"))? {
-            if let Event::Key(key) = event::read().map_err(|e| format!("read: {e}"))? {
-                handle_key(&mut app, key, &mut pending_input);
+            match event::read().map_err(|e| format!("read: {e}"))? {
+                Event::Key(key) => handle_key(&mut app, key, &input_tx),
+                Event::Mouse(mouse) => handle_mouse(&mut app, mouse),
+                _ => {}
             }
         }
     }
 
+    // Dropping input_tx makes the resident task's recv() return None → it exits.
+    drop(input_tx);
+    // Don't await the join indefinitely; the task exits once input_rx closes.
+    let _ = tokio::time::timeout(Duration::from_millis(500), join_handle).await;
+
     disable_raw_mode().map_err(|e| format!("disable raw: {e}"))?;
+    execute!(io::stdout(), event::DisableMouseCapture).map_err(|e| format!("disable mouse: {e}"))?;
     execute!(io::stdout(), LeaveAlternateScreen).map_err(|e| format!("leave alt: {e}"))?;
     Ok(())
 }
 
 /// Update list state: auto-scroll to bottom or respect manual scroll.
 fn update_list_state(state: &mut ListState, app: &App) {
-    let total_items: usize = app.chat.lines.iter().map(|l| match l {
-        ChatLine::User(_) => 1,
-        ChatLine::System(_) => 1,
-        ChatLine::Error(_) => 1,
-        ChatLine::Divider(_) => 1,
-        ChatLine::Assistant(msg) => {
-            let tool_lines: usize = msg.tools.iter().map(|t| {
-                if t.collapsed { 1 } else { 1 + t.result.lines().count().min(11) }
-            }).sum();
-            1 + msg.text.lines().count() + tool_lines
-        }
-    }).sum();
+    let total_items: usize = app.chat.lines.iter().map(|l| line_height(l)).sum();
+    if app.auto_scroll && total_items > 0 {
+        state.select(Some(total_items.saturating_sub(1)));
+    }
+}
 
-    if app.auto_scroll {
-        if total_items > 0 {
-            state.select(Some(total_items.saturating_sub(1)));
+/// Approximate rendered height of a chat line (for auto-scroll accounting).
+/// Counts the top rule + dialog header + bottom rule for Assistant/User dialogs.
+fn line_height(line: &ChatLine) -> usize {
+    match line {
+        ChatLine::User { text, .. } => {
+            // blank + top rule + header + body lines + bottom rule
+            1 + 1 + 1 + text.lines().count().max(1) + 1
+        }
+        ChatLine::System(text) | ChatLine::Error(text) | ChatLine::Divider(text) => {
+            text.lines().count().max(1)
+        }
+        ChatLine::Assistant(turn) => {
+            // blank + top rule + header + blocks + bottom rule
+            let mut h = 1 + 1 + 1;
+            for (i, block) in turn.blocks.iter().enumerate() {
+                if i > 0 {
+                    h += 1; // blank line between blocks
+                }
+                h += 1; // title line
+                h += block_body_height(block);
+            }
+            h += 1; // bottom rule
+            h.max(1)
         }
     }
 }
 
+/// Rendered height of a block's body (below its title line).
+fn block_body_height(block: &Block) -> usize {
+    match block {
+        Block::Answer { text } => text.lines().count().max(1),
+        Block::Thinking { text } => text.lines().count().max(1),
+        Block::Tool(t) => {
+            if t.collapsed || !t.done {
+                0
+            } else {
+                t.result.lines().count().min(11) + 1
+            }
+        }
+        _ => 0,
+    }
+}
+
 /// Handle a keyboard event.
-fn handle_key(app: &mut App, key: KeyEvent, pending_input: &mut Option<String>) {
+fn handle_key(
+    app: &mut App,
+    key: KeyEvent,
+    input_tx: &mpsc::UnboundedSender<(String, Arc<AtomicBool>)>,
+) {
     // Ctrl-C → quit.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.should_quit = true;
         return;
     }
 
+    // On Windows, crossterm emits both Press and Release for each physical key.
+    // IME commit (confirming a candidate) replays an Enter *Release* ("ghost
+    // Enter"), which must not trigger actions. Only handle key presses — this
+    // also prevents every action from firing twice on Windows. See crossterm
+    // #752, ratatui #347.
+    if key.kind != KeyEventKind::Press {
+        return;
+    }
+
     if app.is_streaming {
         match key.code {
+            // Esc → request cancellation. Sets the flag; the turn actually ends
+            // when StreamEvent::Cancelled arrives (keeps memory consistent).
+            KeyCode::Esc => {
+                if let Some(c) = &app.current_cancel {
+                    c.store(true, Ordering::SeqCst);
+                }
+            }
             KeyCode::Char('q') => app.should_quit = true,
             KeyCode::Tab => app.chat.toggle_last_tool(),
-            KeyCode::PageDown => app.auto_scroll = true,
+            // PageUp/PageDown pan the chat log even while streaming.
+            KeyCode::PageUp => scroll_chat(app, ScrollDir::Up, 10),
+            KeyCode::PageDown => jump_to_bottom(app),
             _ => {}
         }
         return;
@@ -218,15 +315,26 @@ fn handle_key(app: &mut App, key: KeyEvent, pending_input: &mut Option<String>) 
         app.chat.add_user(&text);
         app.history.push(text.clone());
         app.history_idx = None;
-        *pending_input = Some(text);
+        // Start a fresh assistant turn and send the message to the agent task.
+        // Create a fresh cancel handle for this turn (Esc sets it to true).
+        app.chat.start_assistant();
+        app.is_streaming = true;
+        app.turn += 1;
+        app.auto_scroll = true;
+        app.last_spinner_tick = Instant::now();
+        let cancel = Arc::new(AtomicBool::new(false));
+        app.current_cancel = Some(cancel.clone());
+        let _ = input_tx.send((text, cancel));
         return;
     }
 
     // History recall (only when single-line input).
     if key.code == KeyCode::Up && app.input.lines().len() == 1 && !app.history.is_empty() {
-        let idx = app.history_idx.map(|i| if i > 0 { i - 1 } else { 0 }).unwrap_or(app.history.len() - 1);
+        let idx = app.history_idx
+            .map(|i| if i > 0 { i - 1 } else { 0 })
+            .unwrap_or(app.history.len() - 1);
         app.history_idx = Some(idx);
-        app.input = TextArea::default();
+        app.input = new_input_textarea();
         app.input.insert_str(&app.history[idx]);
         return;
     }
@@ -234,13 +342,24 @@ fn handle_key(app: &mut App, key: KeyEvent, pending_input: &mut Option<String>) 
         if let Some(idx) = app.history_idx {
             if idx + 1 < app.history.len() {
                 app.history_idx = Some(idx + 1);
-                app.input = TextArea::default();
+                app.input = new_input_textarea();
                 app.input.insert_str(&app.history[idx + 1]);
             } else {
                 app.history_idx = None;
-                app.input = TextArea::default();
+                app.input = new_input_textarea();
             }
         }
+        return;
+    }
+
+    // PageUp/PageDown: pan the chat log (review history). ↑/↓ stay with the
+    // input box (cursor move / history recall).
+    if key.code == KeyCode::PageUp {
+        scroll_chat(app, ScrollDir::Up, 10);
+        return;
+    }
+    if key.code == KeyCode::PageDown {
+        jump_to_bottom(app);
         return;
     }
 
@@ -250,13 +369,53 @@ fn handle_key(app: &mut App, key: KeyEvent, pending_input: &mut Option<String>) 
         return;
     }
 
-    // Ctrl-L: clear screen (keep history).
+    // Ctrl-L: jump to newest (keep history).
     if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        app.auto_scroll = true;
+        jump_to_bottom(app);
         return;
     }
 
     app.input.input(key);
+}
+
+/// Handle a mouse event — the scroll wheel pans the chat log. Each notch moves
+/// 3 lines (comfortable granularity). Scrolling leaves "follow newest" mode;
+/// scrolling all the way back down re-engages it.
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => scroll_chat(app, ScrollDir::Up, 3),
+        MouseEventKind::ScrollDown => scroll_chat(app, ScrollDir::Down, 3),
+        _ => {}
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ScrollDir { Up, Down }
+
+/// Pan the chat log by `lines` in the given direction, entering manual scroll
+/// mode. Moving back to (or past) the bottom re-engages "follow newest".
+fn scroll_chat(app: &mut App, dir: ScrollDir, lines: usize) {
+    app.auto_scroll = false;
+    // Compute the current max offset to clamp against. We don't know the
+    // visible height here precisely (it depends on the rendered area), so we
+    // allow the offset to grow; render_app clamps it to max_offset on draw.
+    match dir {
+        ScrollDir::Up => {
+            app.scroll_offset = app.scroll_offset.saturating_add(lines);
+        }
+        ScrollDir::Down => {
+            app.scroll_offset = app.scroll_offset.saturating_sub(lines);
+            if app.scroll_offset == 0 {
+                app.auto_scroll = true;
+            }
+        }
+    }
+}
+
+/// Jump back to following the newest output (bottom of the log).
+fn jump_to_bottom(app: &mut App) {
+    app.scroll_offset = 0;
+    app.auto_scroll = true;
 }
 
 fn handle_slash_command(app: &mut App, cmd: &str) {
@@ -267,12 +426,16 @@ fn handle_slash_command(app: &mut App, cmd: &str) {
             );
         }
         "/roles" => {
+            let registry = auto_ai_agent::RoleRegistry::load();
             let mut lines = vec!["Available roles:".to_string()];
-            for name in auto_ai_agent::builtin_names() {
-                if let Some(r) = auto_ai_agent::load_builtin(name) {
-                    lines.push(format!("  {name:<14} tier={:<4} max_turns={}",
-                        format!("{:?}", r.model_tier()).to_lowercase(), r.max_turns()));
-                }
+            for s in registry.list() {
+                let kind = if s.is_builtin { "builtin" } else { "user" };
+                lines.push(format!(
+                    "  {name:<14} tier={tier:<4} [{kind}]",
+                    name = s.name,
+                    tier = format!("{:?}", s.tier).to_lowercase(),
+                    kind = kind,
+                ));
             }
             app.chat.add_system(&lines.join("\n"));
         }
@@ -285,15 +448,12 @@ fn handle_slash_command(app: &mut App, cmd: &str) {
         }
         "/config" => {
             app.chat.add_system("Opening AutoOS Settings in browser...");
-            // Spawn browser open (non-blocking, don't stall TUI).
             let daemon_url = std::env::var("AAID_URL").unwrap_or_else(|_| "http://127.0.0.1:17654".into());
             tokio::spawn(async move {
                 let http = reqwest::Client::new();
-                // Ensure os-config via aaid.
                 let _ = http.post(format!("{}/v1/services/os-config/ensure", daemon_url))
                     .timeout(std::time::Duration::from_secs(20))
                     .send().await;
-                // Open browser.
                 #[cfg(target_os = "windows")]
                 { let _ = std::process::Command::new("cmd").args(["/C", "start", "", "http://localhost:17700"]).spawn(); }
                 #[cfg(target_os = "macos")]
@@ -304,14 +464,27 @@ fn handle_slash_command(app: &mut App, cmd: &str) {
     }
 }
 
+/// Map a stream event onto chat model mutations.
 fn handle_stream_event(app: &mut App, ev: StreamEvent) {
+    // Agent output grows the chat — re-engage "follow newest" so the user
+    // sees fresh content even if they were reviewing history. (If they want
+    // to stay on history they must stop the stream first.)
+    app.auto_scroll = true;
+    app.scroll_offset = 0;
     match ev {
         StreamEvent::Delta { text } => {
             app.chat.append_delta(&text);
         }
-        StreamEvent::Tool { tool, args, result, .. } => {
-            app.chat.add_tool(&tool, &args, &result);
+        StreamEvent::Thinking { text } => {
+            // Append reasoning text to the streaming turn as a thinking block.
+            append_thinking(&mut app.chat, &text);
+        }
+        StreamEvent::ToolStart { tool, args } => {
+            app.chat.start_tool(&tool, &args);
             app.tool_count += 1;
+        }
+        StreamEvent::Tool { tool, args, result, .. } => {
+            app.chat.finish_tool(&tool, &args, &result);
         }
         StreamEvent::Done { result } => {
             app.total_tokens += result.total_tokens;
@@ -324,10 +497,31 @@ fn handle_stream_event(app: &mut App, ev: StreamEvent) {
                 app.total_tokens,
             ));
             app.is_streaming = false;
+            app.current_cancel = None;
+        }
+        StreamEvent::Cancelled { result } => {
+            // Soft cancel: keep partial output, note it was cancelled.
+            app.total_tokens += result.total_tokens;
+            app.chat.finish_assistant();
+            app.chat.add_system("⊘ 已取消");
+            app.is_streaming = false;
+            app.current_cancel = None;
         }
         StreamEvent::Error { message } => {
             app.chat.add_error(&format_agent_error(&message));
             app.is_streaming = false;
+            app.current_cancel = None;
+        }
+    }
+}
+
+/// Push a thinking text block onto the current streaming turn.
+/// (Thinking deltas currently aren't emitted by the agent layer; this keeps
+/// the path ready for future reasoning-content streaming.)
+fn append_thinking(chat: &mut ChatLog, text: &str) {
+    if let Some(idx) = chat.streaming_idx {
+        if let ChatLine::Assistant(turn) = &mut chat.lines[idx] {
+            turn.append_thinking(text);
         }
     }
 }
@@ -348,6 +542,9 @@ fn format_agent_error(msg: &str) -> String {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 fn render_app(f: &mut ratatui::Frame, app: &App, list_state: &mut ListState) {
+    // Inset the whole app by 1 column left/right so borders/status/help text
+    // have breathing room instead of touching the terminal edge.
+    let area = f.area().inner(Margin { horizontal: 1, vertical: 0 });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -356,14 +553,18 @@ fn render_app(f: &mut ratatui::Frame, app: &App, list_state: &mut ListState) {
             Constraint::Length(3),   // input
             Constraint::Length(1),   // help bar
         ])
-        .split(f.area());
+        .split(area);
 
     // Status bar.
-    let status = format!(
-        " auto-ai-cli │ role: {} │ turn: {} │ tools: {} │ {} tokens │ {}",
+    let mut status = format!(
+        "auto-ai-cli │ role: {} │ turn: {} │ tools: {} │ {} tokens │ {}",
         app.role, app.turn, app.tool_count, app.total_tokens,
         if app.is_streaming { "● streaming" } else { "○ ready" },
     );
+    // Surface "reviewing history" so the user knows why new content isn't shown.
+    if !app.auto_scroll {
+        status.push_str(" │ ← 回滚中 (PageDown/滚轮向下=回到底部)");
+    }
     let status_style = if app.is_streaming {
         Style::default().fg(Color::Yellow)
     } else {
@@ -379,17 +580,20 @@ fn render_app(f: &mut ratatui::Frame, app: &App, list_state: &mut ListState) {
     // variable-height items + auto-scroll).
     let total = all_lines.len();
     let visible_height = chat_area.height as usize;
+    // auto_scroll → stick to bottom; otherwise honor the manual offset,
+    // clamped to [0, max_offset] so it can't scroll past the bottom.
+    let max_offset = total.saturating_sub(visible_height);
     let scroll_offset = if app.auto_scroll {
-        total.saturating_sub(visible_height)
+        max_offset
     } else {
-        0 // manual scroll mode (future: track offset)
+        app.scroll_offset.min(max_offset)
     };
 
     let chat_para = Paragraph::new(all_lines)
         .scroll((scroll_offset as u16, 0))
         .wrap(ratatui::widgets::Wrap { trim: false })
         .block(
-            Block::default()
+            ratatui::widgets::Block::default()
                 .borders(Borders::TOP)
                 .title(format!(" Chat ({} lines) ", total)),
         );
@@ -400,76 +604,87 @@ fn render_app(f: &mut ratatui::Frame, app: &App, list_state: &mut ListState) {
 
     // Help bar.
     let help = if app.is_streaming {
-        " Tab=toggle tool │ PageDown=scroll to bottom │ q=quit "
+        "Esc=取消 │ Tab=toggle tool │ 滚轮/PageUp=回滚 │ PageDown=回底 │ q=quit"
     } else {
-        " Enter=send │ Shift+Enter=newline │ Tab=toggle │ Up/Down=history │ /help │ q=quit "
+        "Enter=send │ Shift+Enter=newline │ Tab=toggle │ 滚轮/PageUp=回滚 │ PageDown=回底 │ Up/Down=history │ /help │ q=quit"
     };
     f.render_widget(Paragraph::new(help).style(Style::default().fg(Color::DarkGray)), chunks[3]);
 }
 
 /// Build styled Lines for the entire chat log.
+///
+/// Layout (dialog > block hierarchy):
+///   Each Assistant/User message is a *dialog*: a colored header line
+///   (role · tier · timestamp), indented content blocks, and a thin bottom
+///   rule. System/error/divider lines render standalone.
 fn build_chat_lines(app: &App) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for line in &app.chat.lines {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let last_idx = app.chat.lines.len().saturating_sub(1);
+    for (line_idx, line) in app.chat.lines.iter().enumerate() {
+        let is_last_line = line_idx == last_idx;
         match line {
-            ChatLine::User(text) => {
+            ChatLine::User { text, created_at } => {
+                lines.push(blank_line());
+                lines.push(top_rule());
+                // Dialog header: role · time (no tier for the user).
                 lines.push(Line::from(vec![
-                    Span::styled("你> ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    Span::raw(text.clone()),
+                    Span::styled("你", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{}", created_at.format("%H:%M:%S")),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]));
+                // Indented body.
+                for tl in text.lines() {
+                    lines.push(Line::styled(
+                        format!("  {}", tl),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                }
+                lines.push(bottom_rule());
             }
-            ChatLine::Assistant(msg) => {
+            ChatLine::Assistant(turn) => {
+                lines.push(blank_line());
+                lines.push(top_rule());
+                // Dialog header: assistant · tier · time.
+                let tier = role_tier_label(&app.role);
                 lines.push(Line::from(vec![
-                    Span::styled("assistant ───", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::styled(app.role.clone(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(tier, Style::default().fg(Color::Blue)),
+                    Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{}", turn.created_at.format("%H:%M:%S")),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]));
-                // Render text with basic code-block highlighting.
-                let mut in_code = false;
-                for text_line in msg.text.lines() {
-                    if text_line.trim_start().starts_with("```") {
-                        in_code = !in_code;
-                        lines.push(Line::styled(
-                            format!("  {}", text_line),
-                            Style::default().fg(Color::Yellow),
-                        ));
-                        continue;
+                // Content blocks, indented 2 spaces.
+                let spinner = app.spinner_str();
+                let streaming = app.is_streaming;
+                for (i, block) in turn.blocks.iter().enumerate() {
+                    if i > 0 {
+                        lines.push(blank_line());
                     }
-                    if in_code {
-                        lines.push(Line::styled(
-                            format!("  {}", text_line),
-                            Style::default().fg(Color::Gray),
-                        ));
-                    } else {
-                        lines.push(Line::raw(format!("  {}", text_line)));
-                    }
+                    let is_last_block = i + 1 == turn.blocks.len();
+                    render_block(
+                        &mut lines,
+                        block,
+                        spinner,
+                        streaming && is_last_line && is_last_block,
+                    );
                 }
-                // Tool blocks.
-                for tool in &msg.tools {
-                    let icon = if tool.collapsed { "▶" } else { "▼" };
-                    let summary = &tool.args_summary;
-                    let mut spans = vec![
-                        Span::raw("  "),
-                        Span::styled(format!("{icon} "), Style::default().fg(Color::Yellow)),
-                        Span::styled(tool.tool.clone(), Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)),
-                    ];
-                    if !summary.is_empty() {
-                        spans.push(Span::styled(format!(" {summary}"), Style::default().fg(Color::Gray)));
-                    }
-                    spans.push(Span::styled(" [Tab]", Style::default().fg(Color::DarkGray)));
-                    lines.push(Line::from(spans));
-                    if !tool.collapsed {
-                        for result_line in tool.result.lines().take(15) {
-                            lines.push(Line::styled(
-                                format!("    │ {}", result_line),
-                                Style::default().fg(Color::DarkGray),
-                            ));
-                        }
-                        if tool.result.lines().count() > 15 {
-                            lines.push(Line::styled(String::from("    │ ..."), Style::default().fg(Color::DarkGray)));
-                        }
-                    }
+                // Trailing "thinking" spinner when nothing has streamed yet.
+                if turn.blocks.is_empty() && streaming && is_last_line {
+                    lines.push(Line::styled(
+                        format!("● {} 思考中", spinner),
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
+                lines.push(bottom_rule());
             }
             ChatLine::System(text) => {
+                lines.push(blank_line());
                 for tl in text.lines() {
                     lines.push(Line::styled(
                         format!("  {}", tl),
@@ -478,6 +693,7 @@ fn build_chat_lines(app: &App) -> Vec<Line<'static>> {
                 }
             }
             ChatLine::Error(text) => {
+                lines.push(blank_line());
                 for tl in text.lines() {
                     lines.push(Line::styled(
                         format!("  {}", tl),
@@ -494,4 +710,183 @@ fn build_chat_lines(app: &App) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+fn blank_line() -> Line<'static> {
+    Line::raw(String::new())
+}
+
+/// A thin top rule opening a dialog.
+fn top_rule() -> Line<'static> {
+    Line::styled(
+        "─".repeat(48),
+        Style::default().fg(Color::DarkGray),
+    )
+}
+
+/// A thin bottom rule closing a dialog.
+fn bottom_rule() -> Line<'static> {
+    Line::styled(
+        "─".repeat(48),
+        Style::default().fg(Color::DarkGray),
+    )
+}
+
+/// Look up the role's tier label (e.g. "mid") for the dialog header.
+fn role_tier_label(role: &str) -> String {
+    let registry = auto_ai_agent::RoleRegistry::load();
+    match registry.resolve_role(role) {
+        Some(r) => format!("{:?}", r.model_tier()).to_lowercase(),
+        None => "?".into(),
+    }
+}
+
+/// Render a single block's lines (title + body) into `lines`. All blocks use
+/// the same `●` marker for vertical alignment; the type is encoded by color +
+/// a text label (思考/回答/读取/写入/…).
+/// `trailing_spinner` is shown when this is the final block of the actively
+/// streaming turn and the block is empty/running (a "thinking" hint).
+fn render_block(
+    lines: &mut Vec<Line<'static>>,
+    block: &Block,
+    spinner: &str,
+    trailing_spinner: bool,
+) {
+    match block {
+        Block::Answer { text } => {
+            lines.push(Line::from(vec![
+                Span::styled("● ", Style::default().fg(Color::Green)),
+                Span::styled("回答", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+            if text.is_empty() && trailing_spinner {
+                lines.push(Line::styled(
+                    format!("  {}思考中", spinner),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            } else {
+                // Markdown rendering (headings, lists, bold/italic, code…).
+                // pulldown-cmark is tolerant of partial input, so re-parsing
+                // each frame during streaming is safe.
+                let mut md_lines = crate::markdown::render_lines(text);
+                lines.append(&mut md_lines);
+            }
+        }
+        Block::Thinking { text } => {
+            lines.push(Line::from(vec![
+                Span::styled("● ", Style::default().fg(Color::DarkGray)),
+                Span::styled("思考", Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
+            ]));
+            push_text_body(lines, text, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM));
+        }
+        Block::Tool(t) => render_tool_block(lines, t, spinner),
+        Block::User { text } => {
+            lines.push(Line::from(vec![
+                Span::styled("● ", Style::default().fg(Color::Cyan)),
+                Span::styled("你", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw(format!(" {}", text)),
+            ]));
+        }
+        Block::System { text } => {
+            for tl in text.lines() {
+                lines.push(Line::styled(
+                    format!("  {}", tl),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
+        Block::Error { text } => {
+            for tl in text.lines() {
+                lines.push(Line::styled(
+                    format!("  {}", tl),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+        }
+        Block::Divider { text } => {
+            lines.push(Line::styled(
+                text.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+}
+
+/// Push the body lines of a text block with basic code-fence highlighting.
+fn push_text_body(lines: &mut Vec<Line<'static>>, text: &str, base_style: Style) {
+    let mut in_code = false;
+    for text_line in text.lines() {
+        if text_line.trim_start().starts_with("```") {
+            in_code = !in_code;
+            lines.push(Line::styled(
+                format!("  {}", text_line),
+                Style::default().fg(Color::Yellow),
+            ));
+            continue;
+        }
+        if in_code {
+            lines.push(Line::styled(
+                format!("  {}", text_line),
+                Style::default().fg(Color::Gray),
+            ));
+        } else {
+            lines.push(Line::styled(format!("  {}", text_line), base_style));
+        }
+    }
+}
+
+/// Per-tool type → (verb label, accent color). All blocks share the same `●`
+/// marker; the type is encoded by color + this verb label, keeping every row
+/// vertically aligned without per-type emoji widths.
+fn tool_style(tool: &str) -> (&'static str, Color) {
+    match tool {
+        "read_file" => ("读取", Color::Blue),
+        "write_file" => ("写入", Color::Red),
+        "edit_file" => ("编辑", Color::Yellow),
+        "list_dir" => ("列目录", Color::Blue),
+        "search" => ("搜索", Color::Cyan),
+        "run_command" => ("命令", Color::Yellow),
+        "spawn_pipeline" => ("流水线", Color::Magenta),
+        "skill" => ("技能", Color::Magenta),
+        _ => ("工具", Color::Blue),
+    }
+}
+
+fn render_tool_block(lines: &mut Vec<Line<'static>>, t: &ToolBlock, spinner: &str) {
+    let (verb, color) = tool_style(&t.tool);
+    if !t.done {
+        // Running state — accent in yellow with a spinner, no result yet.
+        lines.push(Line::from(vec![
+            Span::styled("● ", Style::default().fg(Color::Yellow)),
+            Span::styled(verb.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {}", t.args_summary), Style::default().fg(Color::Gray)),
+            Span::styled(format!(" {}", spinner), Style::default().fg(Color::DarkGray)),
+        ]));
+        return;
+    }
+    // Done — `● verb  summary [Tab]`, color-coded by tool kind.
+    let mut spans = vec![
+        Span::styled("● ", Style::default().fg(color)),
+        Span::styled(verb.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+    ];
+    if !t.args_summary.is_empty() {
+        spans.push(Span::styled(format!("  {}", t.args_summary), Style::default().fg(Color::Gray)));
+    }
+    spans.push(Span::styled(" [Tab]", Style::default().fg(Color::DarkGray)));
+    lines.push(Line::from(spans));
+    // Result body (collapsed by default; Tab expands).
+    if !t.collapsed {
+        for result_line in t.result.lines().take(15) {
+            lines.push(Line::styled(
+                format!("  │ {}", result_line),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        let extra = t.result.lines().count().saturating_sub(15);
+        if extra > 0 {
+            lines.push(Line::styled(
+                format!("  │ … ({} more)", extra),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
 }

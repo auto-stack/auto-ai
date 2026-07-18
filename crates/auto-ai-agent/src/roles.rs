@@ -165,19 +165,25 @@ impl RoleRegistry {
     }
 
     /// Resolve a role by name into a live `Role` (for agent building).
-    /// Tries the built-in library first so `inherit:` chains resolve, then the
-    /// on-disk config.
+    /// User-defined roles (`.at` files) take precedence over compiled-in
+    /// built-ins with the same name, so `~/.config/autoos/roles/assistant.at`
+    /// can override the built-in assistant role's `model_tier` and other fields.
     pub fn resolve_role(&self, name: &str) -> Option<std::sync::Arc<dyn Role>> {
-        // Built-in name → compiled Role (keeps inherit chains working).
-        if let Some(prof) = load_builtin(name) {
-            return Some(prof);
+        // 1. User override (`.at` file) takes precedence — even when it shares
+        //    the same name as a built-in. `load_role` resolves the `inherit:`
+        //    chain internally so the override gets the built-in's prompt/etc.
+        if let Some(detail) = self.roles.get(name) {
+            if !detail.summary.is_builtin {
+                let src = serialize_at_role(&detail.config);
+                if let Ok(role) = crate::config::load_role(&src) {
+                    return Some(role);
+                }
+                // Parse failure: warn and fall through to built-in.
+                tracing::warn!("role: failed to load user role '{name}', falling back to built-in");
+            }
         }
-        // User role → parse + load_role (which resolves inherit/soul).
-        let detail = self.roles.get(name)?;
-        // Reconstruct the on-disk .at source so load_role can process the
-        // inherit chain; it expects a `role { }` / `role { }` block.
-        let src = serialize_at_role(&detail.config);
-        crate::config::load_role(&src).ok()
+        // 2. No user override → compiled built-in.
+        load_builtin(name)
     }
 
     /// List all role summaries (built-in + user), sorted: user roles first

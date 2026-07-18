@@ -10,6 +10,7 @@
 //!
 //! (Plan 008 Phase 5)
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use super::flow::FlowSpec;
@@ -137,15 +138,27 @@ impl<F: AgentFactory> PipelineDriver<F> {
                                 col_clone.lock().unwrap().push_str(&text);
                                 event_cb(PipelineEvent::Delta { text });
                             }
+                            // Thinking text is part of the assistant's output —
+                            // collect it into the handoff content but don't echo
+                            // (pipelines only surface the final answer deltas).
+                            StreamEvent::Thinking { text } => {
+                                col_clone.lock().unwrap().push_str(&text);
+                            }
+                            // ToolStart is a "running" hint — no result yet, skip.
+                            StreamEvent::ToolStart { .. } => {}
                             StreamEvent::Tool { tool, result, .. } => {
                                 tc_clone.lock().unwrap().push((tool.clone(), result.clone()));
                                 event_cb(PipelineEvent::Tool { tool, result });
                             }
                             StreamEvent::Done { .. } | StreamEvent::Error { .. } => {}
+                            // Pipelines don't expose cancellation; treat like Done.
+                            StreamEvent::Cancelled { .. } => {}
                         }
                     });
 
-                    let agent_result = agent.run_stream(&input, stream_cb).await?;
+                    // Pipelines run to completion — pass a never-cancel dummy.
+                    let no_cancel = Arc::new(AtomicBool::new(false));
+                    let agent_result = agent.run_stream(&input, stream_cb, no_cancel).await?;
 
                     // Build handoff from the result.
                     let content = collected.lock().unwrap().clone();
