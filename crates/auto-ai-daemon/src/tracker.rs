@@ -1,7 +1,8 @@
 //! Usage tracker — per-app token/cost accounting.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 #[derive(Debug, Default, Clone)]
 pub struct AppUsage {
@@ -28,7 +29,7 @@ impl UsageTracker {
 
     /// Record usage for an app.
     pub fn record(&self, app: &str, input: u64, output: u64) {
-        let mut apps = self.apps.lock().unwrap();
+        let mut apps = self.apps.lock();
         let entry = apps.entry(app.to_string()).or_default();
         entry.total_input_tokens += input;
         entry.total_output_tokens += output;
@@ -37,12 +38,12 @@ impl UsageTracker {
 
     /// Get usage for an app.
     pub fn get(&self, app: &str) -> AppUsage {
-        self.apps.lock().unwrap().get(app).cloned().unwrap_or_default()
+        self.apps.lock().get(app).cloned().unwrap_or_default()
     }
 
     /// Get all app usage as (app_name, AppUsage) pairs.
     pub fn all(&self) -> Vec<(String, AppUsage)> {
-        self.apps.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.apps.lock().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 }
 

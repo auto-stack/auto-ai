@@ -164,6 +164,7 @@ mod tests {
             providers,
             default_provider: "zhipu".into(),
             default_model: "glm-5.2".into(),
+            tier_routing: ai_config::loader::TierRouting::default(),
         }
     }
 

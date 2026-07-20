@@ -34,8 +34,10 @@ impl ConcurrencyManager {
         Some(sem.clone().acquire_owned().await.ok()?)
     }
 
-    /// Current available slots for a provider.
-    pub fn available(&self, provider: &str) -> Option<usize> {
+    /// How many permits are currently held (in use) for a provider.
+    /// (The previous `available()` returned this same value but was misnamed —
+    /// `limit - available_permits()` is the *in-use* count, not free slots.)
+    pub fn in_use(&self, provider: &str) -> Option<usize> {
         let sem = self.pools.get(provider)?;
         let limit = self.limits.get(provider).copied().unwrap_or(0);
         Some(limit - sem.available_permits())
@@ -80,6 +82,7 @@ mod tests {
             default_provider: "test".into(),
             default_model: String::new(),
             log_level: String::new(),
+            tier_routing: ai_config::loader::TierRouting::default(),
         }
     }
 
@@ -119,6 +122,7 @@ mod tests {
             default_provider: "unset".into(),
             default_model: String::new(),
             log_level: String::new(),
+            tier_routing: ai_config::loader::TierRouting::default(),
         };
         let mgr = ConcurrencyManager::from_config(&cfg);
         assert_eq!(mgr.limit("unset"), 4);

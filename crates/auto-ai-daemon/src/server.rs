@@ -22,11 +22,11 @@ use crate::provider::ProviderRegistry;
 use crate::tracker::UsageTracker;
 
 pub struct AppState {
-    pub config: std::sync::Arc<std::sync::RwLock<DaemonConfig>>,
+    pub config: std::sync::Arc<parking_lot::RwLock<DaemonConfig>>,
     pub registry: ProviderRegistry,
     pub pool: ConcurrencyManager,
     pub tracker: UsageTracker,
-    pub current_model: std::sync::Mutex<String>,
+    pub current_model: parking_lot::Mutex<String>,
     pub tier_router: crate::tier_router::TierRouter,
 }
 
@@ -38,18 +38,18 @@ impl AppState {
         let current_model = config.default_model.clone();
         let tier_router = crate::tier_router::TierRouter::from_config(&config);
         Self {
-            config: std::sync::Arc::new(std::sync::RwLock::new(config)),
+            config: std::sync::Arc::new(parking_lot::RwLock::new(config)),
             registry,
             pool,
             tracker: UsageTracker::new(),
-            current_model: std::sync::Mutex::new(current_model),
+            current_model: parking_lot::Mutex::new(current_model),
             tier_router,
         }
     }
 
     /// Read-locked access to the config (for GET handlers).
-    pub fn cfg(&self) -> std::sync::RwLockReadGuard<'_, DaemonConfig> {
-        self.config.read().unwrap()
+    pub fn cfg(&self) -> parking_lot::RwLockReadGuard<'_, DaemonConfig> {
+        self.config.read()
     }
 }
 
@@ -383,7 +383,7 @@ async fn config_update(
             // provider registry for actual LLM calls).
             match crate::config::parse_daemon_config(&at_content) {
                 Ok(new_config) => {
-                    *state.config.write().unwrap() = new_config;
+                    *state.config.write() = new_config;
                     tracing::info!("daemon config hot-reloaded (display only; restart to apply to provider registry)");
                     (
                         StatusCode::OK,
@@ -624,7 +624,7 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         })
         .collect();
 
-    let current_model = state.current_model.lock().unwrap().clone();
+    let current_model = state.current_model.lock().clone();
 
     Json(json!({
         "status": "running",
