@@ -273,16 +273,17 @@ impl PipelineEngine {
         self.cumulative_tokens += handoff.token_usage.step_tokens;
         self.budget_tracker.record(&role_id, handoff.token_usage.step_tokens, 0);
 
-        // Budget monitoring — log warnings, but don't block tasks.
-        // The high default limit (100M) means this is effectively advisory.
+        // Budget check is advisory by design (Plan 008 recheck): a LimitReached
+        // signal logs a warning but does NOT halt the run. The default 100M
+        // limit is a runaway guard, not a billing control. Callers needing
+        // hard enforcement must act on BudgetAction::LimitReached themselves.
         match self.budget_tracker.check(&role_id) {
-            crate::orchestration::budget::BudgetAction::HardStop => {
+            crate::orchestration::budget::BudgetAction::LimitReached => {
                 tracing::warn!(
-                    "PIPELINE BUDGET EXCEEDED: {} tokens spent (limit: {}). \
-                     Task continues — this is a monitoring warning, not a hard stop.",
+                    "PIPELINE BUDGET LIMIT REACHED: {} tokens spent (limit: {}). \
+                     Task continues — budget is advisory (see BudgetAction docs).",
                     self.budget_tracker.cumulative, self.budget_tracker.run_budget.limit
                 );
-                // Log but don't fail — let the task complete.
             }
             crate::orchestration::budget::BudgetAction::Warning { remaining } => {
                 tracing::warn!(
@@ -463,14 +464,15 @@ mod tests {
 
     #[test]
     fn budget_exceeded_logs_but_continues() {
-        // Budget is now advisory (monitoring), not a hard stop.
-        // A task that exceeds budget should continue, not fail.
+        // Budget is advisory by design (Plan 008 recheck): LimitReached signals
+        // the threshold but the pipeline continues — the default limit is a
+        // runaway guard, not a billing control.
         let mut eng = PipelineEngine::with_budget(two_step_flow(), "run-6", TokenBudget::new(100));
         eng.advance();
         let mut h = handoff("assistant", "coder");
         h.token_usage.step_tokens = 200;
         let r = eng.submit_handoff(h);
-        // Should NOT fail — budget is advisory now.
+        // Advisory: continues to next step rather than failing.
         assert!(!matches!(r, AdvanceResult::Failed { .. }));
         // Should continue to next step.
         assert!(matches!(r, AdvanceResult::ExecuteStep { .. }) | matches!(r, AdvanceResult::Completed));

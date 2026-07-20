@@ -55,14 +55,21 @@ pub enum BudgetStrategy {
 }
 
 /// Action the pipeline should take after a budget check.
+///
+/// **Note**: as of the Plan 008 recheck, the pipeline treats `LimitReached`
+/// as *advisory* — it logs a warning but does **not** halt the run (the
+/// default 100M-token limit is a runaway guard, not a billing control). If
+/// hard-stop behavior is needed, the pipeline consumer must enforce it based
+/// on this signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BudgetAction {
     /// Spend within limits — proceed.
     None,
     /// Approaching a limit — warn but continue.
     Warning { remaining: u64 },
-    /// Hard limit reached — halt.
-    HardStop,
+    /// Limit reached. Whether to halt is decided by the consumer; the default
+    /// pipeline implementation treats this as advisory (logs, continues).
+    LimitReached,
 }
 
 /// Tracks token usage across a run, per step and cumulatively.
@@ -98,7 +105,7 @@ impl BudgetTracker {
         // Step budget first (tighter constraint).
         if let Some(step_budget) = self.step_budgets.get(step) {
             if step_used >= step_budget.limit {
-                return BudgetAction::HardStop;
+                return BudgetAction::LimitReached;
             }
             if step_used >= step_budget.warning_at {
                 return BudgetAction::Warning {
@@ -109,7 +116,7 @@ impl BudgetTracker {
 
         // Then the run-wide budget.
         if self.cumulative >= self.run_budget.limit {
-            return BudgetAction::HardStop;
+            return BudgetAction::LimitReached;
         }
         if self.cumulative >= self.run_budget.warning_at {
             return BudgetAction::Warning {
@@ -137,7 +144,7 @@ mod tests {
         t.record("code", 700, 0);
         assert_eq!(t.check("code"), BudgetAction::Warning { remaining: 300 });
         t.record("code", 350, 0);
-        assert_eq!(t.check("code"), BudgetAction::HardStop);
+        assert_eq!(t.check("code"), BudgetAction::LimitReached);
     }
 
     #[test]
@@ -145,7 +152,7 @@ mod tests {
         let mut t = BudgetTracker::new(TokenBudget::new(100_000));
         t.set_step_budget("code", TokenBudget::new(500));
         t.record("code", 500, 0);
-        assert_eq!(t.check("code"), BudgetAction::HardStop);
+        assert_eq!(t.check("code"), BudgetAction::LimitReached);
         // Run budget still fine.
         assert!(t.cumulative < t.run_budget.limit);
     }

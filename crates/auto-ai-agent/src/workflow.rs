@@ -366,6 +366,14 @@ impl Workflow {
     ///
     /// Events: [`WorkflowEvent::StepStart`], [`WorkflowEvent::StepDone`],
     /// [`WorkflowEvent::StepSkipped`], [`WorkflowEvent::Finished`].
+    ///
+    /// **Caveat (review-002)**: unlike [`Self::run`], this streaming variant
+    /// does **not** apply validators, on_fail retry, tool guards, or gates —
+    /// those features only exist in the non-streaming path. For a streaming
+    /// pipeline with full lifecycle support, use
+    /// [`orchestration::PipelineDriver`](crate::orchestration::PipelineDriver)
+    /// instead (Plan 008).
+    #[deprecated(note = "skips validators/guards/retry — use orchestration::PipelineDriver (Plan 008)")]
     pub async fn run_with_progress(
         &self,
         tools: &[Arc<dyn Tool>],

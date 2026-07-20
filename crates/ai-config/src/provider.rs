@@ -38,6 +38,12 @@ impl ProviderConfig {
     /// For providers that don't require authentication (e.g. local Ollama),
     /// returns a placeholder `"no-key-needed"` instead of None, so the daemon
     /// doesn't reject the provider for having no key.
+    ///
+    /// **Limitation (review-002)**: the placeholder conflates "no key" with
+    /// "has key". A cleaner design would add an explicit `auth_required: bool`
+    /// field so providers can declare no-auth status directly, and the daemon
+    /// would skip the `Authorization` header for them. Deferred — current
+    /// behavior is functionally correct for no-auth providers.
     pub fn resolve_key(&self) -> Option<String> {
         if let Some(key) = &self.api_key {
             if key.is_empty() {

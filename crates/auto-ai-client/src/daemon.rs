@@ -1,8 +1,10 @@
 //! Daemon discovery + lazy start (ssh-agent model).
 //!
-//! When any app creates an `AiClient`, this module checks if `aaid` is running.
-//! If not, it finds and spawns the daemon binary, then waits for it to be ready.
-//! If the daemon can't be found or started, the client falls back to direct mode.
+//! When any app creates an `AiClient` via [`crate::AiClient::new`], this module
+//! checks if `aaid` is running. If not, it finds and spawns the daemon binary,
+//! then waits for it to be ready. If the daemon can't be found or started,
+//! `new()` returns `Err(DaemonUnavailable)` — callers then use
+//! [`crate::AiClient::with_url`] to point at a known daemon URL instead.
 
 use std::time::{Duration, Instant};
 
@@ -31,7 +33,8 @@ pub fn is_running() -> bool {
 }
 
 /// Ensure the daemon is running. If not, try to start it.
-/// Returns `Some(url)` if daemon is available, `None` if not (fall back to direct mode).
+/// Returns `Some(url)` if daemon is available, `None` if not (caller should
+/// fall back to [`crate::AiClient::with_url`] or surface an error).
 pub fn ensure_daemon() -> Option<String> {
     // 1. Already running?
     if is_running() {

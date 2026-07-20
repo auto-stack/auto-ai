@@ -55,9 +55,13 @@ pub use orchestration::{HandoffDocument, BudgetTracker, ...};
 - **不移植** musk 的 4 个内置 flow（`builtin_flows()`）——那是 app 产品决策
 - 单测：FlowSpec 构造 + ExitRouting 匹配
 
-### 2.2 `src/orchestration/validator.rs`
-- 从 musk `relay/flow.rs` 移植 `StepValidator` + `ToolGuard`
-- 单测：validator check + ToolGuard guard
+### 2.2 `src/orchestration/validator.rs` — ⏸ 未实施（2026-07-20 移除）
+> **复核结论（review-002 D1）**：此 Phase 未实施，且决定**不再下沉**。generic pipeline
+> 无法定义跨 role 的通用内容验证规则（每个 role 的产出格式不同），内容验证更适合留给
+> app 层（如 musk 的 `StepValidator`）。musk 的 `relay/flow.rs` 保留自己的实现，不强行
+> 抽到通用层。原计划内容保留如下仅作历史记录：
+- ~~从 musk `relay/flow.rs` 移植 `StepValidator` + `ToolGuard`~~
+- ~~单测：validator check + ToolGuard guard~~
 
 **验证**：`cargo test -p auto-ai-agent --lib orchestration`
 

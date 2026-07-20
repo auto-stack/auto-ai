@@ -12,10 +12,18 @@ use serde_json::{json, Value};
 
 use auto_ai_agent::{
     Agent, AgentFactory, Client, FlowSpec, FlowStep, PipelineDriver, PipelineEvent,
-    RoleRegistry, Tool, ToolError, HandoffDocument,
+    RoleRegistry, Tool, ToolError,
 };
 
 /// Build a flow spec for a named mode.
+///
+/// **Note (review-002 D2)**: these are simplified demo flows using the base
+/// built-in roles (assistant/coder/reviewer/...). The same mode names in
+/// `auto-musk` use the extended super-roles (super-advisor/super-coder/...)
+/// per Plan 007b. This divergence is intentional — auto-ai-cli is a
+/// standalone demo that doesn't depend on musk's role library. The role
+/// steps here exercise the pipeline mechanics without requiring the full
+/// super-role set.
 pub fn flow_for(mode: &str) -> Option<FlowSpec> {
     match mode {
         "superpowers" => {
@@ -136,7 +144,6 @@ impl Tool for SpawnPipeline {
         let factory = CliAgentFactory::new(self.client.clone());
         let mut driver = PipelineDriver::new(flow, factory, task);
 
-        let mut final_summary = String::new();
         let result = driver
             .drive(
                 task,
@@ -152,11 +159,8 @@ impl Tool for SpawnPipeline {
                             let preview: String = result.chars().take(60).collect();
                             eprintln!("\n  │   [tool] {tool} → {preview}…");
                         }
-                        PipelineEvent::StepCompleted { step_id, handoff } => {
+                        PipelineEvent::StepCompleted { step_id, .. } => {
                             eprintln!("\n  │ ✓ step '{step_id}' done");
-                            if !handoff.summary.is_empty() {
-                                final_summary_clone(&handoff.summary);
-                            }
                         }
                         PipelineEvent::Completed => {
                             eprintln!("  │");
@@ -197,11 +201,4 @@ impl Tool for SpawnPipeline {
             )),
         }
     }
-}
-
-// Helper to avoid Arc<Mutex> for the final summary (printed to stderr, not
-// returned through the closure).
-fn final_summary_clone(_s: &str) {
-    // The summary is retrieved from the engine's history after drive() returns.
-    // This function is a no-op placeholder; the actual extraction happens below.
 }

@@ -240,6 +240,13 @@ impl<F: AgentFactory> PipelineDriver<F> {
     }
 
     /// Construct a HandoffDocument from an agent's result.
+    ///
+    /// **Generic-layer limitation**: a role-agnostic driver can't parse every
+    /// role's output format, so the handoff is lossy — `summary` is a 200-char
+    /// truncation of the text output, and work products are inferred from
+    /// `write_file`/`edit_file` tool calls by reading their `path` arg. Apps
+    /// wanting richer handoffs should pass a custom factory that overrides
+    /// handoff construction with role-specific logic.
     fn build_handoff(
         &self,
         _step_id: &str,
@@ -249,12 +256,19 @@ impl<F: AgentFactory> PipelineDriver<F> {
     ) -> HandoffDocument {
         let mut h = HandoffDocument::new(role_id, "next");
         h.summary = content.chars().take(200).collect::<String>();
-        // Extract work product from tool calls (files written).
+        // Extract work product from tool calls (files written/edited).
         for tc in &result.tool_calls {
             if tc.tool == "write_file" || tc.tool == "edit_file" {
-                // Extract path from args if possible.
+                // Extract the `path` field from args (previously dumped the
+                // whole JSON blob as the path — a bug fixed in review-002).
+                let path = tc
+                    .args
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("?")
+                    .to_string();
                 h.work_product.push(super::handoff::WorkProduct {
-                    path: tc.args.to_string(),
+                    path,
                     description: tc.tool.clone(),
                     lines: None,
                 });

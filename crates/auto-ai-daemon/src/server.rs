@@ -92,10 +92,10 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 /// POST /v1/chat/completions — receive a canonical request, call a provider,
 /// return a canonical response.
 ///
-/// The body is a canonical [`ai_config::CompletionRequest`]. The daemon picks
-/// its default provider (provider/model routing is a future enhancement),
-/// acquires a concurrency permit, and delegates the (canonical↔provider)
-/// translation to the provider implementation.
+/// The body is a canonical [`ai_config::CompletionRequest`]. The daemon
+/// resolves the model/tier to a provider (via [`TierRouter`], with fallback
+/// across the candidate chain for tier requests), acquires a concurrency
+/// permit, and delegates the (canonical↔provider) translation to the provider.
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
