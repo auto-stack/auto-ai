@@ -1,4 +1,4 @@
-# 修复计划 001：auto-ai-daemon + auto-ai-client
+# 修复计划 011：auto-ai-daemon + auto-ai-client
 
 - 日期：2026-07-20
 - 对应审查：`docs/reviews/001-daemon-client-review.md`

@@ -4,7 +4,7 @@
 - 审查员：代码审查（AI 辅助，人工复核关键结论）
 - 范围：`crates/auto-ai-daemon`（全部，约 3000 行）+ `crates/auto-ai-client`（全部，约 470 行）
 - 方法：三个并行子审查（流式核心 / 辅助模块 / client 全量）+ 人工复核 3 个最严重结论
-- 对应修复计划：`docs/plans/001-daemon-client-fix-plan.md`
+- 对应修复计划：`docs/plans/011-daemon-client-fix-plan.md`
 
 ## 审查方法与结论可信度
 
