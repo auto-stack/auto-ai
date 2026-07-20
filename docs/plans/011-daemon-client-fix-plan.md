@@ -183,6 +183,27 @@
 - **阶段 3** 的 fallback 改变了请求的路由行为，需确保现有单 provider 配置行为不变（候选链只有一个时退化为原逻辑）。
 - **阶段 4 任务 4.1**（SseParser 下沉）涉及新建 crate + 移动代码，可能影响 `ai-config` 的依赖图，需评估是否值得（也可暂保留两份，仅补 CRLF 修复）。
 
+---
+
+## 阶段 4 延后项评估（2026-07-20 复核）
+
+阶段 1–4 已全部实施并提交（`ab61027`…`d3a76eb`）。下列三项原本属于阶段 4，经复核**当前均无实际触发的 bug**，投入产出比不如新功能开发，**决定暂缓**。每项记录了触发条件，以便将来择机重启。
+
+### M7 — SseParser 下沉共享（client `SseBuffer` 与 daemon `sse.rs` 重复）
+- **当前状态**：两份代码并存。daemon 实发 `\n\n`（已验证 `server.rs:255`），client 只认 `\n\n`——**功能正常**。CRLF 风险是假设性的（本项目 daemon↔client 是 localhost 直连，无中间代理做行尾规范化）。
+- **修复成本**：高（新建共享 crate + 改依赖图）。
+- **何时该修**：当 client 经过反向代理/CDN（可能改写行尾），或 SSE 协议需要扩展（如 `event:` 类型路由、多行 `data:` 拼接）时。
+
+### M4 — services 子进程管理（僵尸/非幂等）
+- **当前状态**：`server.rs:749` 的 `services_ensure` **已用 `spawn_blocking` 正确包裹** `ensure`，"阻塞 runtime"风险已规避。`spawn_service`（`services.rs:203`）`drop(child)` detach，Unix 下确实会产生僵尸，但 services 仅在**用户手动 ensure** 时 spawn（非高频路径），累积很慢。非幂等需两个 ensure 请求同时到达才触发，概率低。
+- **修复成本**：中（`Drop` 实现 + per-id 幂等锁 + `Vec<Child>` 生命周期）。
+- **何时该修**：services 自动启动（如 daemon 启动时批量 ensure）、或并发 ensure 成为常态时。
+
+### M6 — client `ensure_daemon` async 化
+- **当前状态**：`is_running`/`ensure_daemon` 用 `reqwest::blocking` + `thread::sleep`，在 tokio runtime 内调用会 panic（嵌套 runtime）。**但唯一调用方（CLI `main.rs`）已用 `with_url` 绕过**——陷阱已被意识并回避。`AiClient::new()` 是公开 API 但实际无人用。
+- **修复成本**：中。**没有干净的小修方案**——要么 `ensure_daemon`/`new()` 全 async 化（破坏 `new()` API 兼容，牵连调用方），要么内部建临时 runtime（正是要避免的嵌套）。
+- **何时该修**：当有调用方需要 `AiClient::new()` 的 auto-discover 能力、或 async 上下文成为主用法时。届时建议直接把 `new()` 改 `async`，一次性做对。
+
 ## 不在本计划范围
 
 - 前端 / TUI 代码（除非联动验证，如阶段 2 的 TUI 取消）
