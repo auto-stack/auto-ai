@@ -167,3 +167,12 @@ Phase 6 和 7 可以并行(互不依赖)。
 - **Phase 5**: 线性/条件/依赖 Workflow 单测。
 - **Phase 6**: Forge 行为对比 v0.1(同一任务,Agent 输出质量不退化)。
 - **Phase 7**: Ash F3 翻译质量对比(同一问题,Agent > 直连 complete)。
+
+---
+
+## 实施状态复核（2026-07-20，见 docs/reviews/002）
+
+- **Phase 1–5**：已完整实现。骨架（agent/role_def/tool/memory/error）、ReAct 循环（含循环检测）、14 个内置角色（超出计划的 6 个）、`.at` 配置 inherit/merge、Workflow 引擎（拓扑排序/条件跳过）全部落地且有测试覆盖。
+- **Phase 6（Forge 迁移）**：**未实施，建议标注废弃**。`auto-forge` 未引用 `auto-ai-agent`，Forge 走自己的实现路径。后续如确认 Forge 不再需要此迁移，应在本计划显式标"已废弃"。
+- **Phase 7（Ash F3 升级）**：**未实施，已由 auto-shell Plan 027 取代**。`auto-shell` 的 `ask_ai` 仍直连 client，`auto-shell/plans/027` 明确写 F3 "unchanged"。本 Phase 应标注"已废弃，见 auto-shell Plan 027"。
+

@@ -115,3 +115,16 @@ crates/auto-ai-agent/src/
 - checkpoint/diff(auto-forge 的)—— 后续。
 - `human` 门控的 UI/API —— 留接口,不实现。
 - 嵌套 TaskPlan(auto-forge 的多 Flow 宏编排)—— 不做。
+
+---
+
+## 实施状态复核（2026-07-20，见 docs/reviews/002）
+
+> **本计划整体已被 Plan 008 的 `orchestration::PipelineEngine` 取代**。`workflow` 模块（含本计划实现的循环/验证器/工具守卫）全部挂了 `#[deprecated]`。下列问题存在于 deprecated 代码中，生产路径走 PipelineEngine，故优先级降低。
+
+- **Task 1–2（validators/on_fail 解析 + 循环逻辑）**：已实现（`workflow.rs:292-344`）。**缺口**：缺"重试超限后失败"的端到端测试。
+- **Task 3（循环回退）**：已实现，但无端到端测试覆盖（见上）。
+- **Task 4（工具守卫）**：已实现（`workflow.rs:476-499::filter_tools_for_step`）。**缺口**：只有单元测试，无集成测试验证 reviewer agent 真的拿不到 write_file。
+- **Task 5（Human 门控）**：**部分实现 / MVP 妥协**。`workflow.rs:346-351` 的 Human gate 仅 `tracing::info!` 后自动继续，没有 `Paused` 返回值，没有 `resume()` 方法。计划要求的暂停语义在 PipelineEngine（`pipeline.rs` 的 `WaitForHuman`/`Paused`/`resume()`）中实现，Workflow 模块不再补。
+- **F3（重要）**：`workflow.rs:369-427::run_with_progress`（流式变体）**跳过了 validators/on_fail/tool_guard/gate**。由于模块已 deprecated 且生产走 PipelineEngine，**处理方式：deprecate `run_with_progress` 并在文档引导到 PipelineEngine**（见修复计划）。
+

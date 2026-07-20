@@ -33,3 +33,13 @@
 - `cargo test -p auto-ai-agent` 通过(含 assistant_identity 测试)
 - `load_builtin("assistant")` 返回 Some
 - 完成后 musk 的 `superpowers.at` 可把 profession 改成 `"assistant"`
+
+---
+
+## 实施状态复核（2026-07-20，见 docs/reviews/002）
+
+- **核心已完整实现**：`assistant.md` soul、`assistant.rs` Role trait 实现、`load_builtin("assistant")` 注册、`assistant_identity` 测试、musk `superpowers.at` 改为 `role: "assistant"` 全部到位。
+- **🟡 D3（计划偏离）— `allowed_tools` 未限制**：§1.2 要求 read-only（read_file/search/list_dir/run_command，不含 write/edit），但 `assistant.rs:38-43` 实际返回 `Vec::new()`（不过滤），注释说"由 mode 的工具白名单约束"。这是设计决策的演进——把工具限制责任交给 mode 层。**处理方式：更新本计划 §1.2 说明此偏离**（见修复），而非改回 read-only（因为 TUI 的 assistant 现在需要 write/edit 能力来执行文件操作）。
+- **`max_turns` 从 12 改成 20**：`assistant.rs:32-37` 注释解释"12 太紧，read-then-answer 工作流会过早耗尽"。是有据调优，回写文档即可。
+- **`handoff_to()`**：实际加了（`assistant.rs:46-48`），但 §2 "不做" 排除了 handoff——这是 Plan 008 后加的，不算 Plan 005 违规，但文档可注明。
+

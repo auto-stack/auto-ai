@@ -245,3 +245,13 @@ role {
 - **Token Budget 强制执行**：引入 BudgetTracker（参考 auto-forge `budget.rs`），
   把 token_budget 接入 agent run 循环。
 - **用户 Role 互相 inherit**：当前仅 inherit 内置；未来支持 DAG 解析。
+
+---
+
+## 实施状态复核（2026-07-20，见 docs/reviews/002）
+
+- **Phase A/B/C/D 主体**：已完整实现。auto-lang 的 escape/format、RoleConfig 字段、Role trait 扩展、musk CRUD API + 前端、os-config 模块注册全部落地。
+- **🔴 F1（功能缺陷，跨仓库）— Tier 钳制只 warn 不应用**：`auto-musk/backend/crates/musk/src/lib.rs:118-140` 计算了 `clamped`（越界 tier 钳制到允许范围最高），并 `tracing::warn!`，但 `:143` `OwnedRole::new(role)` 用的是**原始 role**，`clamped` 从未赋回。结果：声明了 `allowed_tiers` 的 Role 越界时只打日志，实际请求仍带越界 tier。§5 把此项标 ✅ 与代码不符。**修复需在 auto-musk 仓库**：给 `OwnedRole` 加 `override_tier` 字段。
+- **Token Budget**：`role_def.rs:71-76` 注释明确"stored only, not yet enforced"。BudgetTracker 已在 `orchestration/budget.rs` 存在但未接通 agent run 循环。符合计划 §7 "后续计划"的预期。
+- **§5 的 `#[derive(ToAtom)]` proc-macro**：仍为后续计划（如计划所述）。
+

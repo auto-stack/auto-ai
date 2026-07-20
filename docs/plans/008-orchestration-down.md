@@ -226,3 +226,16 @@ auto-ai-cli pipeline "实现一个 TODO app"
 - ⏸ 不改 auto-forge（它是参考/遗产）
 - ⏸ 不迁移 musk 的 HTTP/SSE/conversation 层
 - ⏸ 不加 ForgePhase / SectionType 到通用层
+
+---
+
+## 实施状态复核（2026-07-20，见 docs/reviews/002）
+
+大部分 Phase 已实现，但有 **4 个遗留问题**需处理（F2/F4/D1/测试）：
+
+- **Phase 1/2.1/3/4/4b/6/7/8**：已实现。handoff、budget、flow、pipeline、Role trait 扩展、musk 迁移、workflow deprecated、cli demo 全部落地。
+- **🟡 D1 — Phase 2.2（StepValidator + ToolGuard 下沉）未实施**：`orchestration/` 下没有 `validator.rs`，`FlowStep` 没有 `validators`/`tool_guard` 字段。它们仍留在 deprecated 的 `workflow.rs`。**处理方式：从本计划移除 Phase 2.2，说明"generic pipeline 不做内容验证，留给 app 层"**（见修复）。
+- **🔴 F2 — Budget 从 hardstop 降级为 advisory（行为与文档矛盾）**：`pipeline.rs:276-282` 注释 "advisory, not a hard stop"，测试 `:466-473` 断言超限不失败。但 `budget.rs:50` 的 `BudgetStrategy::HardStop` 枚举仍在，§3.1 要求 hardstop。上方"✅ BudgetTracker 接入 token_budget 强制"与代码不符。**处理方式：更新本计划 §3.1 + 枚举注释为 advisory**（见修复）。
+- **🔴 F4 — driver `build_handoff` 的 path 提取 bug**：`driver.rs:256-258` `tc.args.to_string()` 把整个 JSON args 当 path，应解析 `tc.args["path"]`。
+- **测试缺口**：`driver.rs` **0 测试**（§5 明确要求 MockAgentFactory 单测）。musk `relay/driver.rs` 测试模块为空。
+
