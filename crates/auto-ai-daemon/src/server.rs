@@ -109,11 +109,12 @@ async fn chat_completions(
 
     // Resolve the request's model + provider.
     let mut req = req;
-    let provider_name;
     let is_tier_request = req.model.starts_with("tier:");
 
-    if is_tier_request {
-        // Parse tier from "tier:<tier>" token.
+    // Build the ordered list of (provider_name, model_id) candidates to try.
+    // For tier requests this is the TierRouter's candidate chain (enabling
+    // fallback across providers); for concrete model ids it's a single entry.
+    let candidates: Vec<(String, String)> = if is_tier_request {
         let tier_name = req.model.strip_prefix("tier:").unwrap_or("").trim().to_ascii_lowercase();
         let tier = match tier_name.as_str() {
             "min" => ai_config::ModelTier::Min,
@@ -129,96 +130,124 @@ async fn chat_completions(
                     .into_response();
             }
         };
-        // Use TierRouter to find the best candidate.
-        let candidate = state.tier_router.resolve(tier, None);
-        match candidate {
-            Some(c) => {
-                provider_name = c.provider.clone();
-                req.model = c.model.clone();
+        let chain: Vec<(String, String)> = state
+            .tier_router
+            .candidates(tier)
+            .iter()
+            .map(|c| (c.provider.clone(), c.model.clone()))
+            .collect();
+        if chain.is_empty() {
+            // Legacy fallback: resolve via default provider's model list.
+            if let Some(resolved) = resolve_tier_model(&req.model, &state.cfg()) {
+                vec![(state.cfg().default_provider.clone(), resolved)]
+            } else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": {"message": format!("could not resolve tier '{}' — no candidates", req.model)}})),
+                )
+                    .into_response();
             }
-            None => {
-                if let Some(resolved) = resolve_tier_model(&req.model, &state.cfg()) {
-                    provider_name = state.cfg().default_provider.clone();
-                    req.model = resolved;
-                } else {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"error": {"message": format!("could not resolve tier '{}' — no candidates", req.model)}})),
-                    )
-                        .into_response();
-                }
-            }
+        } else {
+            chain
         }
     } else {
-        // Concrete model id — search all providers to find which one has it.
+        // Concrete model id — find the provider that owns it (single candidate).
         let cfg = state.cfg();
         let found = cfg.providers.iter()
             .find(|(_, pc)| pc.models.iter().any(|m| m.id == req.model))
-            .map(|(name, _)| name.clone());
-        provider_name = found.unwrap_or_else(|| cfg.default_provider.clone());
-    }
-
-    // Acquire concurrency permit for the chosen provider. Bounded wait so a
-    // saturated provider fails fast (returns 503) instead of queueing until
-    // the client's own timeout — see plan 011 task 2.2 (M3).
-    let permit = match state.pool.acquire_with_timeout(&provider_name, std::time::Duration::from_secs(30)).await {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": {"message": format!("concurrency pool unavailable for provider '{}'", provider_name)}})),
-            )
-                .into_response();
-        }
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| cfg.default_provider.clone());
+        vec![(found, req.model.clone())]
     };
 
-    // Get the provider object for the chosen provider name.
-    let provider = match state.registry.get(&provider_name) {
-        Some(p) => p.clone(),
-        None => {
-            // Fallback to default provider.
-            match state.registry.default_provider() {
-                Ok(p) => p.clone(),
-                Err(e) => {
+    // Iterate candidates with fallback. For each: acquire a permit (fail-fast
+    // on saturation) → invoke the provider. A retryable failure (rate limit,
+    // timeout, 5xx, transport) on a non-streaming call moves to the next
+    // candidate. Streaming only falls back before the stream starts (a
+    // saturated first candidate's acquire failure moves to the next); once a
+    // stream begins, mid-stream errors are reported as-is.
+    let mut last_error: Option<String> = None;
+    for (provider_name, model_id) in &candidates {
+        req.model = model_id.clone();
+
+        // Acquire a permit (bounded wait so a saturated provider fails fast).
+        let permit = match state
+            .pool
+            .acquire_with_timeout(provider_name, std::time::Duration::from_secs(30))
+            .await
+        {
+            Some(p) => p,
+            None => {
+                // Saturated — try the next candidate (fallback).
+                last_error = Some(format!(
+                    "provider '{}' concurrency pool unavailable",
+                    provider_name
+                ));
+                tracing::warn!("tier fallback: '{}' saturated, trying next candidate", provider_name);
+                continue;
+            }
+        };
+
+        let provider = match state.registry.get(provider_name) {
+            Some(p) => p.clone(),
+            None => {
+                last_error = Some(format!("provider '{}' not in registry", provider_name));
+                continue;
+            }
+        };
+
+        // Streaming: once we enter streaming_response we commit to this
+        // provider (mid-stream fallback would need to replay deltas).
+        if req.stream {
+            return streaming_response(state, app_name, provider, req, permit).await;
+        }
+
+        // Non-streaming: try the call, fall back on retryable errors.
+        match provider.complete(&req).await {
+            Ok(resp) => {
+                if let Some(u) = &resp.usage {
+                    state.tracker.record(
+                        &app_name,
+                        u.input_tokens as u64,
+                        u.output_tokens as u64,
+                    );
+                }
+                drop(permit);
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::to_value(&resp).unwrap_or(json!({"error": "serialize"}))),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                drop(permit);
+                let retryable = e.is_retryable();
+                last_error = Some(format!("{e}"));
+                if retryable {
+                    tracing::warn!(
+                        "tier fallback: '{}' failed with retryable error ({}), trying next candidate",
+                        provider_name,
+                        e
+                    );
+                    continue;
+                } else {
+                    // Non-retryable (4xx param error, etc.) — don't fall back.
                     return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": {"message": format!("{e}")}})),
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error": {"message": format!("upstream error: {e}")}})),
                     )
                         .into_response();
                 }
             }
         }
-    };
-
-    // Hand the canonical request to the provider, which translates it to its
-    // own wire format, calls upstream, and parses back a canonical response.
-    if req.stream {
-        return streaming_response(state, app_name, provider, req, permit).await;
     }
 
-    match provider.complete(&req).await {
-        Ok(resp) => {
-            if let Some(u) = &resp.usage {
-                state
-                    .tracker
-                    .record(&app_name, u.input_tokens as u64, u.output_tokens as u64);
-            }
-            drop(permit);
-            (
-                StatusCode::OK,
-                Json(serde_json::to_value(&resp).unwrap_or(json!({"error": "serialize"}))),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            drop(permit);
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"error": {"message": format!("upstream error: {e}")}})),
-            )
-                .into_response()
-        }
-    }
+    // All candidates exhausted.
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({"error": {"message": format!("all providers failed; last error: {}", last_error.unwrap_or_else(|| "unknown".into()))}})),
+    )
+        .into_response()
 }
 
 /// Build an SSE response that streams text deltas from the provider.

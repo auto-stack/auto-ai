@@ -5,7 +5,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::Value;
 
 use super::AiProvider;
 use crate::sse::SseParser;
@@ -126,7 +125,7 @@ impl AiProvider for OpenAiProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::from_upstream_status(status, text));
         }
 
         let json: serde_json::Value = resp
@@ -194,7 +193,7 @@ impl AiProvider for OpenAiProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::from_upstream_status(status, text));
         }
 
         use futures::StreamExt;
@@ -314,13 +313,17 @@ impl AiProvider for OpenAiProvider {
                     match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
                         Ok(v) => v,
                         Err(e) => {
+                            // Don't heuristic-recover: a truncated `cmd` could
+                            // be shell-interpreted into a different command.
+                            // Surface the raw args in the log and pass an empty
+                            // object upstream so the caller sees a clear failure.
                             tracing::warn!(
-                                "streaming: failed to parse tool_call arguments for '{}': {} (args len={}, first 200: '{}')",
-                                tc.name, e, tc.arguments.len(), &tc.arguments[..tc.arguments.len().min(200)]
+                                "streaming: malformed tool_call arguments for '{}': {} \
+                                 (len={}, first 200: '{}') — passing empty object",
+                                tc.name, e, tc.arguments.len(),
+                                &tc.arguments[..tc.arguments.len().min(200)]
                             );
-                            // The arguments might be truncated or malformed.
-                            // Try to extract known fields (path, content, cmd) heuristically.
-                            extract_fields_heuristic(&tc.arguments)
+                            serde_json::Value::Object(serde_json::Map::new())
                         }
                     }
                 };
@@ -346,127 +349,6 @@ impl AiProvider for OpenAiProvider {
             error: None,
         })
     }
-}
-
-/// Heuristic extraction of known fields from malformed/truncated JSON arguments.
-///
-/// When streaming large tool_call arguments (e.g. a full HTML file in write_file),
-/// the accumulated JSON string can be truncated or have escaped characters that
-/// break serde_json::from_str. This function tries to extract the most important
-/// fields (path, content, cmd, old_string, new_string) using simple string matching.
-fn extract_fields_heuristic(raw: &str) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-
-    // Try to find "path" field.
-    if let Some(path) = extract_json_string_field(raw, "path") {
-        obj.insert("path".into(), serde_json::Value::String(path));
-    }
-    // Try to find "content" field.
-    if let Some(content) = extract_json_string_field(raw, "content") {
-        obj.insert("content".into(), serde_json::Value::String(content));
-    }
-    // Try to find "cmd" field.
-    if let Some(cmd) = extract_json_string_field(raw, "cmd") {
-        obj.insert("cmd".into(), serde_json::Value::String(cmd));
-    }
-    // Try to find "old_string" field.
-    if let Some(old) = extract_json_string_field(raw, "old_string") {
-        obj.insert("old_string".into(), serde_json::Value::String(old));
-    }
-    // Try to find "new_string" field.
-    if let Some(new) = extract_json_string_field(raw, "new_string") {
-        obj.insert("new_string".into(), serde_json::Value::String(new));
-    }
-    // Try to find "task" field.
-    if let Some(task) = extract_json_string_field(raw, "task") {
-        obj.insert("task".into(), serde_json::Value::String(task));
-    }
-    // Try to find "flow" field.
-    if let Some(flow) = extract_json_string_field(raw, "flow") {
-        obj.insert("flow".into(), serde_json::Value::String(flow));
-    }
-
-    if obj.is_empty() {
-        // Last resort: store raw.
-        obj.insert("_raw".into(), serde_json::Value::String(raw.to_string()));
-    }
-
-    tracing::warn!(
-        "heuristic extraction from {} bytes → {} fields: {:?}",
-        raw.len(),
-        obj.len(),
-        obj.keys().collect::<Vec<_>>()
-    );
-
-    serde_json::Value::Object(obj)
-}
-
-/// Extract a string field value from a (possibly malformed) JSON string.
-/// Looks for `"field_name":` followed by a quoted string value.
-fn extract_json_string_field(raw: &str, field: &str) -> Option<String> {
-    // Pattern: "field": "value" — but value may contain escaped quotes.
-    let patterns = [
-        format!("\"{field}\":\""),
-        format!("\"{field}\" : \""),
-        format!("\"{field}\": \""),
-    ];
-
-    for pat in &patterns {
-        if let Some(start) = raw.find(pat.as_str()) {
-            let value_start = start + pat.len();
-            let bytes = raw.as_bytes();
-            let mut i = value_start;
-            let mut result = String::new();
-            while i < bytes.len() {
-                if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                    // Escape sequence.
-                    match bytes[i + 1] {
-                        b'"' => result.push('"'),
-                        b'\\' => result.push('\\'),
-                        b'n' => result.push('\n'),
-                        b't' => result.push('\t'),
-                        b'r' => result.push('\r'),
-                        b'/' => result.push('/'),
-                        _ => {
-                            result.push('\\');
-                            result.push(bytes[i + 1] as char);
-                        }
-                    }
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    // End of string.
-                    return Some(result);
-                } else {
-                    // Collect the character (handle UTF-8 by pushing the raw byte).
-                    // This is safe because we're looking for an unescaped " to end.
-                    let ch_start = i;
-                    let ch_len = utf8_char_len(bytes[i]);
-                    if ch_start + ch_len <= bytes.len() {
-                        if let Ok(s) = std::str::from_utf8(&bytes[ch_start..ch_start + ch_len]) {
-                            result.push_str(s);
-                        }
-                    }
-                    i += ch_len;
-                }
-            }
-            // Reached end of input without closing quote (truncated).
-            tracing::warn!(
-                "extract_json_string_field '{}': string appears truncated (len={})",
-                field, result.len()
-            );
-            return Some(result);
-        }
-    }
-    None
-}
-
-/// Get the byte length of a UTF-8 character from its leading byte.
-fn utf8_char_len(byte: u8) -> usize {
-    if byte < 0x80 { 1 }
-    else if byte < 0xC0 { 1 } // continuation byte (shouldn't happen at start)
-    else if byte < 0xE0 { 2 }
-    else if byte < 0xF0 { 3 }
-    else { 4 }
 }
 
 #[cfg(test)]
@@ -576,50 +458,5 @@ mod tests {
         assert_eq!(tool_calls[0].name, "read_file");
         assert_eq!(tool_calls[0].input["path"], "a.txt");
         assert_eq!(json["choices"][0]["finish_reason"].as_str(), Some("tool_calls"));
-    }
-
-    #[test]
-    fn heuristic_extracts_path_and_content() {
-        // Simulate a truncated/malformed JSON (missing closing brace).
-        let raw = r#"{"path":"game.html","content":"<!DOCTYPE html><html>"#;
-        let result = super::extract_fields_heuristic(raw);
-        assert_eq!(result["path"].as_str(), Some("game.html"));
-        assert!(result["content"].as_str().unwrap().contains("<!DOCTYPE"));
-    }
-
-    #[test]
-    fn heuristic_extracts_from_escaped_content() {
-        // Content with escaped quotes and newlines.
-        let raw = r#"{"path":"test.txt","content":"line1\nline2\"quoted\""}"#;
-        let result = super::extract_fields_heuristic(raw);
-        assert_eq!(result["path"].as_str(), Some("test.txt"));
-        let content = result["content"].as_str().unwrap();
-        assert!(content.contains("line1"));
-        assert!(content.contains("quoted"));
-    }
-
-    #[test]
-    fn heuristic_extracts_from_truncated_content() {
-        // Content that was cut off mid-stream (no closing quote).
-        let raw = r#"{"path":"big.html","content":"<html><head><title>Game</title><style>body{margin:0}"#;
-        let result = super::extract_fields_heuristic(raw);
-        assert_eq!(result["path"].as_str(), Some("big.html"));
-        let content = result["content"].as_str().unwrap();
-        assert!(content.contains("<html>"));
-        assert!(content.contains("margin:0"));
-    }
-
-    #[test]
-    fn heuristic_extracts_cmd_field() {
-        let raw = r#"{"cmd":"echo hello"}"#;
-        let result = super::extract_fields_heuristic(raw);
-        assert_eq!(result["cmd"].as_str(), Some("echo hello"));
-    }
-
-    #[test]
-    fn heuristic_returns_raw_when_no_known_fields() {
-        let raw = r#"{"unknown_field":"value"}"#;
-        let result = super::extract_fields_heuristic(raw);
-        assert!(result["_raw"].is_string());
     }
 }

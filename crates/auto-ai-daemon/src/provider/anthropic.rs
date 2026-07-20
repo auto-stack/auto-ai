@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::Value;
 
 use super::AiProvider;
 use crate::sse::SseParser;
@@ -97,7 +96,7 @@ impl AiProvider for AnthropicProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::from_upstream_status(status, text));
         }
 
         let json: serde_json::Value = resp
@@ -176,7 +175,7 @@ impl AiProvider for AnthropicProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("{}: {}", status, text)));
+            return Err(LlmError::from_upstream_status(status, text));
         }
 
         use futures::StreamExt;
@@ -299,10 +298,22 @@ impl AiProvider for AnthropicProvider {
         let tool_calls: Vec<ToolCall> = tool_blocks
             .into_iter()
             .filter(|tb| !tb.name.is_empty())
-            .map(|tb| ToolCall {
-                id: tb.id,
-                name: tb.name,
-                input: serde_json::from_str(&tb.input_json).unwrap_or(serde_json::Value::Null),
+            .map(|tb| {
+                let input = match serde_json::from_str::<serde_json::Value>(&tb.input_json) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Don't silently degrade to Null (downstream would run
+                        // the tool with no args). Log and pass an empty object.
+                        tracing::warn!(
+                            "anthropic streaming: malformed tool_use input for '{}': {} \
+                             (len={}, first 200: '{}') — passing empty object",
+                            tb.name, e, tb.input_json.len(),
+                            &tb.input_json[..tb.input_json.len().min(200)]
+                        );
+                        serde_json::Value::Object(serde_json::Map::new())
+                    }
+                };
+                ToolCall { id: tb.id, name: tb.name, input }
             })
             .collect();
 

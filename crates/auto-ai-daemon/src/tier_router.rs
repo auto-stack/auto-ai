@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use ai_config::{DaemonConfig, ModelDefinition, ModelTier, ProviderConfig};
+use ai_config::{DaemonConfig, ModelTier};
 
 /// A single candidate in a tier's routing chain.
 #[derive(Debug, Clone)]
