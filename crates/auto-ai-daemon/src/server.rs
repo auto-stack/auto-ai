@@ -520,8 +520,14 @@ async fn config_test(
 fn mask_key(key: Option<&str>) -> String {
     match key {
         None | Some("") => String::new(),
-        Some(k) if k.len() <= 10 => "****".to_string(),
-        Some(k) => format!("{}****{}", &k[..6], &k[k.len() - 4..]),
+        Some(k) if k.chars().count() <= 10 => "****".to_string(),
+        // Use char-based slicing to avoid panicking on non-ASCII char boundaries.
+        Some(k) => {
+            let chars: Vec<char> = k.chars().collect();
+            let head: String = chars[..6].iter().collect();
+            let tail: String = chars[chars.len() - 4..].iter().collect();
+            format!("{}****{}", head, tail)
+        }
     }
 }
 

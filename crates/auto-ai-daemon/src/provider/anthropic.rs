@@ -194,11 +194,13 @@ impl AiProvider for AnthropicProvider {
         }
         let mut tool_blocks: Vec<ToolBlock> = Vec::new();
         let mut stop_reason: Option<String> = None;
+        let mut usage: Option<Usage> = None;
 
         let process_json = |json: &serde_json::Value,
                             content: &mut String,
                             tool_blocks: &mut Vec<ToolBlock>,
                             stop_reason: &mut Option<String>,
+                            usage: &mut Option<Usage>,
                             on_delta: &Arc<dyn Fn(String) + Send + Sync>| {
             let event_type = json["type"].as_str().unwrap_or("");
 
@@ -234,9 +236,26 @@ impl AiProvider for AnthropicProvider {
                             .to_string();
                     }
                 }
+                "message_start" => {
+                    // Anthropic reports input_tokens in the initial message_start.
+                    if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
+                        *usage = Some(Usage {
+                            input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
+                            output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
+                        });
+                    }
+                }
                 "message_delta" => {
                     if let Some(stop) = json["delta"]["stop_reason"].as_str() {
                         *stop_reason = Some(stop.to_string());
+                    }
+                    // output_tokens is updated/finalized in message_delta.usage.
+                    if let Some(u) = json.get("usage") {
+                        let out = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+                        match usage {
+                            Some(prev) => prev.output_tokens = out,
+                            None => *usage = Some(Usage { input_tokens: 0, output_tokens: out }),
+                        }
                     }
                 }
                 _ => {}
@@ -275,6 +294,7 @@ impl AiProvider for AnthropicProvider {
                         &mut content,
                         &mut tool_blocks,
                         &mut stop_reason,
+                        &mut usage,
                         &on_delta,
                     );
                 }
@@ -289,6 +309,7 @@ impl AiProvider for AnthropicProvider {
                     &mut content,
                     &mut tool_blocks,
                     &mut stop_reason,
+                    &mut usage,
                     &on_delta,
                 );
             }
@@ -321,7 +342,7 @@ impl AiProvider for AnthropicProvider {
             content,
             tool_calls,
             stop_reason,
-            usage: None,
+            usage,
             model: req.model.clone(),
             error: None,
         })

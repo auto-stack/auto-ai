@@ -33,10 +33,14 @@ fn load_from_file() -> Option<DaemonConfig> {
 
 /// Env-var fallback (Forge-compatible): ZHIPU_API_KEY / ANTHROPIC_API_KEY /
 /// OPENAI_API_KEY, each with a default concurrency cap of 4.
+///
+/// Panics if no provider can be built — a daemon with zero providers would
+/// just fail every request with NoProvider at runtime, so failing fast at
+/// startup is clearer (startup-time panics are acceptable per our conventions).
 fn load_from_env() -> DaemonConfig {
     let mut providers = HashMap::new();
 
-    if let Ok(key) = std::env::var("ZHIPU_API_KEY") {
+    if let Some(key) = std::env::var("ZHIPU_API_KEY").ok().filter(|v| !v.is_empty()) {
         providers.insert(
             "zhipu".into(),
             provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", key, vec![
@@ -45,7 +49,11 @@ fn load_from_env() -> DaemonConfig {
             ]),
         );
     }
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY").or_else(|_| std::env::var("ANTHROPIC_AUTH_TOKEN")) {
+    if let Some(key) = std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("ANTHROPIC_AUTH_TOKEN").ok().filter(|v| !v.is_empty()))
+    {
         providers.insert(
             "anthropic".into(),
             provider_env("anthropic", &std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into()), key, vec![
@@ -53,7 +61,7 @@ fn load_from_env() -> DaemonConfig {
             ]),
         );
     }
-    if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+    if let Some(key) = std::env::var("OPENAI_API_KEY").ok().filter(|v| !v.is_empty()) {
         providers.insert(
             "openai".into(),
             provider_env("openai", &std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into()), key, vec![
@@ -62,7 +70,26 @@ fn load_from_env() -> DaemonConfig {
         );
     }
 
-    let default_provider = providers.keys().next().cloned().unwrap_or_default();
+    if providers.is_empty() {
+        panic!(
+            "no LLM provider configured: set at least one of ZHIPU_API_KEY, \
+             ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY, \
+             or create ~/.config/autoos/ai-daemon.at"
+        );
+    }
+
+    // Deterministic default-provider selection (HashMap iteration order is
+    // otherwise random, making routing non-reproducible across runs — L1).
+    // Priority: zhipu > anthropic > openai > (first by sorted name).
+    let default_provider = ["zhipu", "anthropic", "openai"]
+        .iter()
+        .find(|name| providers.contains_key(**name))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let mut names: Vec<&String> = providers.keys().collect();
+            names.sort();
+            names[0].clone()
+        });
     let default_model = providers
         .get(&default_provider)
         .and_then(|p| p.models.first().map(|m| m.id.clone()))

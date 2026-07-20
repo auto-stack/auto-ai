@@ -204,7 +204,9 @@ impl AiClient {
 
 impl Default for AiClient {
     fn default() -> Self {
-        Self::with_url("http://127.0.0.1:17654")
+        // Honor $AAID_URL instead of hardcoding the default port, so tests
+        // and callers that set the env var aren't surprised (see plan 011 L6).
+        Self::with_url(crate::daemon::daemon_url())
     }
 }
 

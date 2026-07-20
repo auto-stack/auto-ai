@@ -179,6 +179,9 @@ impl AiProvider for OpenAiProvider {
     ) -> Result<CompletionResponse, LlmError> {
         let mut body = self.build_body(req);
         body["stream"] = serde_json::json!(true);
+        // Ask OpenAI to include a final usage frame (so streaming requests
+        // can be accounted in UsageTracker — see plan 011 task 4.2 / M2).
+        body["stream_options"] = serde_json::json!({ "include_usage": true });
 
         let resp = self
             .client
@@ -210,11 +213,13 @@ impl AiProvider for OpenAiProvider {
         }
         let mut tool_call_accum: Vec<AccumToolCall> = Vec::new();
         let mut finish_reason: Option<String> = None;
+        let mut usage: Option<Usage> = None;
 
         let process_json = |json: &serde_json::Value,
                             content: &mut String,
                             tool_call_accum: &mut Vec<AccumToolCall>,
                             finish_reason: &mut Option<String>,
+                            usage: &mut Option<Usage>,
                             on_delta: &Arc<dyn Fn(String) + Send + Sync>| {
             if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
                 content.push_str(delta);
@@ -222,6 +227,14 @@ impl AiProvider for OpenAiProvider {
             }
             if let Some(finish) = json["choices"][0]["finish_reason"].as_str() {
                 *finish_reason = Some(finish.to_string());
+            }
+            // The final usage frame carries a top-level `usage` object
+            // (with stream_options.include_usage). choices is empty there.
+            if let Some(u) = json.get("usage") {
+                *usage = Some(Usage {
+                    input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                    output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                });
             }
             // Parse tool_calls deltas (incremental by index).
             if let Some(tcs) = json["choices"][0]["delta"]["tool_calls"].as_array() {
@@ -278,6 +291,7 @@ impl AiProvider for OpenAiProvider {
                         &mut content,
                         &mut tool_call_accum,
                         &mut finish_reason,
+                        &mut usage,
                         &on_delta,
                     );
                 }
@@ -292,6 +306,7 @@ impl AiProvider for OpenAiProvider {
                     &mut content,
                     &mut tool_call_accum,
                     &mut finish_reason,
+                    &mut usage,
                     &on_delta,
                 );
             }
@@ -344,7 +359,7 @@ impl AiProvider for OpenAiProvider {
             content,
             tool_calls,
             stop_reason: finish_reason,
-            usage: None,
+            usage,
             model: req.model.clone(),
             error: None,
         })
