@@ -158,16 +158,12 @@ async fn chat_completions(
         provider_name = found.unwrap_or_else(|| cfg.default_provider.clone());
     }
 
-    // Acquire concurrency permit for the chosen provider.
-    let permit = match state.pool.acquire(&provider_name).await {
+    // Acquire concurrency permit for the chosen provider. Bounded wait so a
+    // saturated provider fails fast (returns 503) instead of queueing until
+    // the client's own timeout — see plan 011 task 2.2 (M3).
+    let permit = match state.pool.acquire_with_timeout(&provider_name, std::time::Duration::from_secs(30)).await {
         Some(p) => p,
         None => {
-            // Fallback: try other providers that have a model for this tier.
-            if is_tier_request {
-                let tier_name = req.model.strip_prefix("tier:").unwrap_or("");
-                // Already resolved model — can't fallback easily here.
-                // For now, just return unavailable.
-            }
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": {"message": format!("concurrency pool unavailable for provider '{}'", provider_name)}})),
@@ -242,12 +238,18 @@ async fn streaming_response(
     use axum::body::Body;
     use axum::response::Response;
     use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     let (tx, mut rx) = mpsc::channel::<String>(64);
+    // Cancellation token: fired when the SSE consumer (client) disconnects,
+    // so the provider stops pulling tokens from the upstream and releases the
+    // permit promptly instead of running to completion into a dead channel.
+    let cancel = CancellationToken::new();
 
     // Spawn the streaming call: invokes the provider, whose `on_delta` callback
     // pushes deltas into the channel. When done, sends a final event.
     let tx2 = tx.clone();
+    let cancel_for_task = cancel.clone();
     let provider_task = tokio::spawn(async move {
         let on_delta: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |delta: String| {
             // best-effort push; ignore if channel closed (client disconnected)
@@ -257,7 +259,7 @@ async fn streaming_response(
             ));
         });
 
-        match provider.complete_stream(&req, on_delta).await {
+        match provider.complete_stream(&req, on_delta, cancel_for_task).await {
             Ok(resp) => {
                 if let Some(u) = &resp.usage {
                     state
@@ -290,9 +292,14 @@ async fn streaming_response(
         drop(permit);
     });
 
-    // Build an SSE body from the channel. When the client disconnects or the
-    // provider task ends (channel closes), the stream ends.
+    // Build an SSE body from the channel. If the client disconnects, axum
+    // drops this stream future; the `CancelOnDrop` guard then fires the
+    // cancellation token so the provider stops fetching from the upstream.
+    let cancel_on_drop = cancel.clone();
     let stream = async_stream::stream! {
+        // When this stream is dropped (client disconnect), fire cancellation
+        // so the spawned provider task stops fetching from the upstream.
+        let _cancel_guard = CancelOnDrop(cancel_on_drop);
         while let Some(event) = rx.recv().await {
             yield Ok::<_, std::convert::Infallible>(event);
         }
@@ -307,6 +314,17 @@ async fn streaming_response(
         .header("Connection", "keep-alive")
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+/// RAII guard that fires a [`CancellationToken`] on drop. Used so that when
+/// the SSE body stream is dropped (client disconnect), the upstream provider
+/// fetch is aborted instead of running to completion into a dead channel.
+struct CancelOnDrop(tokio_util::sync::CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 // ── Config page (web UI) ─────────────────────────────────────────────────────

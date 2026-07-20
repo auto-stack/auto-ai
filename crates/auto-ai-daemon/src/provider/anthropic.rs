@@ -157,6 +157,7 @@ impl AiProvider for AnthropicProvider {
         &self,
         req: &CompletionRequest,
         on_delta: Arc<dyn Fn(String) + Send + Sync>,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> Result<CompletionResponse, LlmError> {
         let mut body = self.build_body(req);
         body["stream"] = serde_json::json!(true);
@@ -243,8 +244,30 @@ impl AiProvider for AnthropicProvider {
             }
         };
 
-        while let Some(chunk_result) = stream.next().await {
-            let bytes = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
+        // Idle timeout for the upstream SSE stream: if no chunk arrives within
+        // this window, abort (the upstream is stuck, don't hold the permit).
+        const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+        loop {
+            // Race the next chunk against cancellation and an idle timeout.
+            let chunk_result = tokio::select! {
+                biased; // poll cancel first so a cancel always wins.
+                _ = cancel.cancelled() => {
+                    tracing::info!("anthropic stream cancelled by caller");
+                    break;
+                }
+                r = tokio::time::timeout(SSE_IDLE_TIMEOUT, stream.next()) => match r {
+                    Ok(Some(chunk)) => chunk.map_err(|e| LlmError::Http(e.to_string()))?,
+                    Ok(None) => break, // upstream stream ended
+                    Err(_) => {
+                        tracing::warn!("anthropic stream idle timeout ({}s), aborting", SSE_IDLE_TIMEOUT.as_secs());
+                        return Err(LlmError::Http(format!(
+                            "upstream idle timeout ({}s)", SSE_IDLE_TIMEOUT.as_secs()
+                        )));
+                    }
+                }
+            };
+            let bytes = chunk_result;
             let data_events = parser.push(&bytes);
             for data in data_events {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {

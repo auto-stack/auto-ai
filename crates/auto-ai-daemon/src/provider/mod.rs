@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use ai_config::{ClientConfig, CompletionRequest, CompletionResponse, DaemonConfig};
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use crate::LlmError;
 
@@ -32,10 +33,16 @@ pub trait AiProvider: Send + Sync {
     async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, LlmError>;
 
     /// Streaming completion. Calls `on_delta` for each text chunk.
+    ///
+    /// `cancel` lets the caller (e.g. when the SSE client disconnects) abort
+    /// the upstream fetch early, so a dropped connection doesn't keep pulling
+    /// tokens (and spending quota) until the upstream stream ends naturally.
+    /// Honored at each SSE chunk boundary.
     async fn complete_stream(
         &self,
         req: &CompletionRequest,
         on_delta: Arc<dyn Fn(String) + Send + Sync>,
+        cancel: CancellationToken,
     ) -> Result<CompletionResponse, LlmError>;
 }
 

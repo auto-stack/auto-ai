@@ -29,9 +29,37 @@ impl ConcurrencyManager {
 
     /// Acquire a concurrency permit for a provider.
     /// Returns a guard that releases on drop.
+    ///
+    /// Blocks indefinitely until a slot frees. For bounded waiting (so the
+    /// caller can fail fast / fall back when the provider is saturated), use
+    /// [`Self::acquire_with_timeout`].
     pub async fn acquire(&self, provider: &str) -> Option<tokio::sync::OwnedSemaphorePermit> {
         let sem = self.pools.get(provider)?;
         Some(sem.clone().acquire_owned().await.ok()?)
+    }
+
+    /// Like [`Self::acquire`] but gives up after `timeout`, returning `None`.
+    /// This makes the "concurrency pool unavailable" path actually reachable
+    /// (the bare `acquire` waits forever, so a saturated provider would just
+    /// queue requests until the client's own timeout).
+    pub async fn acquire_with_timeout(
+        &self,
+        provider: &str,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let sem = self.pools.get(provider)?;
+        match tokio::time::timeout(timeout, sem.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => Some(permit),
+            Ok(Err(_)) => None, // semaphore closed
+            Err(_) => {
+                tracing::warn!(
+                    "concurrency pool for '{}' saturated: acquire timed out after {:?}",
+                    provider,
+                    timeout
+                );
+                None
+            }
+        }
     }
 
     /// How many permits are currently held (in use) for a provider.

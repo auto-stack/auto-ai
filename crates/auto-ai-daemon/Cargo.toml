@@ -26,6 +26,7 @@ futures = "0.3"
 async-trait = "0.1"
 async-stream = "0.3"
 parking_lot = "0.12"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [lib]
 name = "auto_ai_daemon"
