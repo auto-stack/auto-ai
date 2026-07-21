@@ -144,6 +144,7 @@ mod tests {
                 ModelDefinition::new("glm-5-turbo", ModelTier::Mid),
             ],
             max_concurrency: Some(4),
+                auth_required: true,
         });
         providers.insert("deepseek".into(), ProviderConfig {
             kind: "anthropic".into(),
@@ -155,6 +156,7 @@ mod tests {
                 ModelDefinition::new("deepseek-v4-flash", ModelTier::Lite),
             ],
             max_concurrency: Some(4),
+                auth_required: true,
         });
         DaemonConfig {
             listen_addr: "127.0.0.1:17654".into(),

@@ -87,13 +87,8 @@ impl Client for AiClient {
 /// Events emitted by [`Agent::run_stream`] as the ReAct loop progresses.
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
-    /// A chunk of the model's text output (final answer text only —
-    /// intermediate ReAct reasoning is emitted as [`Self::Thinking`]).
+    /// A chunk of the model's text output.
     Delta { text: String },
-    /// A chunk of the model's reasoning text — emitted for text produced
-    /// during an intermediate (tool-calling) turn, so consumers can render
-    /// "thinking" separately from the final answer.
-    Thinking { text: String },
     /// A tool is about to be executed (the request has been parsed, the tool
     /// call is starting). Emitted before [`Self::Tool`] so consumers can show
     /// a "running…" state.
@@ -101,6 +96,12 @@ pub enum StreamEvent {
         tool: String,
         args: serde_json::Value,
     },
+    /// A non-fatal advisory message (e.g. the near-turn-cap warning). Consumers
+    /// should render this distinctly from the model's [`Self::Delta`] text
+    /// (e.g. as a dimmed system note) so it isn't mistaken for the answer.
+    /// (review-003 stage 5 U1: replaces the earlier reuse of `Delta` for the
+    /// near-cap warning, and the dead `Thinking` variant.)
+    Warning { text: String },
     /// A tool was called and produced a result.
     Tool {
         tool: String,
@@ -272,30 +273,27 @@ impl Agent {
     pub async fn run(&mut self, task: &str) -> Result<AgentResult, AgentError> {
         // Non-streaming: no event sink, no cancellation. The unified loop
         // (run_inner) still streams the LLM call internally (complete_stream
-        // falls back to complete in the default Client impl), but discards
-        // the per-chunk deltas since there's nowhere to send them.
-        self.run_inner(task, None, None).await
+        // falls back to complete in the default Client impl), but the events
+        // go to a no-op sink since there's nowhere to send them.
+        let noop: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(|_| {});
+        self.run_inner(task, noop, None).await
     }
 
     /// Unified ReAct loop backing both [`Self::run`] and [`Self::run_stream`]
     /// (review-003 M4: eliminates the two parallel implementations that had
     /// drifted apart — S3's missing error check was a direct symptom).
     ///
-    /// - `on_event = None` → non-streaming (`run`); `Some` → forward events.
+    /// - `on_event` is always a sink (`run` passes a no-op, `run_stream` the
+    ///   real callback) — so the loop body never branches on Option (review-003
+    ///   stage 5 W2: previously it took `&Option<...>` on every emit call).
     /// - `cancel = None` → not cancellable (`run`); `Some` → honor at the 3
     ///   safe checkpoints (turn boundary, after LLM response, before tools).
     async fn run_inner(
         &mut self,
         task: &str,
-        on_event: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+        on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<AgentResult, AgentError> {
-        // Helper: emit an event only when streaming.
-        let emit = |ev: StreamEvent, on_event: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>| {
-            if let Some(cb) = on_event {
-                cb(ev);
-            }
-        };
         // Helper: has the caller requested cancellation?
         let cancelled = || -> bool {
             cancel
@@ -316,7 +314,7 @@ impl Agent {
             // Cancel checkpoint 1: stop before starting a new ReAct turn.
             // (Memory is consistent here — the previous turn, if any, is done.)
             if cancelled() {
-                emit(StreamEvent::Cancelled { result: result.clone() }, &on_event);
+                on_event(StreamEvent::Cancelled { result: result.clone() });
                 return Ok(result);
             }
             result.turns = turn + 1;
@@ -336,14 +334,9 @@ impl Agent {
             // (review-003 M5). Only emitted when streaming.
             let remaining = hard_limit - turn;
             if remaining <= 5 && remaining > 1 {
-                if let Some(cb) = &on_event {
-                    cb(StreamEvent::Delta {
-                        text: format!(
-                            "\n  ⚠️ {} turns until the hard stop — wrap up now.\n",
-                            remaining - 1
-                        ),
-                    });
-                }
+                on_event(StreamEvent::Warning {
+                    text: format!("{} turns until the hard stop — wrap up now.", remaining - 1),
+                });
             }
 
             let req = self.build_request();
@@ -356,7 +349,7 @@ impl Agent {
                 .client
                 .complete_stream(&req, Arc::new(move |ev| {
                     if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
-                        emit(StreamEvent::Delta { text: t.to_string() }, &on_delta);
+                        on_delta(StreamEvent::Delta { text: t.to_string() });
                     }
                 }))
                 .await?;
@@ -368,17 +361,14 @@ impl Agent {
                 if let Some(u) = &resp.usage {
                     result.total_tokens += u.total_tokens() as u64;
                 }
-                emit(StreamEvent::Cancelled { result: result.clone() }, &on_event);
+                on_event(StreamEvent::Cancelled { result: result.clone() });
                 return Ok(result);
             }
 
             // Propagate a business-level error carried in a 200 response
             // (review-003 S3: previously only run_stream checked this).
             if let Some(err) = &resp.error {
-                emit(
-                    StreamEvent::Error { message: err.clone() },
-                    &on_event,
-                );
+                on_event(StreamEvent::Error { message: err.clone() });
                 return Err(AgentError::Config(err.clone()));
             }
             if let Some(u) = &resp.usage {
@@ -391,7 +381,7 @@ impl Agent {
                 // ToolUse blocks to memory below, the matching ToolResults must
                 // follow, so we bail out *before* any of that.
                 if cancelled() {
-                    emit(StreamEvent::Cancelled { result: result.clone() }, &on_event);
+                    on_event(StreamEvent::Cancelled { result: result.clone() });
                     return Ok(result);
                 }
                 // Record the assistant's tool-use turn in memory so the next
@@ -421,12 +411,9 @@ impl Agent {
                     let count = seen.entry(key.clone()).or_insert(0);
                     *count += 1;
                     if *count >= LOOP_DETECT_THRESHOLD {
-                        emit(
-                            StreamEvent::Error {
-                                message: format!("loop detected on '{}'", tc.name),
-                            },
-                            &on_event,
-                        );
+                        on_event(StreamEvent::Error {
+                            message: format!("loop detected on '{}'", tc.name),
+                        });
                         tracing::warn!(
                             "agent: loop detected on tool '{}' ({} repeats) — stopping",
                             tc.name,
@@ -436,13 +423,10 @@ impl Agent {
                     }
                     // Signal that this tool is about to run, so streaming
                     // consumers can show a "running…" indicator.
-                    emit(
-                        StreamEvent::ToolStart {
-                            tool: tc.name.clone(),
-                            args: tc.input.clone(),
-                        },
-                        &on_event,
-                    );
+                    on_event(StreamEvent::ToolStart {
+                        tool: tc.name.clone(),
+                        args: tc.input.clone(),
+                    });
                     let outcome = match self.tools.execute(&tc.name, &tc.input).await {
                         Ok(out) => out,
                         Err(e) => {
@@ -455,14 +439,11 @@ impl Agent {
                         args: tc.input.clone(),
                         result: outcome.clone(),
                     });
-                    emit(
-                        StreamEvent::Tool {
-                            tool: tc.name.clone(),
-                            args: tc.input.clone(),
-                            result: outcome.clone(),
-                        },
-                        &on_event,
-                    );
+                    on_event(StreamEvent::Tool {
+                        tool: tc.name.clone(),
+                        args: tc.input.clone(),
+                        result: outcome.clone(),
+                    });
                     // Truncate before storing in memory so one large tool output
                     // (e.g. read_file on a big file) can't blow the context
                     // window for the rest of the run. (review-003 S2)
@@ -478,29 +459,23 @@ impl Agent {
             // No tool calls → final answer.
             result.output = resp.content.clone();
             self.memory.add("assistant", &resp.content);
-            emit(
-                StreamEvent::Done {
-                    result: AgentResult {
-                        output: result.output.clone(),
-                        turns: result.turns,
-                        tool_calls: result.tool_calls.clone(),
-                        total_tokens: result.total_tokens,
-                    },
+            on_event(StreamEvent::Done {
+                result: AgentResult {
+                    output: result.output.clone(),
+                    turns: result.turns,
+                    tool_calls: result.tool_calls.clone(),
+                    total_tokens: result.total_tokens,
                 },
-                &on_event,
-            );
+            });
             return Ok(result);
         }
 
         // Exceeded hard safety cap without a plain-text answer.
-        emit(
-            StreamEvent::Error {
-                message: format!(
-                    "hard turn cap ({hard_limit}) exceeded (soft limit was {soft_limit})"
-                ),
-            },
-            &on_event,
-        );
+        on_event(StreamEvent::Error {
+            message: format!(
+                "hard turn cap ({hard_limit}) exceeded (soft limit was {soft_limit})"
+            ),
+        });
         tracing::warn!(
             "agent hit hard turn cap: {} (soft={}×5)",
             hard_limit,
@@ -539,7 +514,7 @@ impl Agent {
         // Delegates to the unified ReAct loop (run_inner). See run_inner for
         // the event/cancel semantics. (review-003 M4 unification: run and
         // run_stream now share one implementation.)
-        self.run_inner(task, Some(on_event), Some(cancel)).await
+        self.run_inner(task, on_event, Some(cancel)).await
     }
 
     /// Build the completion request for the current turn: system prompt from

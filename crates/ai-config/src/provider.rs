@@ -29,33 +29,47 @@ pub struct ProviderConfig {
     pub models: Vec<ModelDefinition>,
     /// Daemon-only: per-provider concurrency cap. `None` on the client side.
     pub max_concurrency: Option<usize>,
+    /// Whether this provider requires an API key for authentication. Defaults
+    /// to `true`. Set to `false` for local/no-auth providers (e.g. Ollama) —
+    /// `resolve_key` then returns a placeholder so the daemon can skip the
+    /// Authorization header, instead of failing with NoApiKey. (review-003 W1)
+    #[serde(default = "default_auth_required")]
+    pub auth_required: bool,
+}
+
+fn default_auth_required() -> bool {
+    true
 }
 
 impl ProviderConfig {
     /// Resolve the API key: direct string takes precedence, else read the env
     /// var named by `key_env`. `None` if neither is available.
     ///
-    /// For providers that don't require authentication (e.g. local Ollama),
-    /// returns a placeholder `"no-key-needed"` instead of None, so the daemon
-    /// doesn't reject the provider for having no key.
-    ///
-    /// **Limitation (review-002)**: the placeholder conflates "no key" with
-    /// "has key". A cleaner design would add an explicit `auth_required: bool`
-    /// field so providers can declare no-auth status directly, and the daemon
-    /// would skip the `Authorization` header for them. Deferred — current
-    /// behavior is functionally correct for no-auth providers.
+    /// Behavior depends on [`ProviderConfig::auth_required`]:
+    /// - `auth_required = true` (default): no key and no key_env → `None`,
+    ///   so the daemon fails fast with a clear "no API key" error instead of
+    ///   sending a bogus header upstream.
+    /// - `auth_required = false` (local/no-auth providers like Ollama): returns
+    ///   a `"no-key-needed"` placeholder so the daemon can skip the
+    ///   `Authorization` header rather than rejecting the provider.
     pub fn resolve_key(&self) -> Option<String> {
         if let Some(key) = &self.api_key {
             if key.is_empty() {
-                return Some("no-key-needed".into());
+                // An explicitly-empty api_key: treat like "no key".
+                if !self.auth_required {
+                    return Some("no-key-needed".into());
+                }
+                return None;
             }
             return Some(key.clone());
         }
         if let Some(env_name) = &self.key_env {
-            return std::env::var(env_name).ok().or_else(|| Some("no-key-needed".into()));
+            return std::env::var(env_name).ok().or_else(|| {
+                if self.auth_required { None } else { Some("no-key-needed".into()) }
+            });
         }
-        // No api_key and no key_env → placeholder for local/no-auth providers.
-        Some("no-key-needed".into())
+        // No api_key and no key_env.
+        if self.auth_required { None } else { Some("no-key-needed".into()) }
     }
 }
 
@@ -71,6 +85,7 @@ mod tests {
             key_env: None,
             models: vec![],
             max_concurrency: None,
+            auth_required: true,
         }
     }
 
@@ -92,17 +107,33 @@ mod tests {
     }
 
     #[test]
-    fn resolve_key_placeholder_when_nothing_set() {
-        // No api_key and no key_env: return a placeholder so no-auth providers
-        // (e.g. local Ollama) aren't rejected by the daemon. A cleaner design
-        // with an explicit `auth_required` field is tracked in review-002/003.
+    fn resolve_key_none_when_auth_required_and_nothing_set() {
+        // auth_required=true (default) and no key/key_env → None (fail-fast),
+        // so the daemon reports "no API key" rather than sending a bogus header.
         let pc = sample();
+        assert_eq!(pc.resolve_key(), None);
+    }
+
+    #[test]
+    fn resolve_key_none_when_auth_required_and_empty_api_key() {
+        let mut pc = sample();
+        pc.api_key = Some(String::new());
+        assert_eq!(pc.resolve_key(), None);
+    }
+
+    #[test]
+    fn resolve_key_placeholder_when_no_auth_and_nothing_set() {
+        // auth_required=false (local/no-auth provider like Ollama): return a
+        // placeholder so the daemon can skip the Authorization header.
+        let mut pc = sample();
+        pc.auth_required = false;
         assert_eq!(pc.resolve_key(), Some("no-key-needed".into()));
     }
 
     #[test]
-    fn resolve_key_placeholder_when_empty_api_key() {
+    fn resolve_key_placeholder_when_no_auth_and_empty_api_key() {
         let mut pc = sample();
+        pc.auth_required = false;
         pc.api_key = Some(String::new());
         assert_eq!(pc.resolve_key(), Some("no-key-needed".into()));
     }

@@ -101,6 +101,7 @@ mod tests {
                 key_env: None,
                 models: vec![],
                 max_concurrency: Some(2),
+                auth_required: true,
             },
         );
         DaemonConfig {
@@ -141,6 +142,7 @@ mod tests {
                 key_env: None,
                 models: vec![],
                 max_concurrency: None,
+                auth_required: true,
             },
         );
         let cfg = DaemonConfig {

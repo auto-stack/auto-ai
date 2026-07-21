@@ -237,6 +237,7 @@ fn parse_provider_blocks(node: &Node) -> HashMap<String, ProviderConfig> {
                 key_env: opt_str(child, "key_env"),
                 models: opt_models(child, "models"),
                 max_concurrency: opt_uint(child, "max_concurrency"),
+                auth_required: opt_bool(child, "auth_required").unwrap_or(true),
             };
             if !pc.kind.is_empty() {
                 providers.insert(child.name.to_string(), pc);
@@ -322,6 +323,21 @@ fn opt_uint(node: &Node, key: &str) -> Option<usize> {
         Value::Uint(u) => Some(u as usize),
         Value::Int(i) if i >= 0 => Some(i as usize),
         Value::Nil => None,
+        _ => None,
+    }
+}
+
+/// Parse a boolean property: `true`/`false`, `1`/`0`, `yes`/`no`.
+fn opt_bool(node: &Node, key: &str) -> Option<bool> {
+    match node.get_prop_of(key) {
+        Value::Bool(b) => Some(b),
+        Value::Uint(0) | Value::Int(0) => Some(false),
+        Value::Uint(_) | Value::Int(_) => Some(true),
+        Value::Str(s) => match s.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "1" | "on" => Some(true),
+            "false" | "no" | "0" | "off" => Some(false),
+            _ => None,
+        },
         _ => None,
     }
 }

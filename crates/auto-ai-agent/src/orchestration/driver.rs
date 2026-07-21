@@ -138,11 +138,11 @@ impl<F: AgentFactory> PipelineDriver<F> {
                                 col_clone.lock().unwrap().push_str(&text);
                                 event_cb(PipelineEvent::Delta { text });
                             }
-                            // Thinking text is part of the assistant's output —
-                            // collect it into the handoff content but don't echo
-                            // (pipelines only surface the final answer deltas).
-                            StreamEvent::Thinking { text } => {
-                                col_clone.lock().unwrap().push_str(&text);
+                            // Advisory warnings (e.g. near-turn-cap): log but
+                            // don't surface to the pipeline consumer (no
+                            // PipelineEvent equivalent).
+                            StreamEvent::Warning { text } => {
+                                tracing::info!("agent warning: {}", text);
                             }
                             // ToolStart is a "running" hint — no result yet, skip.
                             StreamEvent::ToolStart { .. } => {}

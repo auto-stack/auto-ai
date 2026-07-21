@@ -74,6 +74,7 @@ mod tests {
                     ai_config::ModelTier::Mid,
                 )],
                 max_concurrency: None,
+                auth_required: true,
             },
         );
 

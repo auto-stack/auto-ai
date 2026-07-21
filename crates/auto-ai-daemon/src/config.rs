@@ -114,6 +114,7 @@ fn provider_env(kind: &str, base_url: &str, key: String, models: Vec<ModelDefini
         key_env: None,
         models,
         max_concurrency: Some(DEFAULT_CONCURRENCY),
+        auth_required: true,
     }
 }
 

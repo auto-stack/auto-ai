@@ -372,11 +372,10 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                     print!("{text}");
                     let _ = io::stdout().flush();
                 }
-                StreamEvent::Thinking { text } => {
-                    // Intermediate ReAct reasoning — print dimmed so it's
-                    // visually distinct from the final answer delta stream.
-                    print!("\x1b[2m{text}\x1b[0m");
-                    let _ = io::stdout().flush();
+                StreamEvent::Warning { text } => {
+                    // Advisory message (e.g. near-turn-cap) — dimmed so it's
+                    // visually distinct from the model's answer.
+                    println!("\n  \x1b[2m⚠️ {text}\x1b[0m");
                 }
                 StreamEvent::ToolStart { tool, args } => {
                     let hint = match tool.as_str() {

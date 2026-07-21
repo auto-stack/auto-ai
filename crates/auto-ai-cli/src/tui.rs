@@ -475,9 +475,10 @@ fn handle_stream_event(app: &mut App, ev: StreamEvent) {
         StreamEvent::Delta { text } => {
             app.chat.append_delta(&text);
         }
-        StreamEvent::Thinking { text } => {
-            // Append reasoning text to the streaming turn as a thinking block.
-            append_thinking(&mut app.chat, &text);
+        StreamEvent::Warning { text } => {
+            // Advisory (e.g. near-turn-cap) — show as a dimmed system note in
+            // the current turn so it's not mistaken for the model's answer.
+            app.chat.add_system(&format!("⚠️ {text}"));
         }
         StreamEvent::ToolStart { tool, args } => {
             app.chat.start_tool(&tool, &args);
@@ -511,17 +512,6 @@ fn handle_stream_event(app: &mut App, ev: StreamEvent) {
             app.chat.add_error(&format_agent_error(&message));
             app.is_streaming = false;
             app.current_cancel = None;
-        }
-    }
-}
-
-/// Push a thinking text block onto the current streaming turn.
-/// (Thinking deltas currently aren't emitted by the agent layer; this keeps
-/// the path ready for future reasoning-content streaming.)
-fn append_thinking(chat: &mut ChatLog, text: &str) {
-    if let Some(idx) = chat.streaming_idx {
-        if let ChatLine::Assistant(turn) = &mut chat.lines[idx] {
-            turn.append_thinking(text);
         }
     }
 }
