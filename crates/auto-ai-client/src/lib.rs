@@ -17,8 +17,13 @@
 pub mod daemon;
 mod error;
 
-// Canonical wire types — single source of truth in ai-config.
-pub use ai_config::*;
+// Canonical wire types — single source of truth in ai-config. Re-export only
+// what a client consumer needs (review-003 L1: a glob re-export also leaked
+// daemon-only types like DaemonConfig/TierRouting through this thin client).
+pub use ai_config::{
+    CompletionRequest, CompletionResponse, ContentBlock, Message, ToolCall, ToolDefinition,
+    Usage,
+};
 pub use error::ClientError;
 
 /// The daemon HTTP client. See the crate docs for the (canonical) wire format.

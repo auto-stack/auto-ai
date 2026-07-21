@@ -6,6 +6,11 @@
 //! in some provider, failing fast with a clear message instead of a confusing
 //! daemon 404 at run time.
 //!
+//! **Status (review-003):** these functions are pub but currently have no
+//! in-workspace callers (only re-exported from the crate root). They're meant
+//! to be called by apps at startup (e.g. a daemon or CLI `--check` flag) to
+//! fail fast on a misconfigured role; that wiring just isn't wired yet.
+//!
 //! Best-effort: if the config file can't be read (e.g. running purely off env
 //! vars, or in a test), this surfaces as an error the caller may treat as a
 //! warning rather than fatal.

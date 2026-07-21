@@ -172,6 +172,17 @@ impl<F: AgentFactory> PipelineDriver<F> {
 
                     // Submit to engine — it will route to the next step.
                     let next = self.engine.submit_handoff(last_handoff.clone().unwrap());
+                    // Surface budget warnings to the consumer (review-003: the
+                    // BudgetWarning event was defined but never emitted; the
+                    // engine's own check only logs). Re-check here so the UI
+                    // gets the signal alongside the step outcome.
+                    let role_for_budget = last_handoff.as_ref().map(|h| h.from.as_str()).unwrap_or("");
+                    match self.engine.budget_tracker.check(role_for_budget) {
+                        crate::orchestration::budget::BudgetAction::Warning { remaining } => {
+                            on_event(PipelineEvent::BudgetWarning { remaining });
+                        }
+                        _ => {}
+                    }
                     match next {
                         AdvanceResult::Completed => {
                             on_event(PipelineEvent::Completed);

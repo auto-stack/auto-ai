@@ -100,7 +100,7 @@ impl HandoffDocument {
         if !self.decisions.is_empty() {
             lines.push("## Decisions Made".into());
             for d in &self.decisions {
-                lines.push(format!("- **{}** ({}): {}", d.status, d.status, d.title));
+                lines.push(format!("- **{}**: {}", d.status, d.title));
                 if !d.rationale.is_empty() {
                     lines.push(format!("  - Rationale: {}", d.rationale));
                 }

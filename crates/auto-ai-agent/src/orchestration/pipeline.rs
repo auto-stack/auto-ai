@@ -23,7 +23,10 @@ use super::handoff::HandoffDocument;
 pub enum PipelineMode {
     /// Autonomous — human gates still pause for approval.
     Auto,
-    /// Human reviews every step.
+    /// Human reviews every step. **Reserved (review-003 M6)**: this variant is
+    /// not yet implemented — the engine never reads `self.mode`, and gate
+    /// behavior is controlled entirely by [`FlowStep::gate`]. Kept for
+    /// forward compatibility with an interactive-everything mode.
     Interactive,
 }
 

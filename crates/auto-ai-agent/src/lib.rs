@@ -41,7 +41,6 @@ pub use role_def::Role;
 // without depending on ai_config directly.
 pub use ai_config::ModelTier;
 pub use builtin_roles::{load_builtin, builtin_names, Assistant, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
-pub use relay::RelayTarget;
 pub use roles::{RoleDetail, RoleRegistry, RoleSummary};
 pub use skill::{Skill, SkillRegistry, SkillTool};
 pub use tool::{Tool, ToolRegistry};
