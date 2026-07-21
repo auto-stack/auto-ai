@@ -235,15 +235,11 @@ fn string_array(items: &[String]) -> Value {
 ///
 /// This is re-exported publicly (as `parse_tier_field`) so the musk API layer
 /// can parse tier strings from JSON request bodies the same way.
+///
+/// Delegates to [`ai_config::ModelTier::parse_name`] (the single source of
+/// truth — review-003 M8).
 pub fn parse_tier(s: &str) -> Option<ai_config::ModelTier> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "min" => Some(ai_config::ModelTier::Min),
-        "lite" | "light" => Some(ai_config::ModelTier::Lite),
-        "mid" => Some(ai_config::ModelTier::Mid),
-        "pro" | "large" => Some(ai_config::ModelTier::Pro),
-        "max" | "heavy" => Some(ai_config::ModelTier::Max),
-        _ => None,
-    }
+    ai_config::ModelTier::parse_name(s)
 }
 
 /// Public alias for [`parse_tier`], for downstream (musk API) use.

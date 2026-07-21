@@ -60,6 +60,25 @@ impl ModelTier {
             ModelTier::Max => 4,
         }
     }
+
+    /// Parse a tier name (case-insensitive, trims whitespace) into a
+    /// [`ModelTier`]. Returns `None` for unrecognized names.
+    ///
+    /// This is the **single source of truth** for tier-name parsing — every
+    /// call site (daemon router, agent config, .at loader) should call this
+    /// instead of maintaining its own match table (see review-003 M8).
+    /// Accepted aliases (beyond the snake_case enum names):
+    /// `"light"` → Lite, `"large"` → Pro, `"heavy"` → Max.
+    pub fn parse_name(s: &str) -> Option<ModelTier> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "min" => Some(ModelTier::Min),
+            "lite" | "light" => Some(ModelTier::Lite),
+            "mid" => Some(ModelTier::Mid),
+            "pro" | "large" => Some(ModelTier::Pro),
+            "max" | "heavy" => Some(ModelTier::Max),
+            _ => None,
+        }
+    }
 }
 
 /// A concrete model entry in a provider's config, tagged with its tier.
@@ -133,6 +152,26 @@ mod tests {
         assert_eq!(ModelTier::Min.order(), 0);
         assert_eq!(ModelTier::Max.order(), 4);
         assert!(ModelTier::Lite.order() < ModelTier::Pro.order());
+    }
+
+    #[test]
+    fn parse_name_canonical_and_aliases() {
+        // Canonical snake_case names.
+        assert_eq!(ModelTier::parse_name("min"), Some(ModelTier::Min));
+        assert_eq!(ModelTier::parse_name("lite"), Some(ModelTier::Lite));
+        assert_eq!(ModelTier::parse_name("mid"), Some(ModelTier::Mid));
+        assert_eq!(ModelTier::parse_name("pro"), Some(ModelTier::Pro));
+        assert_eq!(ModelTier::parse_name("max"), Some(ModelTier::Max));
+        // Aliases (must stay in sync with the serde aliases).
+        assert_eq!(ModelTier::parse_name("light"), Some(ModelTier::Lite));
+        assert_eq!(ModelTier::parse_name("large"), Some(ModelTier::Pro));
+        assert_eq!(ModelTier::parse_name("heavy"), Some(ModelTier::Max));
+        // Case-insensitive + whitespace tolerance.
+        assert_eq!(ModelTier::parse_name("  MID "), Some(ModelTier::Mid));
+        assert_eq!(ModelTier::parse_name("Max"), Some(ModelTier::Max));
+        // Unknown → None.
+        assert_eq!(ModelTier::parse_name("ultra"), None);
+        assert_eq!(ModelTier::parse_name(""), None);
     }
 
     #[test]

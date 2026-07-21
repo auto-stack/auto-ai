@@ -10,7 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 ai-config = { path = "../ai-config" }
-auto-ai-client = { path = "../auto-ai-client" }
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

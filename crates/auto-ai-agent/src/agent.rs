@@ -25,6 +25,22 @@ use crate::tool::{tool_to_definition, ToolRegistry};
 /// After how many identical (tool, args) repeats the loop bails out as a cycle.
 const LOOP_DETECT_THRESHOLD: usize = 3;
 
+/// Maximum chars of a tool result stored in memory. Tool outputs longer than
+/// this are truncated (with a notice) so a single read_file of a huge file
+/// can't blow out the context window for the rest of the run. ~5k tokens.
+const MAX_TOOL_RESULT_CHARS: usize = 20_000;
+
+/// Truncate a tool result to [`MAX_TOOL_RESULT_CHARS`], appending a notice
+/// when truncation happened. Returns the (possibly truncated) string.
+fn truncate_tool_result(s: &str) -> String {
+    let count = s.chars().count();
+    if count <= MAX_TOOL_RESULT_CHARS {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(MAX_TOOL_RESULT_CHARS).collect();
+    format!("{kept}\n…[truncated {dropped} more chars]", dropped = count - MAX_TOOL_RESULT_CHARS)
+}
+
 /// The LLM transport an Agent talks to.
 ///
 /// Abstracts [`auto_ai_client::AiClient`] so the ReAct loop can be unit-tested
@@ -270,6 +286,12 @@ impl Agent {
             let req = self.build_request();
             let resp = self.client.complete(&req).await?;
 
+            // Propagate a business-level error carried in a 200 response
+            // (aligned with run_stream — review-003 S3).
+            if let Some(err) = &resp.error {
+                return Err(AgentError::Config(err.clone()));
+            }
+
             // Accumulate usage if reported.
             if let Some(u) = &resp.usage {
                 result.total_tokens += u.total_tokens() as u64;
@@ -321,7 +343,10 @@ impl Agent {
                         args: tc.input.clone(),
                         result: outcome.clone(),
                     });
-                    self.memory.add_message(Message::tool_result(&tc.id, outcome));
+                    // Truncate before storing in memory so one large tool output
+                    // (e.g. read_file on a big file) can't blow the context
+                    // window for the rest of the run. (review-003 S2)
+                    self.memory.add_message(Message::tool_result(&tc.id, truncate_tool_result(&outcome)));
                 }
                 // Loop continues: ask the model again with the tool results.
                 continue;
@@ -501,7 +526,11 @@ impl Agent {
                         args: tc.input.clone(),
                         result: outcome.clone(),
                     });
-                    self.memory.add_message(Message::tool_result(&tc.id, outcome));
+                    // Truncate before storing in memory (review-003 S2).
+                    self.memory.add_message(Message::tool_result(
+                        &tc.id,
+                        truncate_tool_result(&outcome),
+                    ));
                 }
                 continue;
             }
@@ -587,6 +616,27 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{json, Value};
     use std::sync::Mutex;
+
+    #[test]
+    fn truncate_tool_result_keeps_short_strings() {
+        assert_eq!(truncate_tool_result("hello"), "hello");
+        // Exactly at the cap — no truncation.
+        let exact: String = "a".repeat(MAX_TOOL_RESULT_CHARS);
+        assert_eq!(truncate_tool_result(&exact).len(), exact.len());
+        assert!(!truncate_tool_result(&exact).contains("truncated"));
+    }
+
+    #[test]
+    fn truncate_tool_result_trims_long_strings() {
+        let long: String = "a".repeat(MAX_TOOL_RESULT_CHARS + 100);
+        let out = truncate_tool_result(&long);
+        assert!(out.contains("truncated 100 more chars"));
+        assert!(out.chars().count() < long.chars().count());
+        // Non-ASCII char boundary safety: truncate at a multi-byte boundary.
+        let emoji: String = "🦀".repeat(MAX_TOOL_RESULT_CHARS + 5);
+        let out = truncate_tool_result(&emoji);
+        assert!(out.contains("truncated"), "emoji string should truncate");
+    }
 
     // ── A scripted mock client ──────────────────────────────────────────────
     //

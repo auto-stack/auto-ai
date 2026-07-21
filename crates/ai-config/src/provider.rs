@@ -92,8 +92,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_key_none_when_nothing_set() {
+    fn resolve_key_placeholder_when_nothing_set() {
+        // No api_key and no key_env: return a placeholder so no-auth providers
+        // (e.g. local Ollama) aren't rejected by the daemon. A cleaner design
+        // with an explicit `auth_required` field is tracked in review-002/003.
         let pc = sample();
-        assert_eq!(pc.resolve_key(), None);
+        assert_eq!(pc.resolve_key(), Some("no-key-needed".into()));
+    }
+
+    #[test]
+    fn resolve_key_placeholder_when_empty_api_key() {
+        let mut pc = sample();
+        pc.api_key = Some(String::new());
+        assert_eq!(pc.resolve_key(), Some("no-key-needed".into()));
     }
 }

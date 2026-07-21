@@ -37,13 +37,12 @@ impl TierRouter {
         if !config.tier_routing.is_empty() {
             let mut routing: HashMap<ModelTier, Vec<TierCandidate>> = HashMap::new();
             for (tier_name, candidates) in &config.tier_routing.routes {
-                let tier = match tier_name.as_str() {
-                    "min" => ModelTier::Min,
-                    "lite" | "light" => ModelTier::Lite,
-                    "mid" => ModelTier::Mid,
-                    "pro" | "large" => ModelTier::Pro,
-                    "max" | "heavy" => ModelTier::Max,
-                    _ => continue,
+                let tier = match ModelTier::parse_name(tier_name) {
+                    Some(t) => t,
+                    None => {
+                        tracing::warn!("tier_router: unknown tier '{}' in tier_routing, skipped", tier_name);
+                        continue;
+                    }
                 };
                 let tc: Vec<TierCandidate> = candidates.iter()
                     .map(|c| TierCandidate {

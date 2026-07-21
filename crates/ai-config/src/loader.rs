@@ -311,14 +311,8 @@ fn opt_models(node: &Node, key: &str) -> Vec<ModelDefinition> {
 /// Unknown → Mid (sane default).
 fn parse_tier(s: &str) -> ModelTier {
     use crate::tier::ModelTier;
-    match s.trim().to_ascii_lowercase().as_str() {
-        "min" => ModelTier::Min,
-        "lite" | "light" => ModelTier::Lite,
-        "mid" => ModelTier::Mid,
-        "pro" | "large" => ModelTier::Pro,
-        "max" | "heavy" => ModelTier::Max,
-        _ => ModelTier::Mid,
-    }
+    // Lenient parse: unknown names default to Mid (config-file compatibility).
+    ModelTier::parse_name(s).unwrap_or_default()
 }
 
 /// Read a non-negative integer prop. auto-atom parses whole numbers as

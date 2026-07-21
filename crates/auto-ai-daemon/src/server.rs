@@ -116,13 +116,9 @@ async fn chat_completions(
     // fallback across providers); for concrete model ids it's a single entry.
     let candidates: Vec<(String, String)> = if is_tier_request {
         let tier_name = req.model.strip_prefix("tier:").unwrap_or("").trim().to_ascii_lowercase();
-        let tier = match tier_name.as_str() {
-            "min" => ai_config::ModelTier::Min,
-            "lite" | "light" => ai_config::ModelTier::Lite,
-            "mid" => ai_config::ModelTier::Mid,
-            "pro" | "large" => ai_config::ModelTier::Pro,
-            "max" | "heavy" => ai_config::ModelTier::Max,
-            _ => {
+        let tier = match ai_config::ModelTier::parse_name(&tier_name) {
+            Some(t) => t,
+            None => {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({"error": {"message": format!("unknown tier '{tier_name}'")}})),
@@ -649,14 +645,7 @@ fn save_daemon_at(content: &str) -> std::io::Result<std::path::PathBuf> {
 /// the provider has no models.
 fn resolve_tier_model(token: &str, config: &crate::config::DaemonConfig) -> Option<String> {
     let tier_name = token.strip_prefix("tier:")?.trim().to_ascii_lowercase();
-    let tier = match tier_name.as_str() {
-        "min" => ai_config::ModelTier::Min,
-        "lite" | "light" => ai_config::ModelTier::Lite,
-        "mid" => ai_config::ModelTier::Mid,
-        "pro" | "large" => ai_config::ModelTier::Pro,
-        "max" | "heavy" => ai_config::ModelTier::Max,
-        _ => return None,
-    };
+    let tier = ai_config::ModelTier::parse_name(&tier_name)?;
     let provider = config.providers.get(&config.default_provider)?;
     let models: Vec<ai_config::ModelDefinition> = provider.models.clone();
     ai_config::resolve_model_id(tier, &models)
