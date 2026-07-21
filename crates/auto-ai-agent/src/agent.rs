@@ -270,9 +270,41 @@ impl Agent {
     /// limit — the agent can exceed it if still making progress. The hard
     /// safety cap is 5× the soft target (e.g. role says 20 → hard cap 100).
     pub async fn run(&mut self, task: &str) -> Result<AgentResult, AgentError> {
-        // Seed the conversation with the user task.
-        self.memory.add("user", task);
+        // Non-streaming: no event sink, no cancellation. The unified loop
+        // (run_inner) still streams the LLM call internally (complete_stream
+        // falls back to complete in the default Client impl), but discards
+        // the per-chunk deltas since there's nowhere to send them.
+        self.run_inner(task, None, None).await
+    }
 
+    /// Unified ReAct loop backing both [`Self::run`] and [`Self::run_stream`]
+    /// (review-003 M4: eliminates the two parallel implementations that had
+    /// drifted apart — S3's missing error check was a direct symptom).
+    ///
+    /// - `on_event = None` → non-streaming (`run`); `Some` → forward events.
+    /// - `cancel = None` → not cancellable (`run`); `Some` → honor at the 3
+    ///   safe checkpoints (turn boundary, after LLM response, before tools).
+    async fn run_inner(
+        &mut self,
+        task: &str,
+        on_event: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<AgentResult, AgentError> {
+        // Helper: emit an event only when streaming.
+        let emit = |ev: StreamEvent, on_event: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>| {
+            if let Some(cb) = on_event {
+                cb(ev);
+            }
+        };
+        // Helper: has the caller requested cancellation?
+        let cancelled = || -> bool {
+            cancel
+                .as_ref()
+                .map(|c| c.load(Ordering::SeqCst))
+                .unwrap_or(false)
+        };
+
+        self.memory.add("user", task);
         let soft_limit = self.role.max_turns();
         let hard_limit = soft_limit * 5; // safety valve only
         let mut result = AgentResult::default();
@@ -281,23 +313,87 @@ impl Agent {
         let mut seen: HashMap<String, usize> = HashMap::new();
 
         for turn in 0..hard_limit {
+            // Cancel checkpoint 1: stop before starting a new ReAct turn.
+            // (Memory is consistent here — the previous turn, if any, is done.)
+            if cancelled() {
+                emit(StreamEvent::Cancelled { result: result.clone() }, &on_event);
+                return Ok(result);
+            }
             result.turns = turn + 1;
 
-            let req = self.build_request();
-            let resp = self.client.complete(&req).await?;
-
-            // Propagate a business-level error carried in a 200 response
-            // (aligned with run_stream — review-003 S3).
-            if let Some(err) = &resp.error {
-                return Err(AgentError::Config(err.clone()));
+            // Soft limit warning: when exceeding the role's max_turns, log it
+            // but don't stop — the agent may still be making progress.
+            if turn + 1 == soft_limit {
+                tracing::info!(
+                    "agent exceeded soft turn limit ({}); continuing to hard cap ({})",
+                    soft_limit, hard_limit
+                );
             }
 
-            // Accumulate usage if reported.
+            // Near hard cap: warn the model to wrap up. The message is transient
+            // (added to this turn's request only, not stored in memory) so it
+            // doesn't pollute future turns or a reused agent's history
+            // (review-003 M5). Only emitted when streaming.
+            let remaining = hard_limit - turn;
+            if remaining <= 5 && remaining > 1 {
+                if let Some(cb) = &on_event {
+                    cb(StreamEvent::Delta {
+                        text: format!(
+                            "\n  ⚠️ {} turns until the hard stop — wrap up now.\n",
+                            remaining - 1
+                        ),
+                    });
+                }
+            }
+
+            let req = self.build_request();
+
+            // Single streaming request — text deltas + tool_calls both surface
+            // from the daemon's SSE stream (Plan 006). No more double request.
+            // In the non-streaming path the per-chunk delta is discarded.
+            let on_delta = on_event.clone();
+            let resp = self
+                .client
+                .complete_stream(&req, Arc::new(move |ev| {
+                    if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
+                        emit(StreamEvent::Delta { text: t.to_string() }, &on_delta);
+                    }
+                }))
+                .await?;
+
+            // Cancel checkpoint 2: stop after the LLM responded, before
+            // consuming it. (The response was fully received — no partial
+            // memory writes this turn yet.)
+            if cancelled() {
+                if let Some(u) = &resp.usage {
+                    result.total_tokens += u.total_tokens() as u64;
+                }
+                emit(StreamEvent::Cancelled { result: result.clone() }, &on_event);
+                return Ok(result);
+            }
+
+            // Propagate a business-level error carried in a 200 response
+            // (review-003 S3: previously only run_stream checked this).
+            if let Some(err) = &resp.error {
+                emit(
+                    StreamEvent::Error { message: err.clone() },
+                    &on_event,
+                );
+                return Err(AgentError::Config(err.clone()));
+            }
             if let Some(u) = &resp.usage {
                 result.total_tokens += u.total_tokens() as u64;
             }
 
             if resp.wants_tool() {
+                // Cancel checkpoint 3: stop before recording/executing tool
+                // calls. This is the last consistent point — once we write the
+                // ToolUse blocks to memory below, the matching ToolResults must
+                // follow, so we bail out *before* any of that.
+                if cancelled() {
+                    emit(StreamEvent::Cancelled { result: result.clone() }, &on_event);
+                    return Ok(result);
+                }
                 // Record the assistant's tool-use turn in memory so the next
                 // request carries it (some providers require the tool_use
                 // block to precede its tool_result).
@@ -314,8 +410,10 @@ impl Agent {
                         input: tc.input.clone(),
                     });
                 }
-                self.memory
-                    .add_message(Message { role: "assistant".into(), content: assistant_blocks });
+                self.memory.add_message(Message {
+                    role: "assistant".into(),
+                    content: assistant_blocks,
+                });
 
                 // Execute each tool call and record results.
                 for tc in &resp.tool_calls {
@@ -323,6 +421,12 @@ impl Agent {
                     let count = seen.entry(key.clone()).or_insert(0);
                     *count += 1;
                     if *count >= LOOP_DETECT_THRESHOLD {
+                        emit(
+                            StreamEvent::Error {
+                                message: format!("loop detected on '{}'", tc.name),
+                            },
+                            &on_event,
+                        );
                         tracing::warn!(
                             "agent: loop detected on tool '{}' ({} repeats) — stopping",
                             tc.name,
@@ -330,7 +434,15 @@ impl Agent {
                         );
                         return Err(AgentError::LoopDetected(tc.name.clone()));
                     }
-
+                    // Signal that this tool is about to run, so streaming
+                    // consumers can show a "running…" indicator.
+                    emit(
+                        StreamEvent::ToolStart {
+                            tool: tc.name.clone(),
+                            args: tc.input.clone(),
+                        },
+                        &on_event,
+                    );
                     let outcome = match self.tools.execute(&tc.name, &tc.input).await {
                         Ok(out) => out,
                         Err(e) => {
@@ -343,10 +455,21 @@ impl Agent {
                         args: tc.input.clone(),
                         result: outcome.clone(),
                     });
+                    emit(
+                        StreamEvent::Tool {
+                            tool: tc.name.clone(),
+                            args: tc.input.clone(),
+                            result: outcome.clone(),
+                        },
+                        &on_event,
+                    );
                     // Truncate before storing in memory so one large tool output
                     // (e.g. read_file on a big file) can't blow the context
                     // window for the rest of the run. (review-003 S2)
-                    self.memory.add_message(Message::tool_result(&tc.id, truncate_tool_result(&outcome)));
+                    self.memory.add_message(Message::tool_result(
+                        &tc.id,
+                        truncate_tool_result(&outcome),
+                    ));
                 }
                 // Loop continues: ask the model again with the tool results.
                 continue;
@@ -355,13 +478,33 @@ impl Agent {
             // No tool calls → final answer.
             result.output = resp.content.clone();
             self.memory.add("assistant", &resp.content);
+            emit(
+                StreamEvent::Done {
+                    result: AgentResult {
+                        output: result.output.clone(),
+                        turns: result.turns,
+                        tool_calls: result.tool_calls.clone(),
+                        total_tokens: result.total_tokens,
+                    },
+                },
+                &on_event,
+            );
             return Ok(result);
         }
 
         // Exceeded hard safety cap without a plain-text answer.
+        emit(
+            StreamEvent::Error {
+                message: format!(
+                    "hard turn cap ({hard_limit}) exceeded (soft limit was {soft_limit})"
+                ),
+            },
+            &on_event,
+        );
         tracing::warn!(
-            "agent hit hard safety cap ({} turns = {}x soft limit {}); stopping",
-            hard_limit, 5, soft_limit
+            "agent hit hard turn cap: {} (soft={}×5)",
+            hard_limit,
+            soft_limit
         );
         Err(AgentError::MaxTurnsExceeded(hard_limit))
     }
@@ -393,169 +536,10 @@ impl Agent {
         on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
         cancel: Arc<AtomicBool>,
     ) -> Result<AgentResult, AgentError> {
-        self.memory.add("user", task);
-        let soft_limit = self.role.max_turns();
-        let hard_limit = soft_limit * 5; // safety valve only
-        let mut result = AgentResult::default();
-        let mut seen: HashMap<String, usize> = HashMap::new();
-
-        for turn in 0..hard_limit {
-            // Cancel checkpoint 1: stop before starting a new ReAct turn.
-            // (Memory is consistent here — the previous turn, if any, is done.)
-            if cancel.load(Ordering::SeqCst) {
-                on_event(StreamEvent::Cancelled { result: result.clone() });
-                return Ok(result);
-            }
-            result.turns = turn + 1;
-
-            // Soft limit warning: when exceeding the role's max_turns, log it
-            // but don't stop — the agent may still be making progress.
-            if turn + 1 == soft_limit {
-                tracing::info!(
-                    "agent exceeded soft turn limit ({}); continuing to hard cap ({})",
-                    soft_limit, hard_limit
-                );
-            }
-
-            // Near hard cap: warn the model to wrap up.
-            let remaining = hard_limit - turn;
-            if remaining <= 5 && remaining > 1 {
-                let msg = format!(
-                    "⚠️ You have {} turns until the hard stop. If you have enough \
-                     information, provide your final answer now.",
-                    remaining - 1
-                );
-                self.memory.add("system", &msg);
-                on_event(StreamEvent::Delta {
-                    text: format!("\n  ⚠️ {} turns until hard stop — wrap up now.\n", remaining - 1),
-                });
-            }
-
-            let req = self.build_request();
-
-            // Single streaming request — text deltas + tool_calls both surface
-            // from the daemon's SSE stream (Plan 006). No more double request.
-            let on_delta = on_event.clone();
-            let stream_resp = self
-                .client
-                .complete_stream(&req, Arc::new(move |ev| {
-                    if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
-                        on_delta(StreamEvent::Delta {
-                            text: t.to_string(),
-                        });
-                    }
-                }))
-                .await?;
-
-            // Cancel checkpoint 2: stop after the LLM responded, before
-            // consuming it. (The response was fully received — no partial
-            // memory writes this turn yet.)
-            if cancel.load(Ordering::SeqCst) {
-                if let Some(u) = &stream_resp.usage {
-                    result.total_tokens += u.total_tokens() as u64;
-                }
-                on_event(StreamEvent::Cancelled { result: result.clone() });
-                return Ok(result);
-            }
-
-            let content = stream_resp.content;
-            // Propagate SSE-stream error events from the daemon (Plan 008 fix).
-            if let Some(err) = stream_resp.error {
-                on_event(StreamEvent::Error {
-                    message: err.clone(),
-                });
-                return Err(AgentError::Config(err));
-            }
-            if let Some(u) = &stream_resp.usage {
-                result.total_tokens += u.total_tokens() as u64;
-            }
-
-            if !stream_resp.tool_calls.is_empty() {
-                // Cancel checkpoint 3: stop before recording/executing tool
-                // calls. This is the last consistent point — once we write the
-                // ToolUse blocks to memory below, the matching ToolResults must
-                // follow, so we bail out *before* any of that.
-                if cancel.load(Ordering::SeqCst) {
-                    on_event(StreamEvent::Cancelled { result: result.clone() });
-                    return Ok(result);
-                }
-                // Record assistant turn + execute tools.
-                let mut blocks: Vec<ContentBlock> = Vec::new();
-                if !content.is_empty() {
-                    blocks.push(ContentBlock::Text {
-                        text: content.clone(),
-                    });
-                }
-                for tc in &stream_resp.tool_calls {
-                    blocks.push(ContentBlock::ToolUse {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        input: tc.input.clone(),
-                    });
-                }
-                self.memory
-                    .add_message(Message { role: "assistant".into(), content: blocks });
-                for tc in &stream_resp.tool_calls {
-                    let key = format!("{}::{}", tc.name, tc.input);
-                    let count = seen.entry(key).or_insert(0);
-                    *count += 1;
-                    if *count >= LOOP_DETECT_THRESHOLD {
-                        on_event(StreamEvent::Error {
-                            message: format!("loop detected on '{}'", tc.name),
-                        });
-                        return Err(AgentError::LoopDetected(tc.name.clone()));
-                    }
-                    // Signal that this tool is about to run, so consumers can
-                    // show a "running…" indicator before execution completes.
-                    on_event(StreamEvent::ToolStart {
-                        tool: tc.name.clone(),
-                        args: tc.input.clone(),
-                    });
-                    let outcome =
-                        match self.tools.execute(&tc.name, &tc.input).await {
-                            Ok(o) => o,
-                            Err(e) => format!("[tool error: {e}]"),
-                        };
-                    result.tool_calls.push(ToolCallRecord {
-                        tool: tc.name.clone(),
-                        args: tc.input.clone(),
-                        result: outcome.clone(),
-                    });
-                    on_event(StreamEvent::Tool {
-                        tool: tc.name.clone(),
-                        args: tc.input.clone(),
-                        result: outcome.clone(),
-                    });
-                    // Truncate before storing in memory (review-003 S2).
-                    self.memory.add_message(Message::tool_result(
-                        &tc.id,
-                        truncate_tool_result(&outcome),
-                    ));
-                }
-                continue;
-            }
-
-            // No tool calls → final answer.
-            result.output = content.clone();
-            self.memory.add("assistant", &content);
-            on_event(StreamEvent::Done {
-                result: AgentResult {
-                    output: result.output.clone(),
-                    turns: result.turns,
-                    tool_calls: result.tool_calls.clone(),
-                    total_tokens: result.total_tokens,
-                },
-            });
-            return Ok(result);
-        }
-
-        on_event(StreamEvent::Error {
-            message: format!("hard turn cap ({hard_limit}) exceeded (soft limit was {soft_limit})"),
-        });
-        tracing::warn!(
-            "agent hit hard turn cap: {} (soft={}×5)", hard_limit, soft_limit
-        );
-        Err(AgentError::MaxTurnsExceeded(hard_limit))
+        // Delegates to the unified ReAct loop (run_inner). See run_inner for
+        // the event/cancel semantics. (review-003 M4 unification: run and
+        // run_stream now share one implementation.)
+        self.run_inner(task, Some(on_event), Some(cancel)).await
     }
 
     /// Build the completion request for the current turn: system prompt from
@@ -747,6 +731,45 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].tool, "add_one");
         assert_eq!(result.tool_calls[0].result, "2");
+    }
+
+    /// review-003 M4: run_stream must behave like run after unification.
+    #[tokio::test]
+    async fn run_stream_matches_run_behavior() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let client = mock_client(vec![
+            tool_resp("add_one", "c1", json!({"n": 1})),
+            text_resp("2"),
+        ]);
+        let mut agent = Agent::new(MockRole, client as Arc<dyn Client>);
+        agent.register_tool(AddOne);
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::<StreamEvent>::new()));
+        let ev_sink = events.clone();
+        let on_event: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(move |ev| {
+            ev_sink.lock().unwrap().push(ev);
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = agent
+            .run_stream("what is 1+1?", on_event, cancel)
+            .await
+            .unwrap();
+        assert_eq!(result.turns, 2);
+        assert_eq!(result.output, "2");
+        assert_eq!(result.tool_calls.len(), 1);
+
+        // The streaming path should emit at least: ToolStart, Tool, Done.
+        let got = events.lock().unwrap();
+        assert!(
+            got.iter().any(|e| matches!(e, StreamEvent::Done { .. })),
+            "expected Done event, got: {:?}",
+            *got
+        );
+        assert!(
+            got.iter().any(|e| matches!(e, StreamEvent::ToolStart { .. })),
+            "expected ToolStart event, got: {:?}",
+            *got
+        );
     }
 
     #[tokio::test]
