@@ -205,6 +205,49 @@
 - **阶段 3.1（Skill 接入）** 改动面小但涉及文件系统扫描，注意无目录时的降级。
 - **阶段 3.3（gate async）** 改动 driver 的核心签名，可能影响 musk 仓库的同名接口——需检查 musk 是否也实现 gate_handler。
 
+## 阶段 5：实施复核发现的 workaround 回修
+
+阶段 1-4 完成后做了一次自我复核，发现 3 处「功能正确但实现是 workaround / 不优雅」的地方。本阶段回修，让实现配得上 review 003 的彻底性。
+
+### 任务 5.1 — resolve_key 去掉 `"no-key-needed"` placeholder（W1）
+
+**问题**：阶段 1 任务 1.3（S4）原计划是「改实现返回 None」，但实际做的是**反过来改测试迁就实现**——保留了 `"no-key-needed"` 字符串 placeholder。理由是「Ollama 需要无 key 支持」（commit `ed72fb5`），但 placeholder 把「无 key」伪装成「有 key」：它会被原样塞进 `Authorization: Bearer no-key-needed` 发给上游——对会校验 key 格式的上游就是 401。review 002/003 一直规划的 `auth_required: bool` 才是正解。
+
+**改动**：
+- `ai-config/src/provider.rs`：`ProviderConfig` 加 `auth_required: bool` 字段（默认 true，serde `#[serde(default = "default_true")]`）。
+- `resolve_key` 按 `auth_required` 决定：true 且无 key → `None`（fail-fast）；false → `Some("no-key-needed")`（仅用于 daemon 跳过 Authorization 头的占位）。
+- `ProviderConfig` 的所有构造点（loader、daemon config.rs、tests）补 `auth_required` 字段。
+- daemon `provider/mod.rs::build`：对 `auth_required=false` 的 provider 不因 `resolve_key()=None` 报 NoApiKey 错误；provider 发请求时 `auth_required=false` 则跳过 Authorization 头。
+
+**验收**：`cargo test`（全工作区）通过；测试覆盖「无 key + auth_required=true → None」「无 key + auth_required=false → 占位」两种。
+
+### 任务 5.2 — run_inner 的 emit 改用 no-op trait 对象（W2）
+
+**问题**：阶段 2 任务 2.2（M4）统一 run/run_stream 时，`emit` 写成了需要显式传 `&on_event` 参数的闭包，19 处调用都带着 `emit(Event, &on_event)` 的冗长形式——因为 complete_stream 的 on_delta 回调里不能借用外层 on_event，只能用参数传入。
+
+**改动**：把 `on_event: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>` 统一成 `Arc<dyn Fn(StreamEvent) + Send + Sync>`——None 时用一个 no-op 的 `Arc::new(|_| {})`。这样 `emit(ev)` 就是简单的 `on_event(ev)`，无需 Option 参数；complete_stream 的 on_delta 回调直接 clone 这个 Arc。`cancelled` 闭包同理可简化（或保留，它没有借用冲突）。
+
+**验收**：现有 agent 测试全过；run_inner 里的 19 处 `emit(Event, &on_event)` 全部简化为 `on_event(Event)`。
+
+### 任务 5.3 — near-cap 警告加 StreamEvent::Warning + 删 Thinking 死变体（U1）
+
+**问题**：阶段 2 任务 2.3（M5）计划加 `StreamEvent::Warning` 变体，实际却降级为「继续用 Delta 发送」；阶段 4 又把 `StreamEvent::Thinking` 标注为「保留不删」。结果是 near-cap 提醒在 UI 里和模型正文混在一起，`Thinking` 变体定义着但从不 emit——连续两次妥协留了双重设计债。
+
+**改动**：
+- `agent.rs`：删 `StreamEvent::Thinking` 变体（从不 emit）；加 `StreamEvent::Warning { text }`。
+- `run_inner`：near-cap 提醒从 `StreamEvent::Delta` 改为 `StreamEvent::Warning`。
+- `main.rs` 旧 chat_loop + `tui.rs::handle_stream_event`：删 Thinking match 分支，加 Warning 分支（显示为灰色系统提示）。
+- `driver.rs` 的 stream_cb match 也要同步（它 match StreamEvent）。
+
+**验收**：`cargo check`（全工作区）零错误；agent/cli 测试全过。
+
+### 阶段 5 验收
+- `cargo test`（全工作区）全绿
+- `cargo check` 零错误
+- run_inner 里不再有 `emit(Event, &on_event)` 的重复参数
+
+---
+
 ## 不在本计划范围
 
 - review 001/002 的延后项（M7 SseParser 共享 / M4 services 子进程 / M6 client async）——见计划 011
