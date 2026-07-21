@@ -195,5 +195,6 @@ render_app 的 help bar（streaming 分支，tui.rs:492）改为：
 
 ## 不改动
 
-- daemon / provider / client 层（方案 A 不需要 SSE 中断，那是未来方案 C）
+- ~~daemon / provider / client 层（方案 A 不需要 SSE 中断，那是未来方案 C）~~
+  **更新（2026-07-21）**：方案 C 已由计划 011 阶段 2 实施——daemon 侧 `complete_stream` 现在接受 `CancellationToken`，`streaming_response` 用 `CancelOnDrop` guard 在客户端断开时取消上游拉取。详见 `docs/plans/011-daemon-client-fix-plan.md` 阶段 2 + `server.rs` 的 `CancelOnDrop`。
 - agent memory 语义（软中断不回滚）

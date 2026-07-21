@@ -253,7 +253,12 @@ impl PipelineEngine {
             }
         };
         if let Some(expected) = expected_role {
-            if handoff.to != expected {
+            // Empty `to` = "engine decides" (the default driver build_handoff
+            // leaves it empty) — silently fill it, no warning. Only flag a
+            // real mismatch when the caller named a different (wrong) target.
+            if handoff.to.is_empty() {
+                handoff.to = expected;
+            } else if handoff.to != expected {
                 tracing::warn!("Handoff target '{}' != expected '{}'; correcting.", handoff.to, expected);
                 self.gate_feedback
                     .entry(step_id.clone())

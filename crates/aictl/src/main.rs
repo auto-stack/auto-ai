@@ -4,7 +4,6 @@
 //!   aictl status              Show daemon + concurrency pool status
 //!   aictl models              List available models
 //!   aictl usage               Show per-app token usage
-//!   aictl switch <model>      Switch default model (future)
 //!   aictl ping                Check if daemon is running
 
 use std::process;

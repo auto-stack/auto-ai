@@ -265,7 +265,12 @@ impl<F: AgentFactory> PipelineDriver<F> {
         result: &AgentResult,
         content: &str,
     ) -> HandoffDocument {
-        let mut h = HandoffDocument::new(role_id, "next");
+        // `to` is left empty — the driver doesn't know the downstream role
+        // (ExitRouting may be conditional); the engine fills it during
+        // submit_handoff. An empty `to` is treated as "engine decides" and
+        // doesn't emit an auto-correction warning (previously this hardcoded
+        // "next", which caused a noisy warning on every step).
+        let mut h = HandoffDocument::new(role_id, "");
         h.summary = content.chars().take(200).collect::<String>();
         // Extract work product from tool calls (files written/edited).
         for tc in &result.tool_calls {
