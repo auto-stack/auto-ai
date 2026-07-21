@@ -260,6 +260,15 @@ impl PipelineEngine {
             }
         }
 
+        // Budget tracking — update cumulative BEFORE recording the step so the
+        // stored handoff carries an accurate cumulative total (review-003 M7:
+        // previously cumulative/budget_remaining were always 0 in the render).
+        self.cumulative_tokens += handoff.token_usage.step_tokens;
+        self.budget_tracker.record(&role_id, handoff.token_usage.step_tokens, 0);
+        handoff.token_usage.cumulative = self.cumulative_tokens;
+        let limit = self.budget_tracker.run_budget.limit;
+        handoff.token_usage.budget_remaining = limit.saturating_sub(self.cumulative_tokens);
+
         self.step_history.push(StepRecord {
             step_id: step_id.clone(),
             role_id: role_id.clone(),
@@ -268,10 +277,6 @@ impl PipelineEngine {
             completed_at: now,
             iteration: *self.loop_counters.get(&step_id).unwrap_or(&0),
         });
-
-        // Budget tracking.
-        self.cumulative_tokens += handoff.token_usage.step_tokens;
-        self.budget_tracker.record(&role_id, handoff.token_usage.step_tokens, 0);
 
         // Budget check is advisory by design (Plan 008 recheck): a LimitReached
         // signal logs a warning but does NOT halt the run. The default 100M

@@ -217,6 +217,15 @@ fn build_agent(role_name: &str, client: Arc<dyn Client>, with_pipeline: bool) ->
     agent.register_tool(tools::ListDir);
     agent.register_tool(tools::Search);
     agent.register_tool(tools::RunCommand);
+    // Skill system (review-003 S5): if a skills directory exists, scan it and
+    // register the skill tool so the agent can invoke discovered skills. Scan
+    // is a no-op (empty registry) when the directory is absent.
+    if let Some(skills_dir) = dirs::home_dir().map(|h| h.join(".config/autoos/skills")) {
+        let skill_registry = std::sync::Arc::new(auto_ai_agent::SkillRegistry::scan(&skills_dir));
+        if !skill_registry.is_empty() {
+            agent.register_skill_tool(auto_ai_agent::SkillTool::new(skill_registry));
+        }
+    }
     if with_pipeline {
         agent.register_tool(spawn_pipeline::SpawnPipeline::new(client));
     }

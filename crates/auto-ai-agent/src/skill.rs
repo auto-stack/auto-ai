@@ -165,6 +165,9 @@ fn parse_skill_file(path: &Path) -> Result<Skill, String> {
 /// - If no frontmatter, name falls back to the file's parent directory name,
 ///   description is empty, and the whole file is the body.
 fn parse_frontmatter(raw: &str) -> (String, String, String) {
+    // Strip a UTF-8 BOM if present (common when editors save as "UTF-8 with
+    // BOM"); otherwise the `---` prefix won't match.
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
     // A leading frontmatter block starts at byte 0 with `---`.
     let after_open = match raw.strip_prefix("---\n").or_else(|| raw.strip_prefix("---\r\n")) {
         Some(rest) => rest,

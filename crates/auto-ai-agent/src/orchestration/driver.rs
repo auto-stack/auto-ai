@@ -294,3 +294,123 @@ fn now_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    //! Driver-level tests (review-003 stage 3 task 3.4): previously the driver
+    //! had zero tests, so the orchestration glue (factory → agent → handoff →
+    //! engine) had no regression coverage.
+    use super::*;
+    use crate::agent::{Agent, Client};
+    use crate::orchestration::flow::FlowStep;
+    use auto_ai_client::ClientError;
+    use crate::role_def::Role;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    /// Minimal Role for tests: returns the canned model output we want.
+    struct EchoRole;
+    impl Role for EchoRole {
+        fn name(&self) -> &str { "echo" }
+        fn system_prompt(&self) -> &str { "echo back" }
+        fn max_turns(&self) -> usize { 3 }
+    }
+
+    /// Mock client that returns one canned response per complete_stream call,
+    /// whatever the role/step. `responses` is drained in order.
+    struct ScriptedClient {
+        responses: Mutex<Vec<auto_ai_client::CompletionResponse>>,
+    }
+
+    #[async_trait]
+    impl Client for ScriptedClient {
+        async fn complete(
+            &self,
+            _req: &auto_ai_client::CompletionRequest,
+        ) -> Result<auto_ai_client::CompletionResponse, ClientError> {
+            let mut q = self.responses.lock().unwrap();
+            if q.is_empty() {
+                return Ok(auto_ai_client::CompletionResponse {
+                    content: "(empty)".into(),
+                    tool_calls: vec![],
+                    stop_reason: Some("end_turn".into()),
+                    usage: None,
+                    model: "mock".into(),
+                    error: None,
+                });
+            }
+            Ok(q.remove(0))
+        }
+    }
+
+    /// Factory that builds a fresh Agent per step, all sharing one scripted
+    /// client. Each agent gets no tools (the scripted responses don't call any).
+    struct MockFactory {
+        client: Arc<ScriptedClient>,
+    }
+
+    impl AgentFactory for MockFactory {
+        fn build_agent(
+            &self,
+            _role_id: &str,
+            _handoff: Option<&HandoffDocument>,
+        ) -> Result<Agent, String> {
+            let agent = Agent::new(EchoRole, self.client.clone());
+            Ok(agent)
+        }
+    }
+
+    fn text_resp(s: &str) -> auto_ai_client::CompletionResponse {
+        auto_ai_client::CompletionResponse {
+            content: s.into(),
+            tool_calls: vec![],
+            stop_reason: Some("end_turn".into()),
+            usage: None,
+            model: "mock".into(),
+            error: None,
+        }
+    }
+
+    /// Two-step flow: assistant → coder, no gates.
+    fn two_step_flow() -> FlowSpec {
+        let mut f = FlowSpec::new("test-flow");
+        f.add_step(FlowStep::new("a", "assistant"));
+        f.add_step(FlowStep::new("b", "coder"));
+        f
+    }
+
+    #[tokio::test]
+    async fn drive_emits_step_and_completion_events() {
+        let client = Arc::new(ScriptedClient {
+            responses: Mutex::new(vec![text_resp("step a done"), text_resp("step b done")]),
+        });
+        let factory = MockFactory { client };
+        let mut driver = PipelineDriver::new(two_step_flow(), factory, "do the thing");
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let on_event: Arc<dyn Fn(PipelineEvent) + Send + Sync> = Arc::new(move |ev| {
+            sink.lock().unwrap().push(ev);
+        });
+        driver.drive("do the thing", on_event).await.unwrap();
+
+        let got = events.lock().unwrap();
+        // Expect at least: StepStarted(a), StepCompleted(a), StepStarted(b),
+        // StepCompleted(b), Completed.
+        assert!(
+            got.iter().any(|e| matches!(e, PipelineEvent::Completed)),
+            "missing Completed; events: {:?}",
+            *got
+        );
+        assert!(
+            got.iter().any(|e| matches!(e, PipelineEvent::StepStarted { step_id, .. } if step_id == "a")),
+            "missing StepStarted(a); events: {:?}",
+            *got
+        );
+        assert!(
+            got.iter().any(|e| matches!(e, PipelineEvent::StepCompleted { step_id, .. } if step_id == "b")),
+            "missing StepCompleted(b); events: {:?}",
+            *got
+        );
+    }
+}
