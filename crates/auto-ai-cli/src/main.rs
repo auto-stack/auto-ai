@@ -11,6 +11,7 @@
 
 pub mod chat_model;
 pub mod markdown;
+pub mod session;
 pub mod tui;
 pub mod tools;
 mod spawn_pipeline;
@@ -49,6 +50,9 @@ enum Cmd {
         /// Execution mode: normal (auto-route), superpowers, relay.
         #[arg(long, default_value = "normal")]
         mode: String,
+        /// Continue the last session in this directory (restore history).
+        #[arg(short = 'c', long = "continue")]
+        continue_last: bool,
     },
     /// Run a single task (one-shot).
     Run {
@@ -67,7 +71,7 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     // No subcommand → default to `chat` (normal/TUI mode).
-    match cli.cmd.unwrap_or(Cmd::Chat { mode: "normal".into() }) {
+    match cli.cmd.unwrap_or(Cmd::Chat { mode: "normal".into(), continue_last: false }) {
         Cmd::Roles => {
             let registry = RoleRegistry::load();
             println!("Available roles:");
@@ -88,12 +92,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Cmd::Chat { mode } => {
+        Cmd::Chat { mode, continue_last } => {
             let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
             // Normal mode → TUI. Forced mode → legacy text REPL.
             if mode == "normal" {
-                // Launch TUI.
-                if let Err(e) = rt.block_on(tui::run_tui_chat("assistant")) {
+                // Launch TUI (optionally restoring the last session).
+                if let Err(e) = rt.block_on(tui::run_tui_chat("assistant", continue_last)) {
                     eprintln!("auto-ai-cli: {e}");
                     std::process::exit(1);
                 }

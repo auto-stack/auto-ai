@@ -128,7 +128,7 @@ fn input_block() -> ratatui::widgets::Block<'static> {
 }
 
 /// Run the TUI chat loop with a real agent.
-pub async fn run_tui_chat(role: &str) -> Result<(), String> {
+pub async fn run_tui_chat(role: &str, continue_last: bool) -> Result<(), String> {
     enable_raw_mode().map_err(|e| format!("raw mode: {e}"))?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).map_err(|e| format!("alt screen: {e}"))?;
@@ -147,7 +147,7 @@ pub async fn run_tui_chat(role: &str) -> Result<(), String> {
     ));
 
     let client = crate::build_client().await;
-    let agent = crate::build_agent("assistant", client, true)
+    let mut agent = crate::build_agent("assistant", client, true)
         .map_err(|e| format!("build agent: {e}"))?;
 
     // Two channels bridging the main loop and the resident agent task:
@@ -158,6 +158,28 @@ pub async fn run_tui_chat(role: &str) -> Result<(), String> {
 
     // Resident agent task: owns the agent (memory persists across turns),
     // runs one `run_stream` per incoming (message, cancel) pair.
+    // Session persistence: on startup, optionally loads the last session's
+    // messages into the agent's memory; after each turn, saves the updated
+    // memory back to disk (review: -c/--continue feature).
+    let cwd_for_session = std::env::current_dir().unwrap_or_default();
+    let session_loaded = if continue_last {
+        match crate::session::load(&cwd_for_session) {
+            Some(record) => {
+                let n = record.messages.len();
+                agent.preload_messages(record.messages);
+                // Notify the TUI that a session was restored.
+                let _ = stream_tx.send(StreamEvent::Delta {
+                    text: format!("📖 恢复了上一次会话（{} 条消息）。继续对话即可。\n\n", n),
+                });
+                true
+            }
+            None => false,
+        }
+    } else {
+        false
+    };
+    let _ = session_loaded; // (loaded flag available for future use)
+
     let join_handle = tokio::spawn(async move {
         let mut agent = agent;
         while let Some((text, cancel)) = input_rx.recv().await {
@@ -167,6 +189,8 @@ pub async fn run_tui_chat(role: &str) -> Result<(), String> {
             // run_stream errors surface as StreamEvent::Error already; a hard
             // failure just ends this turn (the task stays alive for the next).
             let _ = agent.run_stream(&text, on_event, cancel).await;
+            // Persist the updated conversation after each turn.
+            crate::session::save(&cwd_for_session, "session", agent.memory_messages());
         }
     });
 

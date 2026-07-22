@@ -219,6 +219,19 @@ impl Agent {
         self.tools.register(tool);
     }
 
+    /// Pre-load conversation messages (e.g. restored from a saved session).
+    /// Each message is appended to memory via [`Memory::add_message`].
+    pub fn preload_messages(&mut self, messages: Vec<Message>) {
+        for msg in messages {
+            self.memory.add_message(msg);
+        }
+    }
+
+    /// Snapshot of the current conversation memory (for session persistence).
+    pub fn memory_messages(&self) -> &[Message] {
+        self.memory.messages()
+    }
+
     /// Register a [`crate::SkillTool`] and store its available-skills bootstrap
     /// block, which gets appended to the system prompt every turn so the model
     /// knows what skills it can invoke via the `skill` tool.
