@@ -70,9 +70,29 @@ impl ProviderRegistry {
         let mut registry: HashMap<String, Arc<dyn AiProvider>> = HashMap::new();
 
         for (name, pc) in providers {
-            let key = pc
-                .resolve_key()
-                .ok_or_else(|| LlmError::NoApiKey(name.clone()))?;
+            // Resolve the API key. For auth_required providers this fails fast
+            // (None → NoApiKey). For no-auth providers (auth_required=false, e.g.
+            // local Ollama) a placeholder is returned. As a backward-compat
+            // safety net: if an old config file omits auth_required (defaults to
+            // true) but the provider points at localhost and has no key, infer
+            // no-auth rather than hard-failing (W1 follow-up).
+            let key = match pc.resolve_key() {
+                Some(k) => k,
+                None => {
+                    let is_local = pc.base_url.contains("localhost")
+                        || pc.base_url.contains("127.0.0.1");
+                    if is_local {
+                        tracing::warn!(
+                            "provider '{}' has no API key but targets a local URL ({}); \
+                             treating as no-auth (set auth_required : false to silence this).",
+                            name, pc.base_url
+                        );
+                        "no-key-needed".to_string()
+                    } else {
+                        return Err(LlmError::NoApiKey(name.clone()));
+                    }
+                }
+            };
             // Providers only need the model id list (not the full tier metadata).
             let model_ids: Vec<String> = pc.models.iter().map(|m| m.id.clone()).collect();
             let provider: Arc<dyn AiProvider> = match pc.kind.as_str() {
