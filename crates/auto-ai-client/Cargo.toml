@@ -7,6 +7,7 @@ description = "AutoOS AI client — thin daemon HTTP client (canonical wire form
 [dependencies]
 ai-config = { path = "../ai-config" }
 reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+tokio = { version = "1", features = ["time"] }
 futures = "0.3"
 serde_json = "1"
 tracing = "0.1"

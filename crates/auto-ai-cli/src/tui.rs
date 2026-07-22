@@ -146,7 +146,7 @@ pub async fn run_tui_chat(role: &str) -> Result<(), String> {
         crate::build_banner("assistant")
     ));
 
-    let client = crate::build_client();
+    let client = crate::build_client().await;
     let agent = crate::build_agent("assistant", client, true)
         .map_err(|e| format!("build agent: {e}"))?;
 

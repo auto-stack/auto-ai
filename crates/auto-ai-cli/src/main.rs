@@ -115,10 +115,24 @@ fn main() {
     }
 }
 
-/// Build the client. Use with_url to avoid the blocking ensure_daemon
-/// (which creates a nested tokio runtime).
-fn build_client() -> Arc<dyn Client> {
-    Arc::new(AiClient::with_url(daemon_url()))
+/// Build the client. Ensures the daemon is running (ssh-agent model):
+/// probes `/v1/status`, and if not reachable, finds + spawns the `aaid`
+/// binary, then waits up to 10s for it to become ready. Falls back to a
+/// direct `with_url` connection if auto-start fails (so the user still gets
+/// a clear connection error rather than a silent hang).
+async fn build_client() -> Arc<dyn Client> {
+    match auto_ai_client::daemon::ensure_daemon_async().await {
+        Some(url) => {
+            Arc::new(AiClient::with_url(url))
+        }
+        None => {
+            // Couldn't auto-start — connect anyway so the first request
+            // produces a clear connection error instead of a panic.
+            eprintln!("⚠️  aaid daemon not reachable and auto-start failed.");
+            eprintln!("    Start it manually: cargo run -p auto-ai-daemon");
+            Arc::new(AiClient::with_url(daemon_url()))
+        }
+    }
 }
 
 /// Resolve the aaid daemon URL (env override or default).
@@ -255,7 +269,7 @@ impl auto_ai_agent::Role for OwnedRole {
 
 /// One-shot task: run the agent and print the result.
 async fn run_task(task: &str, role: &str) -> Result<(), String> {
-    let client = build_client();
+    let client = build_client().await;
     let mut agent = build_agent(role, client, false)?;
 
     let role_display = role.to_string();
@@ -287,7 +301,7 @@ async fn run_task(task: &str, role: &str) -> Result<(), String> {
 /// Interactive multi-turn chat REPL with streaming output.
 /// mode: "normal" (assistant auto-routes), "superpowers", "relay".
 async fn chat_loop(mode: &str) -> Result<(), String> {
-    let client = build_client();
+    let client = build_client().await;
 
     // If a specific mode is requested, start the pipeline directly.
     if mode == "superpowers" || mode == "relay" {
@@ -549,7 +563,7 @@ fn create_demo_flow() -> FlowSpec {
 
 /// Run a multi-agent pipeline with streaming output and interactive gate.
 async fn run_pipeline(task: &str) -> Result<(), String> {
-    let client = build_client();
+    let client = build_client().await;
     let factory = CliAgentFactory {
         client: client.clone(),
     };

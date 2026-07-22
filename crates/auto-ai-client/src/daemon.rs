@@ -32,6 +32,23 @@ pub fn is_running() -> bool {
     }
 }
 
+/// Async version of [`is_running`] — safe to call from a tokio runtime.
+/// (review-003 M6: the blocking version panics inside an async context.)
+pub async fn is_running_async() -> bool {
+    let url = format!("{}/v1/status", daemon_url());
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match client.get(&url).send().await {
+        Ok(r) => r.status().is_success(),
+        Err(_) => false,
+    }
+}
+
 /// Ensure the daemon is running. If not, try to start it.
 /// Returns `Some(url)` if daemon is available, `None` if not (caller should
 /// fall back to [`crate::AiClient::with_url`] or surface an error).
@@ -59,6 +76,41 @@ pub fn ensure_daemon() -> Option<String> {
     }
 
     // Timeout — daemon didn't start in time.
+    None
+}
+
+/// Async version of [`ensure_daemon`] — safe to call from a tokio runtime
+/// (review-003 M6). This is what `auto-ai-cli` and other async apps should use.
+/// Returns `Some(url)` if daemon is available, `None` if it couldn't be found
+/// or started.
+pub async fn ensure_daemon_async() -> Option<String> {
+    // 1. Already running?
+    if is_running_async().await {
+        return Some(daemon_url());
+    }
+
+    // 2. Find aaid binary (sync file-system lookup — fast, no IO driver needed).
+    let aaid_path = find_aaid_binary()?;
+
+    // 3. Spawn daemon in background (sync spawn — instantaneous).
+    if !spawn_daemon(&aaid_path) {
+        return None;
+    }
+
+    // 4. Wait for ready (up to 10 seconds — daemon loads config + providers).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if is_running_async().await {
+            tracing::info!("daemon started and ready at {}", daemon_url());
+            return Some(daemon_url());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    tracing::warn!("daemon spawned but didn't become ready within 10s");
     None
 }
 
