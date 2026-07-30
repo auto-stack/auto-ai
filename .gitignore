@@ -4,3 +4,6 @@ Cargo.lock
 # aaid config frontend
 frontend/node_modules/
 crates/auto-ai-daemon/frontend-dist/
+
+# Git worktrees
+.worktrees/
