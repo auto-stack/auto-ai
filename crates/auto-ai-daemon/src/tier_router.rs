@@ -104,6 +104,40 @@ impl TierRouter {
         self.routing.get(&tier).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// Resolve a tier to a candidate chain, honoring an optional provider
+    /// preference. When `preferred_provider` matches a candidate, that
+    /// candidate moves to the front (so the server tries it first) while the
+    /// remaining candidates keep their order as fallbacks. Returns an owned
+    /// Vec so the server can own the reordered chain.
+    ///
+    /// This is the preferred entry point over [`candidates`](Self::candidates)
+    /// when a request carries `preferred_provider` (e.g. a Role pinned to a
+    /// local Ollama provider): it preserves fallback semantics while routing
+    /// to the preferred provider first.
+    pub fn candidates_preferred(
+        &self,
+        tier: ModelTier,
+        preferred_provider: Option<&str>,
+    ) -> Vec<TierCandidate> {
+        let base = self.candidates(tier);
+        match preferred_provider {
+            None => base.to_vec(),
+            Some(pref) => {
+                if let Some(idx) = base.iter().position(|c| c.provider == pref) {
+                    // Move the preferred candidate to the front, keep the rest.
+                    let mut chain = base.to_vec();
+                    let preferred = chain.remove(idx);
+                    chain.insert(0, preferred);
+                    chain
+                } else {
+                    // Preferred provider isn't a candidate for this tier;
+                    // fall back to the natural order.
+                    base.to_vec()
+                }
+            }
+        }
+    }
+
     /// Resolve a `"tier:max"` token to (provider, model), considering
     /// optional provider preference. Returns the first candidate.
     /// The caller should handle fallback by iterating `candidates()`.
@@ -211,5 +245,71 @@ mod tests {
         let router = TierRouter::default();
         assert!(router.candidates(ModelTier::Max).is_empty());
         assert!(router.resolve(ModelTier::Max, None).is_none());
+    }
+
+    /// Config with two providers serving the same tier, so we can test
+    /// preferred-provider reordering. Ollama (local) + zhipu (cloud) both
+    /// serve Max; default order is zhipu first (default_provider).
+    fn mock_config_two_max() -> DaemonConfig {
+        let mut providers = HashMap::new();
+        providers.insert("zhipu".into(), ProviderConfig {
+            kind: "anthropic".into(),
+            base_url: "http://zhipu".into(),
+            api_key: None,
+            key_env: None,
+            models: vec![ModelDefinition::new("glm-5.2", ModelTier::Max)],
+            max_concurrency: Some(4),
+            auth_required: true,
+        });
+        providers.insert("ollama".into(), ProviderConfig {
+            kind: "ollama".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            api_key: None,
+            key_env: None,
+            models: vec![ModelDefinition::new("qwen2.5:72b", ModelTier::Max)],
+            max_concurrency: Some(1),
+            auth_required: false,
+        });
+        DaemonConfig {
+            listen_addr: "127.0.0.1:17654".into(),
+            idle_timeout_min: 10,
+            log_level: "info".into(),
+            providers,
+            default_provider: "zhipu".into(),
+            default_model: "glm-5.2".into(),
+            tier_routing: ai_config::loader::TierRouting::default(),
+        }
+    }
+
+    #[test]
+    fn candidates_preferred_promotes_preferred_provider() {
+        let router = TierRouter::from_config(&mock_config_two_max());
+        // Max has 2 candidates; default order is zhipu first.
+        let natural = router.candidates_preferred(ModelTier::Max, None);
+        assert_eq!(natural.len(), 2);
+        assert_eq!(natural[0].provider, "zhipu");
+        assert_eq!(natural[1].provider, "ollama");
+
+        // With preferred = ollama, ollama moves to front; zhipu stays as fallback.
+        let preferred = router.candidates_preferred(ModelTier::Max, Some("ollama"));
+        assert_eq!(preferred.len(), 2);
+        assert_eq!(preferred[0].provider, "ollama");
+        assert_eq!(preferred[1].provider, "zhipu");
+    }
+
+    #[test]
+    fn candidates_preferred_unknown_provider_falls_back_to_natural_order() {
+        let router = TierRouter::from_config(&mock_config_two_max());
+        // Prefer a provider that isn't a candidate → natural order unchanged.
+        let chain = router.candidates_preferred(ModelTier::Max, Some("nonexistent"));
+        assert_eq!(chain[0].provider, "zhipu");
+    }
+
+    #[test]
+    fn candidates_preferred_empty_tier() {
+        let router = TierRouter::from_config(&mock_config_two_max());
+        // Lite tier has no candidates.
+        let chain = router.candidates_preferred(ModelTier::Lite, Some("ollama"));
+        assert!(chain.is_empty());
     }
 }
