@@ -181,6 +181,21 @@ impl Agent {
         self
     }
 
+    /// Update the context block at runtime (`&mut self`).
+    ///
+    /// Unlike [`with_context`](Self::with_context) (a builder that consumes
+    /// `self` at construction time), this lets a long-lived agent refresh its
+    /// context between turns — e.g. an interactive shell agent whose cwd and
+    /// last-command change every turn. Empty/whitespace input clears the block.
+    pub fn set_context(&mut self, context: impl Into<String>) {
+        let ctx = context.into();
+        if ctx.trim().is_empty() {
+            self.context_block = None;
+        } else {
+            self.context_block = Some(ctx);
+        }
+    }
+
     /// Load project context from a file (`.musk.md`, `CLAUDE.md`, etc.) and
     /// inject it. No-op (returns self unchanged) if the file doesn't exist or
     /// can't be read — so callers can chain it unconditionally.
@@ -886,6 +901,36 @@ mod tests {
         let sys = req2.system_prompt.as_deref().unwrap();
         assert!(sys.starts_with("PROJECT_CONTEXT"));
         assert!(sys.contains("you are a test role")); // role still present
+    }
+
+    #[test]
+    fn set_context_updates_at_runtime() {
+        let client = mock_client(vec![]);
+        let mut agent = Agent::new(MockRole, client);
+        agent.memory.add("user", "hi");
+
+        // Initially no context.
+        let req = agent.build_request();
+        assert!(req.system_prompt.as_deref().unwrap().starts_with("you are a test role"));
+
+        // set_context injects a live context block.
+        agent.set_context("cwd: /tmp/proj, last: ls");
+        let req = agent.build_request();
+        let sys = req.system_prompt.as_deref().unwrap();
+        assert!(sys.starts_with("cwd: /tmp/proj"), "set_context should prepend: {sys}");
+
+        // set_context again replaces (not appends).
+        agent.set_context("cwd: /tmp/other");
+        let req = agent.build_request();
+        let sys = req.system_prompt.as_deref().unwrap();
+        assert!(sys.contains("/tmp/other"));
+        assert!(!sys.contains("/tmp/proj"), "second set_context should replace");
+
+        // Empty input clears the block.
+        agent.set_context("   ");
+        let req = agent.build_request();
+        let sys = req.system_prompt.as_deref().unwrap();
+        assert!(sys.starts_with("you are a test role"), "empty set_context clears");
     }
 
     #[test]
