@@ -65,6 +65,7 @@ async fn live_react_one_tool_call() {
         tools: vec![],
         system_prompt: None,
         stream: false,
+        preferred_provider: None,
     }).await {
         Ok(_) => {}
         Err(e) => {

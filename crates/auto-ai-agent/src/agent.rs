@@ -577,6 +577,7 @@ impl Agent {
             system_prompt: Some(system_prompt),
             tools: tool_defs,
             stream: false,
+            preferred_provider: self.role.preferred_provider(),
         }
     }
 }
@@ -834,6 +835,37 @@ mod tests {
         assert_eq!(req.tools[0].name, "add_one");
         // Memory carries the seeded user message.
         assert!(req.messages.iter().any(|m| m.role == "user"));
+    }
+
+    /// A role that pins a preferred provider (e.g. a local Ollama model).
+    struct PinnedProviderRole;
+    impl Role for PinnedProviderRole {
+        fn name(&self) -> &str { "pinned" }
+        fn system_prompt(&self) -> &str { "use the local model" }
+        fn preferred_provider(&self) -> Option<String> { Some("ollama".to_string()) }
+    }
+
+    #[test]
+    fn build_request_carries_preferred_provider_from_role() {
+        let client = mock_client(vec![]);
+        let mut agent = Agent::new(PinnedProviderRole, client);
+        agent.memory.add("user", "hi");
+
+        let req = agent.build_request();
+        // The role's preferred_provider flows through to the request so the
+        // daemon can route to the Ollama provider for this tier.
+        assert_eq!(req.preferred_provider.as_deref(), Some("ollama"));
+    }
+
+    #[test]
+    fn build_request_preferred_provider_none_by_default() {
+        // MockRole doesn't override preferred_provider → defaults to None.
+        let client = mock_client(vec![]);
+        let mut agent = Agent::new(MockRole, client);
+        agent.memory.add("user", "hi");
+
+        let req = agent.build_request();
+        assert!(req.preferred_provider.is_none());
     }
 
     #[test]

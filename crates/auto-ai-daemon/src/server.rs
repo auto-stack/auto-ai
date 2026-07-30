@@ -128,7 +128,7 @@ async fn chat_completions(
         };
         let chain: Vec<(String, String)> = state
             .tier_router
-            .candidates(tier)
+            .candidates_preferred(tier, req.preferred_provider.as_deref())
             .iter()
             .map(|c| (c.provider.clone(), c.model.clone()))
             .collect();

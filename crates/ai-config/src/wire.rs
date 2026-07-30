@@ -165,6 +165,13 @@ pub struct CompletionRequest {
     /// response. (Non-streaming callers leave this false.)
     #[serde(default)]
     pub stream: bool,
+    /// Preferred provider name for this request. When set, the daemon's
+    /// tier router prefers this provider for the resolved tier (falling back
+    /// to other candidates only if it's unavailable). Lets a Role pin a
+    /// provider (e.g. `preferred_provider = "ollama"` for a local-model role)
+    /// without hard-coding a model id. `None` = daemon picks normally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_provider: Option<String>,
 }
 
 impl CompletionRequest {
@@ -178,6 +185,7 @@ impl CompletionRequest {
             system_prompt: None,
             tools: Vec::new(),
             stream: false,
+            preferred_provider: None,
         }
     }
 

@@ -7,8 +7,10 @@
 
 pub mod openai;
 pub mod anthropic;
+pub mod ollama;
 
 pub use anthropic::AnthropicProvider;
+pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
 
 use std::collections::HashMap;
@@ -100,6 +102,11 @@ impl ProviderRegistry {
                     name.clone(),
                     pc.base_url.clone(),
                     key,
+                    model_ids.clone(),
+                )),
+                "ollama" => Arc::new(OllamaProvider::new(
+                    name.clone(),
+                    pc.base_url.clone(),
                     model_ids.clone(),
                 )),
                 "openai" | _ => Arc::new(OpenAiProvider::new(
