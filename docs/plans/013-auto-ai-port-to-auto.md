@@ -467,3 +467,60 @@ auto-ai"还差什么，按优先级排：
 **结论**：Plan 013 的演示级目标（带工具的多轮 ReAct + 可重现构建）**全部达成**。
 auto-ai-agent 的全部业务逻辑用 Auto (.at) 编写 → a2r 转译 → 0 错误编译 →
 连接真实 LLM → 真正的 ReAct 对话循环运行。剩余 G5/G6 属远期增强。
+
+---
+
+## 附录：G5 流式路线图 + auto-coder 参考（从 handoff 文件合并）
+
+> 以下内容原载 `013-handoff-for-new-session.md`（2026-07-24 历史快照），
+> 该文件已删除。此处保留两块仍有长期参考价值的内容。
+
+### G5 流式路线图：先轮询跑起来，后增量演进到真流式
+
+> 决策（2026-07-24）：走「先轮询、后流式」的增量路线。
+
+**为什么回调式是"对的长期方向"**：daemon 是 SSE 逐 token 推送
+（`auto-ai-client` 的 `resp.bytes_stream()` + 每个 delta 调 `on_event`）。
+对 AI 编程助手，"边想边显示"vs"等 30 秒整段蹦出"是可用性质变。
+
+**为什么短期可以先轮询**：真正的流式发生在 Layer 2（auto-ai-client），不在
+Layer 3（agent）。agent 的 `Arc<dyn Fn(StreamEvent)>` 只是把 client 的 SSE 流
+"穿透"给上层 UI，问题只在穿透这一步用了 Auto 暂不支持的 `dyn Fn`/闭包。
+轮询与回调间只差一层缓冲带，事件种类/产生时机/ReAct 循环主体完全相同。
+
+**三阶段路线图**（每步增量，不重写）：
+
+| 阶段 | 方案 | 状态 |
+|---|---|---|
+| **1 — 轮询式** | 事件收集到 `List<StreamEvent>`，跑完返回；用 `complete`（非流式） | ✅ 已实施 |
+| **2 — 事件队列** | List 换成可追加队列/通道，UI 侧循环拉取，首字节延迟降低 | ❌ 待做 |
+| **3 — 真流式** | (a) parser 修好闭包支持，切回回调式 API；或 (b) 用 Auto 原生 task/actor + 消息传递替代 dyn-Fn | ❌ 远期 |
+
+**技术债清单**（阶段 1 完成后逐项核对）：
+
+| 项 | 阶段 1（当前） | 目标（阶段 3） |
+|---|---|---|
+| 事件流 | 轮询（整段返回） | 真·流式（逐 token） |
+| `Client.complete_stream` | 暂不移植 | 移植（dyn-Fn 或 actor） |
+| UI 首字节延迟 | 高（=非流式） | 低 |
+| 取消（cancel） | 只能在整轮间 | delta 间隙可取消 |
+| 工具执行 | async（保持） | async（不变） |
+
+### auto-coder 关键文件索引（供 Plan 377 技能优化参考）
+
+```
+D:/autostack/auto-coder/coder/
+  relay/agent.at        # AgentInstance（prompt 组装，无循环）
+  relay/turn.at         # ★ ReAct 循环本体（run_sync），最关键参考
+  relay/pipeline.at     # 编排状态机（与 orchestration/pipeline.at 同构）
+  relay/handoff.at      # HandoffDocument
+  relay/budget.at       # 预算跟踪
+  relay/profession.at   # Role 的对应物
+  relay/registry.at     # 工具/职业注册
+  types.at              # ToolChatRequest/ToolChatEvent/ChatMessage
+  tools/{bash,file_*,grep,mod,registry,spec_test}.at  # 工具实现（execute str→str）
+  runtime/{agent,context,session,permission}.at       # 运行时
+```
+
+**auto-coder → auto-ai 概念映射**：`Profession→Role`、`ToolRegistry→ToolRegistry`、
+`chat_turn→complete`、`ToolChatEvent→StreamEvent`、`TurnResult→AgentResult`。
