@@ -1,6 +1,6 @@
 # Plan 014: auto-lang-creator 技能优化（基于 plan 013 + auto-lang plan 373/376 的移植经验）
 
-> **状态**：✅ 可启动（2026-07-31：所有前置条件已满足，re-transpile 达到 0 错误）
+> **状态**：✅ 已实施（2026-07-31：技能更新完成 + error.rs 重新生成验证通过）
 > **仓库**：auto-ai（本计划）+ auto-lang（a2r 经验来源）+ skills（技能位于 `D:/autostack/skills/auto-lang-creator/`）
 > **前置**：auto-ai plan 013（Auto 移植 G1-G4 全部达成）、auto-lang plan 373/376S/T/U/V/W（re-transpile 136→0）
 > **目标**：把 plan 013 + auto-lang 373/376 过程中积累的 Auto 代码编写经验回灌到
@@ -142,3 +142,44 @@ git diff 0c2c630b HEAD -- crates/auto-ai-agent/src/*.at > /tmp/at_changes.diff
 - 技能生成的 Auto 代码减少 ~50% 的 a2r 编译错误（A 类 + C 类经验）
 - 移植新 crate 时不需要重走 plan 373 的 343→0 手修过程
 - a2r 生成器的 post_process 链进一步简化（因为源码侧更规范了）
+
+---
+
+## 实施记录（2026-07-31）
+
+### 步骤 1：diff 提取与核对 ✅
+
+```bash
+cd D:/autostack/auto-lang
+git diff 0c2c630b HEAD -- crates/auto-ai-agent/src/*.at   # 35 文件，+4325/-56
+```
+
+逐处核对 A/B/C 分类，A 类全部 20 条 + diff 新增 3 条均有 commit 佐证
+（376V/W batch 系列）。已修的 error.at 恰好示范 A9/A23：`ClientError` 分支
+去掉 `.message()`、AgentError 显式 `#[derive(Debug)]`。
+
+### 步骤 2：技能更新 ✅（`D:/autostack/skills/auto-lang-creator/skill.md`）
+
+1. **新增「Rust→Auto Porting Gotchas」节**：A 类 23 条规则表（20 条来自本计划 +
+   从 diff 补充 3 条：A21 str 的 `is` 匹配 → `if ==`；A22 保留字改名
+   `to`→`up_to`/`task`→`task_msg`；A23 外部类型显式 `#[derive(Clone, Debug)]`）。
+2. **新增「Bridge Types（桥接类型）」节**：C 类 5 条已知桥接 API 差异表。
+3. **「常见错误」节置顶**：Gotcha Checklist 顶部新增「Porting Quick Wins」8 条
+   高频错误清单。
+4. B 类仅以一句话在 A 类节后注明「已修复、勿绕写」——按计划 B 类不教技能。
+
+### 步骤 3：验证 ✅（error.rs 重新生成 → a2r → cargo check）
+
+用新技能规则从 `auto-ai/crates/auto-ai-agent/src/error.rs` 重新生成 `error.at`
+（含 A9/A23 规则注释），a2r 转译 0 错误，临时 crate `cargo check` 0 错误
+（16s），输出与 0 错误基线 `rust/src/error.rs` 语义逐行一致。验证临时目录
+已清理，未触碰 auto-lang 工作区（其上有 plan 378 在途改动）。
+
+### 步骤 4：B 类修复确认 ✅
+
+a2r 生成器 `crates/auto-lang/src/trans/rust.rs` 中全部 16 项修复均在位：
+`fix_dyn_trait_derives` / `fix_spec_trait_boxing` / `fix_pathbuf_as_str` /
+`fix_fn_field_calls` / `fix_tuple_index` / `fix_a2r_std_fs_result_patterns` /
+`impl Trait for Type` / `has_async` / `method_mutates_self` /
+`call_needs_await` / `seed_known_struct_enum_variants` / `A2R_CRATE_ROOT`
+lib.rs 自动生成等。无需在技能中教用户绕开。
