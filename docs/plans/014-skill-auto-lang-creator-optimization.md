@@ -213,3 +213,121 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
 
 待办：Layer 2 盲迁移（`auto-code-rs/auto/rust/src/json_helpers.rs`，干净会话）
 + Layer 3 回归/fix 计数器（见 tests/README.md）。
+
+---
+
+## 本计划续：真实 re-transpile 错误修复（2026-07-31）
+
+> plan 379 合并后，去掉手写回退做全量真实 re-transpile，得到 **56 个错误**
+> （132 → 56，-58%）。分析结论：**与 auto-ai 无关**——auto-ai 的 Rust 原版是
+> 语义基准，错误全部在 auto-lang 侧（.at 移植源码 + a2r 转译器）。修复在
+> auto-lang 用 worktree 方式实施（分支名沿 auto-lang 惯例取 plan-380，
+> 但计划文档只在本文件维护）。
+
+### 错误分布（按文件）
+
+| 文件 | 错误数 | 主要错误 |
+|---|---|---|
+| skill.rs | ~18 | DirEntry 未导入、str_as_str ×2、char.as_str、Arc Copy、E0195、E0308 多处、JsonValue |
+| driver.rs | ~16 | AgentError Clone/== 级联、GateDecision Display、&mut 借用、moved、match arms |
+| roles.rs | ~14 | dirs 模块分发、DirEntry ×2、summary on Option ×3、Box\<dyn Role\>.clone、moved ×2、E0282 |
+| pipeline.rs | ~4 | `time` 未导入、JsonValue、moved ×2、self.engine |
+| workflow_validator.rs | 3 | E0733 异步递归、validators moved |
+| agent.rs | 3 | E0782（trait `Future<...>`） |
+| error.rs | 3 | 级联（driver 的 derive 需求） |
+| validate.rs | 2 | str_as_str、ClientConfig.as_ref |
+| memory.rs | 2 | void 调用被加 `.to_string()` |
+| client_impl.rs | 2 | E0195（手写胶水，疑似 trait 注解缺失的连锁） |
+| flow/tool/role_config/builtin_roles | 各 1-2 | E0782、moved |
+
+### 分类与责任方
+
+**类别 1：.at 移植源码问题（改 `crates/auto-ai-agent/src/*.at`，约 15-20 个）**
+- 缺桥接导入：pipeline.at 缺 `use.rust a2r_std::time`（技能 A15）；skill.at/roles.at
+  缺 `use.rust std::fs::DirEntry`；JsonValue 导入缺失
+- A4 gotcha 复发：roles.at `self.roles.get(name).clone()` 直访字段（应 `is` 解构）
+- validate.at `cfg.as_ref()`（struct 无 as_ref）；skill.at `'"'.as_str()`（char 无 as_str）
+- roles.at 克隆 `Box<dyn Role>`（spec 未 extend Clone，设计问题）
+
+**类别 2：a2r 转译器缺陷（改 `crates/auto-lang/src/trans/rust.rs`，约 25-30 个）**
+1. **异步 spec trait 声明缺 `#[async_trait]`**（tool.rs/agent.rs E0782；疑似
+   client_impl.rs E0195 根因）——plan 373 G2 只补了 impl 没补 trait 声明
+2. 模块方法分发在 `is` 匹配位置缺失（roles.rs `dirs.home_dir()` E0423，return
+   位置却正确）——同一调用不同位置行为不一致
+3. void 调用被加 `.to_string()`（memory.rs）
+4. 残留 `.as_str()` on &str（str_as_str ×3）——plan 376B 修复未覆盖
+   `trim()`/`strip_prefix()` 链
+5. Arc 字段赋值 auto-clone 未触发（skill.rs:374）
+6. driver/pipeline 借用与 derive 级联（E0382、E0596、fn 值 `.to_string()`）
+
+**类别 3：手写胶水**——client_impl.rs（疑似类别 2.1 连锁）
+
+**类别 4：硬限制**——workflow_validator E0733 异步递归（需 Box::pin 或改迭代）
+
+### 修复顺序（worktree 实施）
+
+1. **类别 1（.at 源码）**：技能 A 类规则直接指导，风险低，先修
+2. **类别 2.1（trait `#[async_trait]`）**：优先级最高，可能连锁消掉 client_impl
+3. 逐批 retranspile + cargo check 回归（目标：56 → 尽可能接近 0）
+
+---
+
+## 修复完成记录：40 → 0 错误（2026-07-31 续）
+
+> worktree `plan-380-at-and-a2r-fixes`（分支基于 master 92b2bd70 + plan-379 修复），
+> 5 笔提交：`6261ad47` → `50991837` → `f0ef2e5f` → `9a7b99a7`。最终
+> **`cargo check`（lib + bin）0 错误**，skills `tests/verify.sh` 30/30，
+> 自举 `auto/` 源转译冒烟通过。
+
+### 剩余 40 错误的文件簇与清零顺序
+
+| 簇 | 错误数→0 | 提交 | 主要手法 |
+|---|---|---|---|
+| driver.rs | 10→0 | 6261ad47 | DriveOutcome 显式 `#[derive(Debug)]`（A23）；`mut fn` 链（dispatch/drive_step/resolve_gate_auto/handle_after_submit）；drive_step 预算警告改用 `handoff_doc.from.as_str()`；truncate_chars substring 加 `.to_string()` |
+| agent.rs | 6→0 | 50991837 | `?` 改 `is Ok/Err` 显式映射 `AgentError.Client`；run/run_stream/run_inner 改 `mut fn`；工具循环克隆链；转译器新增 **fix_mutable_params**（fn 参数体内被改则加 `mut`） |
+| skill.rs | 7→0 | f0ef2e5f | strip_prefix 内联（is 绑定记为 &str）；take_lines_joined 改收 `text str`；get/registry 传 `.as_str()`；转译器：**Plan 376 Pass 1 预注册 TypeDecl 方法 ret 类型**（trim-void 检查不再依赖声明顺序）+ **is_trim_method_call**（&str 参数位渲染 trim* 时去掉 `.to_string()`） |
+| memory.rs | 1→0 | f0ef2e5f | 同上 trim-void 顺序修复 |
+| roles.rs | 9→0 | 9a7b99a7 | load_one_builtin 改**返回 `?RoleDetail`**（by-value 参数无法回传 map 变更——原实现注册表为空）；PathBuf clone；cfg.name `.clone()` 解构；转译器：**spec_bound_idents**（`Some(prof)` 绑定 Box\<dyn\> 跳过 auto-clone）+ 兄弟扫描**递归进子目录并注册 fn_ret_types**（CLI 单文件跨模块）+ `is_spec_returning_scrutinee` 支持 `User(Role)` 形态 |
+| workflow_validator | 2→0 | 9a7b99a7 | check/check_all/check_any 改**同步**（递归 async 需 Box::pin，E0733；与 Rust 原版一致）；check_any 循环克隆 |
+| pipeline.rs | 1→0 | 9a7b99a7 | 语句位 is-match 由转译器补 `;`（值表达式臂 E0308） |
+| role_config.rs | 1→0 | 9a7b99a7 | `is cfg.inherit` → `is result.inherit.clone()`（var result = cfg 后 cfg 已移动） |
+| builtin_roles.rs | 1（新浮现） | 9a7b99a7 | `has_str_pattern` 对已是 `&str` 的目标不加 `.as_str()`（E0658 str_as_str） |
+| bin 层 | 1（新浮现） | 9a7b99a7 | retranspile.sh read_shims 补 `pub mod echo_tool;`（main.rs 导入，之前被 lib 编译失败掩盖） |
+
+### 顺带修掉的 a2r 缺陷（可回灌技能/plan）
+
+1. **fix_some_str_to_string 过度应用**：旧 regex 对 `self.field = Some(任意 ident)` 都加
+   `.to_string()` → `Option<u32>`（E0308）与 `Option<fn>`（E0599）载荷损坏。改为**类型感知**
+   （先收集文本中 `&str`/`String` 类型的 ident，仅对 str ident 转换）。
+2. **fn 参数 mut**：a2r 只为 `let` 局部加 `mut`；参数体内被 push/insert/set/字段赋值会 E0596。
+   新增 `fix_mutable_params`（括号配平扫描 + 变更检测，处理 trait 方法声明与单行函数）。
+3. **trim-void 顺序依赖**：`Memory.trim() void` 若声明晚于调用，`fn_ret_types` 查不到 Void →
+   `.to_string()` on `()`（E0599）。Pass 1 预扫 TypeDecl 方法 ret 类型。
+4. **trim* 传 &str 参数**：`clean_field_value(r.trim())` 被转成 `r.trim().to_string()` → E0308。
+   &str 参数位改用 `expr_as_str` 渲染 trim*（去掉 `.to_string()` 后缀）。
+5. **spec 值 auto-clone**：`is load_builtin(n) { Some(prof) }` 的 `prof` 是 `Box<dyn Role>`，
+   无 Clone（E0599）。新增 `spec_bound_idents` + `is_spec_returning_scrutinee`
+   （Option/Result\<Spec\> 或 User 形态命中 spec_decls）→ 跳过 auto-clone。
+6. **CLI 单文件跨模块 ret 类型缺失**：`trans --path X.at` 无 parsed_modules，
+   兄弟扫描只覆盖同目录/祖父目录。改为**递归进子目录** + 注册 `fn_ret_types`
+   （build-in roles 的 `load_builtin ?Role` 可见）。
+7. **has_str_pattern 对 &str 目标加 `.as_str()`** → E0658（str_as_str）。已是 &str
+   （str 参数 / StrSlice 局部）时跳过。
+8. **语句位 is-match 缺 `;`**：臂以 `map.insert(...)` 等值表达式结尾时 match 类型非 `()` →
+   E0308。`Stmt::Is` 统一补 `;`（丢弃值）。
+9. **fix_a2r_std_fs_result_patterns**：`Ok(x)` 无法推断 Err 类型（E0282）→
+   `Ok::<String, std::io::Error>(x)`（Err 臂是死代码）。
+10. **fix_spec_trait_boxing 正则**：`Some\((\w+)\s*\{\s*\})` 的 `)` 未转义 →
+    "unopened group" panic，`unwrap()` 崩溃**静默丢弃 builtin_roles 模块**（之前
+    retranspile 一直 [skip]）。转义 `\)`。
+
+### 遗留的语义缺口（非编译错误，已定位）
+
+- **user-role 注册仍 by-value**：`load_user_roles → scan_roles_dir → load_user_at_file`
+  链仍按值传 `roles`/`names`，参数内变更回传不到调用者 → 用户角色注册表为空。
+  （内置角色已通过 load_one_builtin 返回式修复。）后续可用"返回 (roles, names) 元组"或
+  把 scan 内联进 load() 解决。
+- `AgentError::Client(#[from])` 在 a2r 转译下无 `#[from]`，`?` 转换需显式 `is Ok/Err`
+  映射（agent.at 已按此写，文档化）。
+- `last_handoff_after` 仍是 stub（返回入参）——drive() 的 last_handoff 追踪未接真逻辑。
+4. 类别 4（异步递归）与 driver/pipeline 借用分析放最后
