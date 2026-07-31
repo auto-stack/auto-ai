@@ -64,8 +64,8 @@ plan 373 修了 343 个 a2r codegen 错误（手修 + post_process），plan 376
 | **局部变量与模块导入同名** | E0433 scope 错误 | 避免用 `agent`/`error`/`handoff` 等模块名做局部变量名 | a2r 误判为模块路径，渲染 `agent::method()` 而非 `agent.method()` |
 | **函数体不支持 `::` 路径表达式** | 解析失败 | 不写 `std::time::SystemTime::now()`，改用 `time.now_sec()`；**需 `use.rust a2r_std::time`** | Auto 函数体不解析 `::`，需走 a2r 的 stdlib 方法分发；缺桥接则 `time` 不在作用域（Layer 1 修正） |
 | **`use.rust` 不能导入 const** | 解析失败 | 不写 `use.rust std::time::UNIX_EPOCH`（const），只导入 type | const 导入后仍报 `undefined variable` |
-| **spec 类型进 Arc 需先装箱** | E0308 | role 是 `has Role` 类型时写 `Arc(Box(role))` | 需先 `Box` 成 `Box<dyn Trait>` 才能进 `Arc`；**注意**：a2r 的 `has Spec`→真实 impl 只支持硬编码 4 个 spec（Tool/Role/Client/AgentFactory），其余退回空 `{Name}Trait`（Layer 1 发现） |
-| **Arc 内的值需解引用** | E0308 | 读取场景**直接字段访问** `registry.entries`（Rust 自动解引用）；**不要写 `(*registry).clone()`** | `Arc<T>` 不是 `T`；`(*` 前缀解引用非有效语法，`skill.at:402` 因此从未能转译（Layer 1 修正） |
+| **spec 类型进 Arc 需先装箱** | E0308 | role 是 `has Role` 类型时写 `Arc(Box(role))` | 需先 `Box` 成 `Box<dyn Trait>` 才能进 `Arc`（plan 379 起 a2r 对任意 `has Spec` 生成真实 impl，通用装箱可用） |
+| **Arc 内的值需解引用** | E0308 | 读取场景直接字段访问 `registry.entries`（最简）；或 `(*registry).clone()`（plan 379 起 parser 支持 `(*` 前缀解引用） | `Arc<T>` 不是 `T`；`*x.clone()` 会解析成 `*(x.clone())`，括号不可省（plan 379 起发射端自动补） |
 | **返回 &str 切片但签名是 str** | E0308 | `fn f() str { return s.trim() }` → 补 `.to_string()` | a2r 把 `str` 返回类型渲染为 Rust `String`，但 `trim()` 返回 `&str` |
 | **`pair.0.as_str()` 链式点丢失** | E0308 | 用 `pair[0].as_str()`（经 fix_tuple_index 转换保留 .as_str）；**不能直接做 `is` 匹配条件**，先 `let key = ...` 再 is | a2r 渲染 `pair.0.as_str()` 时丢失 `.as_str()`（链式点解析 bug）（Layer 1 修正） |
 
@@ -199,11 +199,17 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
 - A20 `pair[0].as_str()` 不能直接做 `is` 条件（先 bind）
 - A7 裸 tuple 参数 `(str, str)` 解析失败 → 用 `List<(str, str)>`
 
-并暴露 2 个 **a2r 生成器缺陷**（应修 auto-lang，非技能）：
+并暴露 2 个 **a2r 生成器缺陷**（B 类）——**已在 auto-lang plan 379 修复并
+合并到 master（`9c5a32a2`）**：
 1. `known_spec_traits` 硬编码 Tool/Role/Client/AgentFactory 四个 spec，其余
-   `has Spec` 退回空 `{Name}Trait`（plan 373 G2 修复不通用）
+   `has Spec` 退回空 `{Name}Trait`（plan 373 G2 修复不通用）→ 已泛化
 2. `skill.at:402` 的 `(*registry)` 从未成功转译——`rust/src/skill.rs` 是
-   失败后的手写回退，"0 错误"统计含此回退（需复核 plan 376 结论）
+   失败后的手写回退，"0 错误"统计含此回退 → parser 支持一元 `*` 后首次可转译
+
+修复后探针覆盖升至 **22/23**（A17 装箱重新纳入），verify.sh 断言随之更新。
+真实全量 re-transpile 132 → 56 错误（-58%）；剩余 56 个在手写回退文件
+（driver/client_impl/memory/validate 等）——plan 376"0 错误"从未覆盖它们，
+待 plan 380+ 处理。
 
 待办：Layer 2 盲迁移（`auto-code-rs/auto/rust/src/json_helpers.rs`，干净会话）
 + Layer 3 回归/fix 计数器（见 tests/README.md）。
