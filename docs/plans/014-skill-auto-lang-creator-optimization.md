@@ -57,17 +57,17 @@ plan 373 修了 343 个 a2r codegen 错误（手修 + post_process），plan 376
 | `pair[0]` tuple 索引 | E0608 | `pair.0` | Auto tuple 用 `.N` 不用 `[N]` |
 | `step.id` 多次使用 | E0382 use after move | `step.id.clone()`（除最后一次使用） | String 是 owned，move 后不可再用 |
 | `e.message()` on 外部类型 | E0599 | `e.to_string()` 或 `format!("{}", e)` | 外部 crate 类型没有 Auto 的 `.message()` 方法 |
-| `is last_handoff { None -> "" }` | E0308 match arms 不一致 | `None -> Str.new()` | `""` 是 &str，`Some(h) -> h.from` 是 String |
-| `c.load()` + `v != 0` | E0277 bool/int 比较 | `c.load()` + `v` 直接用 | AtomicBool.load() 返回 bool |
+| `is last_handoff { None -> "" }` | E0308 match arms 不一致 | `None -> "".to_string()`（或 `""`，a2r 会补）；**不要 `Str.new()`** | `""` 是 &str，`Some(h) -> h.from` 是 String；`Str.new()` 转译成不存在的 `Str::new()`（Layer 1 修正） |
+| `c.load()` + `v != 0` | E0277 bool/int 比较；裸 `c.load()` 渲染成占位注释 E0061 | `c.load(Ordering.SeqCst)` + `v` 直接用 | `AtomicBool.load()` 返回 bool；需显式 Ordering（Layer 1 修正） |
 | `soft_limit * 5`（uint * int 字面量） | E0308 uint/int 混用 | `soft_limit * 5u`（用 uint 字面量） | 默认字面量是 int，需显式 `5u` |
 | `s.len() as i32` 残留 | E0308 i32/u32 | 避免 `as i32`，用 `as uint` 或不 cast | a2r 的 `as i32` 习惯导致类型不匹配 |
 | **局部变量与模块导入同名** | E0433 scope 错误 | 避免用 `agent`/`error`/`handoff` 等模块名做局部变量名 | a2r 误判为模块路径，渲染 `agent::method()` 而非 `agent.method()` |
-| **函数体不支持 `::` 路径表达式** | 解析失败 | 不写 `std::time::SystemTime::now()`，改用 a2r 已知方法 `time.now_sec()` | Auto 函数体不解析 `::`，需走 a2r 的 stdlib 方法分发 |
+| **函数体不支持 `::` 路径表达式** | 解析失败 | 不写 `std::time::SystemTime::now()`，改用 `time.now_sec()`；**需 `use.rust a2r_std::time`** | Auto 函数体不解析 `::`，需走 a2r 的 stdlib 方法分发；缺桥接则 `time` 不在作用域（Layer 1 修正） |
 | **`use.rust` 不能导入 const** | 解析失败 | 不写 `use.rust std::time::UNIX_EPOCH`（const），只导入 type | const 导入后仍报 `undefined variable` |
-| **spec 类型进 Arc 需先装箱** | E0308 | `Arc(role)` 的 role 是 `has Role` 类型时，写 `Arc(Box(role))` | 需先 `Box` 成 `Box<dyn Trait>` 才能进 `Arc` |
-| **Arc 内的值需解引用** | E0308 | `build_x(registry)` 的 registry 是 `Arc<T>` 时，写 `build_x((*registry).clone())` | `Arc<T>` 不是 `T`，需解引用再 clone |
+| **spec 类型进 Arc 需先装箱** | E0308 | role 是 `has Role` 类型时写 `Arc(Box(role))` | 需先 `Box` 成 `Box<dyn Trait>` 才能进 `Arc`；**注意**：a2r 的 `has Spec`→真实 impl 只支持硬编码 4 个 spec（Tool/Role/Client/AgentFactory），其余退回空 `{Name}Trait`（Layer 1 发现） |
+| **Arc 内的值需解引用** | E0308 | 读取场景**直接字段访问** `registry.entries`（Rust 自动解引用）；**不要写 `(*registry).clone()`** | `Arc<T>` 不是 `T`；`(*` 前缀解引用非有效语法，`skill.at:402` 因此从未能转译（Layer 1 修正） |
 | **返回 &str 切片但签名是 str** | E0308 | `fn f() str { return s.trim() }` → 补 `.to_string()` | a2r 把 `str` 返回类型渲染为 Rust `String`，但 `trim()` 返回 `&str` |
-| **`pair.0.as_str()` 链式点丢失** | E0308 | 用 `pair[0].as_str()`（经 fix_tuple_index 转换保留 .as_str） | a2r 渲染 `pair.0.as_str()` 时丢失 `.as_str()`（链式点解析 bug） |
+| **`pair.0.as_str()` 链式点丢失** | E0308 | 用 `pair[0].as_str()`（经 fix_tuple_index 转换保留 .as_str）；**不能直接做 `is` 匹配条件**，先 `let key = ...` 再 is | a2r 渲染 `pair.0.as_str()` 时丢失 `.as_str()`（链式点解析 bug）（Layer 1 修正） |
 
 ### B. a2r 生成器缺陷（不教技能，应修生成器）
 
@@ -183,3 +183,27 @@ a2r 生成器 `crates/auto-lang/src/trans/rust.rs` 中全部 16 项修复均在�
 `impl Trait for Type` / `has_async` / `method_mutates_self` /
 `call_needs_await` / `seed_known_struct_enum_variants` / `A2R_CRATE_ROOT`
 lib.rs 自动生成等。无需在技能中教用户绕开。
+
+### 追加：Layer 1 技能验证（2026-07-31，tests/ 框架 + 6 处规则修正）
+
+按用户建议把验证放进了技能同仓：`D:/autostack/skills/auto-lang-creator/tests/`
+（`verify.sh` + `probes/trap23.{rs,at}` + `README.md`）。23 陷阱探针覆盖
+21/23 条 A 类规则（A9/A17 由语料 golden 覆盖，见 tests/README.md），
+**30/30 断言 + a2r 转译 0 错误 + cargo check 0 错误**。
+
+验证直接修正了 6 条从未被验证过的规则（详见 tests/README.md「Layer 1 发现」）：
+- A10 `Str.new()` → `"".to_string()`（`Str.new()` 转译为不存在的 `Str::new()`）
+- A11 `c.load()` → `c.load(Ordering.SeqCst)`（裸调用渲染成占位注释 E0061）
+- A15 `time.now_sec()` 需 `use.rust a2r_std::time` 桥接（否则 E0425）
+- A18 `(*registry).clone()` → Arc 字段直访（`(*` 前缀解引用从未能转译）
+- A20 `pair[0].as_str()` 不能直接做 `is` 条件（先 bind）
+- A7 裸 tuple 参数 `(str, str)` 解析失败 → 用 `List<(str, str)>`
+
+并暴露 2 个 **a2r 生成器缺陷**（应修 auto-lang，非技能）：
+1. `known_spec_traits` 硬编码 Tool/Role/Client/AgentFactory 四个 spec，其余
+   `has Spec` 退回空 `{Name}Trait`（plan 373 G2 修复不通用）
+2. `skill.at:402` 的 `(*registry)` 从未成功转译——`rust/src/skill.rs` 是
+   失败后的手写回退，"0 错误"统计含此回退（需复核 plan 376 结论）
+
+待办：Layer 2 盲迁移（`auto-code-rs/auto/rust/src/json_helpers.rs`，干净会话）
++ Layer 3 回归/fix 计数器（见 tests/README.md）。
