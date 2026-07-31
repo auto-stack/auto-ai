@@ -331,3 +331,48 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
   映射（agent.at 已按此写，文档化）。
 - `last_handoff_after` 仍是 stub（返回入参）——drive() 的 last_handoff 追踪未接真逻辑。
 4. 类别 4（异步递归）与 driver/pipeline 借用分析放最后
+
+---
+
+## Layer 2 + Layer 3 完成（2026-08-01，计划 014 全部闭环）
+
+> worktree `plan-381-layer2-json-dispatch`（分支基于 master 77d6782a），2 笔提交：
+> `9260381d`（Layer 2 的 4 处 a2r 修复）+ `f28795fa`（Layer 3 fix 计数）。
+> skills 提交 `875d27a`（layer2 验证 + README + skill.md 回灌）。
+
+### Layer 2 — 盲迁移（✅ 2/2）
+
+目标：`auto-code-rs/auto/rust/src/json_helpers.rs`（308 行，跨仓库 held-out，
+从未参与规则提炼）。按技能盲移植（未参考 auto-code-rs 既有 .at），
+`tests/verify-layer2.sh` 验证。
+
+- **初始 74 个 a2r 错误**（对比历史基线 343 → -78%），**全部根因于 4 处 a2r
+  分发缺陷**，技能规则本身写对（.at 语义与 Rust 源逐行对应）：
+  1. 两段式 `json.get(v,k)` 被加 `.to_string()`（返回 String 非 Value）→ 25 级联
+  2. `json.as_int/as_string/as_bool` 无条件走 `*_str` 变体 + Value 参数 `.as_str()`
+     → 37
+  3. 枚举变体构造 String 载荷被加 `.as_str()`（静态方法路径误借用）→ 9
+  4. `expr_contains_string` 未识别 `json.to_string/get_str` → 3
+- **修复后 0 错误**；auto-ai-agent 全量回归 0 错误。
+- 闭环回灌 skill.md Bridge Types 4 条（json.get 返回 Value / as_* 分派 /
+  枚举变体载荷 / `trans --path` 裸文件名兄弟扫描失效）。
+
+### Layer 3 — 回归 + 生成器简化（✅）
+
+1. **回归**：全量 retranspile → cargo check 0 错误（无退化）。
+2. **fix 计数**（`A2R_FIX_COUNTS=1`，40 个 fix_* 包装统计）：协议点名的
+   `fix_u32_i32_casts` / `fix_push_move` / `fix_for_in_self_field_borrow`
+   **全部 = 0**；剩余触发为合法转译（fix_mutable_params=35、fix_non_ord_derives=19
+   等 21 个 fix 命中）。**Layer 2 held-out 只触发 1 次**（fix_mutable_params）。
+   → 预期效果 3 达成（技能修正源码后缺陷掩盖类 fix 归零）。
+
+### 计划 014 全部步骤状态
+
+| 项 | 状态 |
+|---|---|
+| 步骤 1-4（经验分类/技能更新/验证/B 类确认） | ✅ |
+| 本计划续：真实 re-transpile 56→0 | ✅ |
+| Layer 1 探针验证 30/30 | ✅ |
+| Layer 2 盲迁移 74→0 | ✅ |
+| Layer 3 回归 + fix 计数（三 paper-over 归零） | ✅ |
+| 遗留语义缺口（user-role by-value、#[from]、last_handoff stub） | 文档化，后续计划 |
