@@ -407,3 +407,63 @@ auto-ai"还差什么，按优先级排：
    作为 Auto 版 auto-ai-cli 的最小替代，方便演示和后续迭代。
 3. **G4 深层 a2r 修复**（独立计划）：让 re-transpile 不再依赖手修 .rs。
 
+
+---
+
+## ★★ G1/G2/G3/G4 全部达成 — ReAct 端到端实跑成功（2026-07-31）
+
+> 上方「MVP 里程碑」记录的是 2026-07-29 的**单轮无工具** MVP。本节记录
+> 2026-07-31 完成的**带工具的多轮 ReAct + 可重现构建**——即计划剩余的
+> G1/G2（实跑验证）+ G3（已有 REPL）+ G4（re-transpile 可重现）全部达成。
+
+### G4：re-transpile 可重现 = 0 错误 ✅
+
+通过 Plan 376S/T/U/V/W（共 ~25 个 commit，已合并 auto-lang master），
+将 re-transpile 错误从 **136 → 0**：
+
+| 计划 | 核心修复 | 消除错误 |
+|---|---|---|
+| 376S | enum `#[derive]` passthrough + dyn_trait_derives guard + fix_vec_i32 hash_map_names + 4 个 .at 解析修复 | 让 36/36 .at 全部 transpile |
+| 376T | driver.at/pipeline.at `now_secs` 解析修复（`::` 路径表达式不支持） | 36/36 transpile |
+| 376U | a2r 自动生成 lib.rs（`A2R_CRATE_ROOT=1` → `pub use` 重导出 + shims 注入） | 移除手写 lib.rs |
+| 376V | spec-trait 装箱 / dyn derive 降级 / fn-field 调用 / tuple 索引 / PathBuf as_str / 变量重命名避 scope 冲突 | 136→73 |
+| 376W | fs Result 嵌套括号正则 / skill.at 返回 .to_string() + Arc 解引用 / roles.at &str/String / memory.at 链式点绕过 | 73→0 |
+
+**验收**：`retranspile.sh`（36 .at → transpile → 组装，lib.rs 自动生成）→
+`cargo clean && cargo check` = **0 错误**。
+
+### G1/G2：多轮 ReAct + 工具调用实跑验证 ✅
+
+端到端实测（retranspile 版 `auto-ai-react.exe` + `aaid` daemon + GLM-5.2）：
+
+```
+> 你好，请用一句话介绍你自己
+你好！我是一个AI助手，致力于为你提供知识解答…  (1 turn)
+
+> 请调用 echo 工具，传入消息"hello world"
+[react] tool calls this turn:
+  • echo : ECHO: hello world
+已成功调用 echo 工具，工具返回了 **ECHO: hello world**。  (2 turns)
+```
+
+模型理解了工具调用请求 → 调用 echo → 收到返回 → 自然语言总结。
+**完整 ReAct 循环（推理 + 工具调用）端到端正确。**
+
+### G3：交互式 REPL ✅
+
+`main.rs`（简易 stdin REPL）此前已完成，本会话验证其在 retranspile 版正常工作。
+
+### 当前状态总结
+
+| 里程碑 | 状态 |
+|---|---|
+| G1 ReAct 多轮循环 | ✅ 实跑验证（2 turns） |
+| G2 工具执行端到端 | ✅ echo 工具调用验证 |
+| G3 交互式 REPL | ✅ auto-ai-react.exe |
+| G4 re-transpile 可重现 | ✅ 0 错误，lib.rs 自动生成 |
+| G5 流式（逐 token） | ❌ 远期（阶段 1 轮询） |
+| G6 全栈自举 | ❌ 远期（选项 B） |
+
+**结论**：Plan 013 的演示级目标（带工具的多轮 ReAct + 可重现构建）**全部达成**。
+auto-ai-agent 的全部业务逻辑用 Auto (.at) 编写 → a2r 转译 → 0 错误编译 →
+连接真实 LLM → 真正的 ReAct 对话循环运行。剩余 G5/G6 属远期增强。
