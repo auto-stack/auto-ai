@@ -217,6 +217,11 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
 （driver/client_impl/memory/validate 等）——plan 376"0 错误"从未覆盖它们，
 待 plan 380+ 处理。
 
+**探针扩展（2026-08-01，Plan 382 解锁）**：A24（错误枚举 `#[from]` + message()
+→ From/Display/Error 合成 + `?` 自动转换）与 A25（深逻辑拆返回式 helper 控制
+嵌套 ≤8 层）加入 trap23.at，verify.sh 断言相应新增 → **34 通过 / 0 失败**
+（A 类 25 条中 24/25 由探针覆盖，A9 由语料 golden 覆盖）。
+
 ~~待办：Layer 2 盲迁移 + Layer 3 回归/fix 计数器~~ **✅ 已完成（2026-08-01）**：
 见下文「Layer 2 + Layer 3 完成」节（盲迁移 74→0、fix 计数三 paper-over 归零）。
 
@@ -382,7 +387,7 @@ handoff 追踪一并解决，无遗留。）
 |---|---|
 | 步骤 1-4（经验分类/技能更新/验证/B 类确认） | ✅ |
 | 本计划续：真实 re-transpile 56→0 | ✅ |
-| Layer 1 探针验证 30/30 | ✅ |
+| Layer 1 探针验证 30/30（A24/A25 扩展后 34 通过 / 0 失败） | ✅ |
 | Layer 2 盲迁移 74→0 | ✅ |
 | Layer 3 回归 + fix 计数（三 paper-over 归零） | ✅ |
 | 遗留语义缺口 G1（user-role 注册链）+ G3（handoff 追踪） | ✅ 已修复 |
