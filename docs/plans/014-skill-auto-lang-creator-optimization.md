@@ -331,8 +331,9 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
   链仍按值传 `roles`/`names`，参数内变更回传不到调用者 → 用户角色注册表为空。
   （内置角色已通过 load_one_builtin 返回式修复。）后续可用"返回 (roles, names) 元组"或
   把 scan 内联进 load() 解决。~~ → **G1 已修复（2026-08-01，见下方「语义缺口修复」节）**
-- `AgentError::Client(#[from])` 在 a2r 转译下无 `#[from]`，`?` 转换需显式 `is Ok/Err`
-  映射（agent.at 已按此写，文档化）。→ **保持为后续计划**（a2r 需支持变体属性发射）
+- ~~`AgentError::Client(#[from])` 在 a2r 转译下无 `#[from]`，`?` 转换需显式 `is Ok/Err`
+  映射（agent.at 已按此写，文档化）。~~ → **G2 已修复（2026-08-01，auto-lang Plan 382：
+  变体 `#[from]` 属性 → From/Display/Error 原生生成，agent.at 恢复 `.await.?`）**
 - ~~`last_handoff_after` 仍是 stub（返回入参）——drive() 的 last_handoff 追踪未接真逻辑。~~
   → **G3 已修复（2026-08-01，见下方「语义缺口修复」节）**
 4. 类别 4（异步递归）与 driver/pipeline 借用分析放最后
@@ -381,7 +382,7 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
 | Layer 2 盲迁移 74→0 | ✅ |
 | Layer 3 回归 + fix 计数（三 paper-over 归零） | ✅ |
 | 遗留语义缺口 G1（user-role 注册链）+ G3（handoff 追踪） | ✅ 已修复 |
-| 遗留语义缺口 G2（`AgentError::Client(#[from])`） | 文档化，后续计划 |
+| 遗留语义缺口 G2（`AgentError::Client(#[from])`） | ✅ 已修复（Plan 382） |
 
 ---
 
