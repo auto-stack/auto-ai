@@ -1,6 +1,8 @@
 # Plan 014: auto-lang-creator 技能优化（基于 plan 013 + auto-lang plan 373/376 的移植经验）
 
-> **状态**：✅ 已实施（2026-07-31：技能更新完成 + error.rs 重新生成验证通过）
+> **状态**：✅ 已实施（2026-07-31：技能更新完成 + error.rs 重新生成验证通过；
+> 2026-08-01：Layer 1/2/3 + 真实 re-transpile 56→0 + 语义缺口 G1/G2/G3 全部闭环，
+> 最后一项 G2 由 auto-lang Plan 382 `#[from]` 变体属性实现）
 > **仓库**：auto-ai（本计划）+ auto-lang（a2r 经验来源）+ skills（技能位于 `D:/autostack/skills/auto-lang-creator/`）
 > **前置**：auto-ai plan 013（Auto 移植 G1-G4 全部达成）、auto-lang plan 373/376S/T/U/V/W（re-transpile 136→0）
 > **目标**：把 plan 013 + auto-lang 373/376 过程中积累的 Auto 代码编写经验回灌到
@@ -336,7 +338,9 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
   变体 `#[from]` 属性 → From/Display/Error 原生生成，agent.at 恢复 `.await.?`）**
 - ~~`last_handoff_after` 仍是 stub（返回入参）——drive() 的 last_handoff 追踪未接真逻辑。~~
   → **G3 已修复（2026-08-01，见下方「语义缺口修复」节）**
-4. 类别 4（异步递归）与 driver/pipeline 借用分析放最后
+
+（注：类别 4「异步递归与 driver/pipeline 借用」已随 workflow_validator 改同步 + G3
+handoff 追踪一并解决，无遗留。）
 
 ---
 
