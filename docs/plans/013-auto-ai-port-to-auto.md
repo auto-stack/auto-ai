@@ -462,7 +462,7 @@ auto-ai"还差什么，按优先级排：
 | G3 交互式 REPL | ✅ auto-ai-react.exe |
 | G4 re-transpile 可重现 | ✅ 0 错误，lib.rs 自动生成 |
 | G5 流式（逐 token） | ✅ StreamingAiClient + channel + printer 线程（2026-08-01） |
-| G6 全栈自举 | 🟡 Scope A ✅（transpiled client 独立 0 错编译）；Scope B 待续（接 agent + 实跑） |
+| G6 全栈自举 | ✅ Scope A + B 完成（2026-08-01）— agent + client 全 Auto 源码，ReAct 实跑 |
 
 ### G5 流式显示 ✅（2026-08-01）
 
@@ -472,11 +472,11 @@ auto-ai"还差什么，按优先级排：
 
 实测："请写一首关于秋天的五言绝句" → token 逐个流式打印（秋思 + 简析）。
 
-### G6 全栈自举 — Scope A ✅（transpiled client 独立编译）
+### G6 全栈自举 — ✅ 完成（Scope A + B，2026-08-01）
 
 G6 分两步：**Scope A**（让 3 个 client `.at` 转译成独立可编译 crate）→
 **Scope B**（把 agent 从真 auto-ai-client 切到转译版 + 实跑验证 ReAct）。
-2026-08-01 完成 Scope A。
+2026-08-01 两步均完成。**agent + client 全部 Auto 源码，ReAct 实跑通过。**
 
 > **澄清**：此前文档写「a2r-std HTTPStream ✅」仅指 **VM 侧**（stdlib + VM native）。
 > a2r 链接的 Rust crate `a2r-std/src/http.rs` 此前**没有任何流式支持**
@@ -525,9 +525,39 @@ G6 分两步：**Scope A**（让 3 个 client `.at` 转译成独立可编译 cra
     故**不能全局改转译器**。Scope A 的修法是 client crate-local 后处理
     （`a2r_std::json::parse(` → `parse_opt(`），不影响 agent。
 
-**Scope B（下一步，未做）**：把 agent 的 `Cargo.toml` 从真 `auto-ai-client` path 依赖
-切到转译版 crate，删除手写 `client_impl.rs` 胶水，并实跑验证 ReAct 端到端（对 daemon
-发问 + 工具调用 + 流式）。预计 1 个聚焦会话。
+**Scope B 做了什么**（同分支，已提交）：
+
+1. **client `.at` 公开化**（`lib.at`）：`pub type AiClient` + `pub` new/with_url/
+   default/url/is_daemon_mode（跨 crate 边界构造 + 使用）。
+2. **client crate 顶层 re-export**（`retranspile.sh`）：`pub use ai_config::{wire 类型}`
+   + `pub use error::ClientError`，对齐真 crate 的对外接口；删除转译体的私有
+   `use crate::ai_config/error::{...}`（E0252 冲突）。
+3. **agent 切到转译版 client**（`auto-ai-agent/rust/`）：
+   - `Cargo.toml`：去掉真 `auto-ai-client` path 依赖，加 `auto-ai-client-a2r`（转译版）；
+     `auto-atom/auto-val` 改走 `auto-lang` junction（与 ai-config 的传递依赖共用同一
+     规范路径，避免 lockfile package collision）。
+   - `lib.rs`：`auto_ai_client` shim 指向 `::auto_ai_client_a2r`。
+   - `client_impl.rs`：`impl Client for AiClient` 委托 `self.complete(req)`（转译版
+     complete 取 owned `CompletionRequest`，与 trait 签名一致）——**唯一剩余的手写
+     胶水**（a2r 尚不支持 trait impl）。
+   - `main.rs`：`AiClient` 经 crate 的 `auto_ai_client` shim 导入。
+
+**验收实测**（aaid daemon + GLM-5.2，2026-08-01）：
+```
+> 你好，请用一句话介绍你自己
+你好！我是一个AI助手，致力于为你提供知识解答…  (1 turn, 194 tokens)
+
+> 请调用 echo 工具，传入消息"hello world"
+[react] tool calls this turn:
+  • echo : ECHO: hello world
+已成功调用 echo 工具，传入的消息为 **"hello world"**…  (2 turns, 442 tokens)
+```
+模型理解工具调用 → 调 echo → 收返回 → 自然语言总结。**完整 ReAct 循环（推理 + 工具）
+在纯 Auto 转译代码上端到端跑通。** agent cargo check 0 错；client cargo check 0 错。
+
+**G6 结论**：auto-ai 的核心（client + agent ReAct 循环）已全部用 Auto (.at) 编写，
+经 a2r 转译 → 0 错误编译 → 连接真实 LLM → 真正的 ReAct 对话 + 工具调用运行。
+手写 Rust 胶水仅剩 `client_impl.rs` 的 trait 适配（13 行，待 a2r 支持 trait impl 后移入 .at）。
 
 ---
 
