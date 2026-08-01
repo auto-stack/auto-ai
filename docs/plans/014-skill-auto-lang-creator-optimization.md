@@ -327,13 +327,14 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
 
 ### 遗留的语义缺口（非编译错误，已定位）
 
-- **user-role 注册仍 by-value**：`load_user_roles → scan_roles_dir → load_user_at_file`
+- ~~**user-role 注册仍 by-value**：`load_user_roles → scan_roles_dir → load_user_at_file`
   链仍按值传 `roles`/`names`，参数内变更回传不到调用者 → 用户角色注册表为空。
   （内置角色已通过 load_one_builtin 返回式修复。）后续可用"返回 (roles, names) 元组"或
-  把 scan 内联进 load() 解决。
+  把 scan 内联进 load() 解决。~~ → **G1 已修复（2026-08-01，见下方「语义缺口修复」节）**
 - `AgentError::Client(#[from])` 在 a2r 转译下无 `#[from]`，`?` 转换需显式 `is Ok/Err`
-  映射（agent.at 已按此写，文档化）。
-- `last_handoff_after` 仍是 stub（返回入参）——drive() 的 last_handoff 追踪未接真逻辑。
+  映射（agent.at 已按此写，文档化）。→ **保持为后续计划**（a2r 需支持变体属性发射）
+- ~~`last_handoff_after` 仍是 stub（返回入参）——drive() 的 last_handoff 追踪未接真逻辑。~~
+  → **G3 已修复（2026-08-01，见下方「语义缺口修复」节）**
 4. 类别 4（异步递归）与 driver/pipeline 借用分析放最后
 
 ---
@@ -379,4 +380,50 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
 | Layer 1 探针验证 30/30 | ✅ |
 | Layer 2 盲迁移 74→0 | ✅ |
 | Layer 3 回归 + fix 计数（三 paper-over 归零） | ✅ |
-| 遗留语义缺口（user-role by-value、#[from]、last_handoff stub） | 文档化，后续计划 |
+| 遗留语义缺口 G1（user-role 注册链）+ G3（handoff 追踪） | ✅ 已修复 |
+| 遗留语义缺口 G2（`AgentError::Client(#[from])`） | 文档化，后续计划 |
+
+---
+
+## 语义缺口修复（2026-08-01，G1 + G3 + 顺带 a2r 修复）
+
+> worktree `plan-014-semantic-gaps`，2 笔提交 `6431ff8d`（G1/G3）+ `f729dfd3`
+> （编译修复），合并进 master（`5c0030e4`、`5b38fa0b`）。
+
+### G1 — user-role by-value 注册链（修复）
+
+- 原状：`load_user_roles → scan_roles_dir → load_user_at_file` 按值传
+  `roles`/`names`，参数内 `set/push` 回传不到调用者 → 用户角色永远加载不进注册表。
+- 修复：`load()` 内联扫描循环（同 Rust 原版 roles.rs 106-161），逐文件解析抽成
+  **返回式** `load_user_at_file(path) -> ?RoleDetail`（同 load_one_builtin 风格）；
+  load() 内直接累积 + 去重（`roles.contains` 判重再 `names.push`/`roles.set`）。
+
+### G3 — last_handoff_after stub（修复）
+
+- 原状：`last_handoff_after` 返回入参 → drive() 的 last_handoff 从不更新，多步
+  pipeline 第 2 步起输入仍是原始 task_msg。
+- 修复：`DriveOutcome.Continue(?HandoffDocument)` 携带 handoff；`drive_step` 改为
+  返回 `~Result<HandoffDocument, AgentError>`（Ok 时交回构建的 handoff）；删除
+  stub。对齐 Rust 原版 drive() 的 `last_handoff = Some(handoff)`。
+- 编译修正（`f729dfd3`）：① loop 内 `last_handoff` 需 `.clone()` 再传 dispatch
+  （E0382 第二次迭代 use-of-moved-value）；② Continue 载荷是 `Option<...>`，
+  `Ok(h)` 需显式 `Some(h)`（a2r 不自动包裹）。
+
+### 验证
+
+- 全量 retranspile → cargo check **0 错误**；roles.rs/driver.rs 重生成与提交版一致。
+- G1 语义：用户 .at 角色按名覆盖内置、新名追加 names、list() 排序不变（与 Rust 一致）。
+
+### 发现并顺带修复的 a2r 缺陷（均为预存在问题，非本次引入）
+
+1. **a2r parser 递归深度限制（~9 层）**：`Parser::parse()` 对嵌套 >9 层的
+   `is`/`if` 块递归爆栈（跨后端 ts/python 同样）。首版内联把 load() 解析做成
+   ~10 层触发，故逐文件解析保留为 helper 规避。后续如需要更深的合法嵌套，需
+   提高 parser 递归容量（新计划）。
+2. **struct_init 空参位置构造回归（bd4c475e 引入，e7ec5eac 修复）**：plan-380
+   P0 的位置构造分支把空参裸调用 `Type()` 也走位置构造；空成员结构体（如
+   builtin_role_*.at 的 `pub type X has Role {...}`）不在 struct_fields →
+   发射 `Assistant()` → E0423，且连带 fix_spec_trait_boxing 的 `Some(X{})`
+   正则失效 → builtin_roles.rs 重生成后 cargo check 14 个 E0423。修复：位置
+   构造分支加 `!args.args.is_empty()` 守卫。验证：全量 retranspile 0 错误，
+   builtin_roles.rs 重生成与提交版逐字节一致。
