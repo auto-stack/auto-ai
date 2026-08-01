@@ -462,7 +462,7 @@ auto-ai"还差什么，按优先级排：
 | G3 交互式 REPL | ✅ auto-ai-react.exe |
 | G4 re-transpile 可重现 | ✅ 0 错误，lib.rs 自动生成 |
 | G5 流式（逐 token） | ✅ StreamingAiClient + channel + printer 线程（2026-08-01） |
-| G6 全栈自举 | ⏳ 进行中 — a2r-std HTTPStream |
+| G6 全栈自举 | ⏳ a2r-std HTTPStream ✅；transpiled client cargo check 待做 |
 
 ### G5 流式显示 ✅（2026-08-01）
 
