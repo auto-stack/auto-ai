@@ -461,10 +461,22 @@ auto-ai"还差什么，按优先级排：
 | G2 工具执行端到端 | ✅ echo 工具调用验证 |
 | G3 交互式 REPL | ✅ auto-ai-react.exe |
 | G4 re-transpile 可重现 | ✅ 0 错误，lib.rs 自动生成 |
-| G5 流式（逐 token） | ❌ 远期（阶段 1 轮询） |
-| G6 全栈自举 | ❌ 远期（选项 B） |
+| G5 流式（逐 token） | ✅ StreamingAiClient + channel + printer 线程（2026-08-01） |
+| G6 全栈自举 | ⏳ 进行中 — a2r-std HTTPStream |
 
-**结论**：Plan 013 的演示级目标（带工具的多轮 ReAct + 可重现构建）**全部达成**。
+### G5 流式显示 ✅（2026-08-01）
+
+通过在 `client_impl.rs`（手写 Rust 胶水）新建 `StreamingAiClient`，让 `complete()`
+内部改调真实 client 的 `complete_stream`，SSE delta 通过 `std::sync::mpsc` channel
+转发给 main.rs 的打印线程。agent.at / agent.rs / retranspile 完全不动。
+
+实测："请写一首关于秋天的五言绝句" → token 逐个流式打印（秋思 + 简析）。
+
+### G6 全栈自举（进行中）
+
+目标：给 a2r-std 加 `HTTPStream`（`post_stream_with_headers` + `next()`/`is_done()`），
+让 `.at` client 的 `complete_stream` 代码在 a2r→Rust 路径下也能链接（不再依赖真
+Rust auto-ai-client）。
 auto-ai-agent 的全部业务逻辑用 Auto (.at) 编写 → a2r 转译 → 0 错误编译 →
 连接真实 LLM → 真正的 ReAct 对话循环运行。剩余 G5/G6 属远期增强。
 
