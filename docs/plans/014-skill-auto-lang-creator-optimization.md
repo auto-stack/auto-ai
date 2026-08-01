@@ -40,7 +40,7 @@ plan 373 修了 343 个 a2r codegen 错误（手修 + post_process），plan 376
 3. 把 A 类和 C 类经验整理进 auto-lang-creator 技能
 ```
 
-## 已知的经验分类（待系统化整理）
+## 已知的经验分类（已系统化 → skill.md 的 A/B/C 三节 + Bridge Types）
 
 ### A. Auto 代码编写规范（应在技能中教）
 
@@ -140,8 +140,12 @@ git diff 0c2c630b HEAD -- crates/auto-ai-agent/src/*.at > /tmp/at_changes.diff
 ## 预期效果
 
 - 技能生成的 Auto 代码减少 ~50% 的 a2r 编译错误（A 类 + C 类经验）
+  **✅ Layer 2 实测：基线 343 → 74（-78%）**
 - 移植新 crate 时不需要重走 plan 373 的 343→0 手修过程
+  **✅ Layer 2 盲迁移：held-out json_helpers.rs 74 → 0（4 处 a2r 缺陷修复后）**
 - a2r 生成器的 post_process 链进一步简化（因为源码侧更规范了）
+  **✅ Layer 3：fix_u32_i32_casts / fix_push_move / fix_for_in_self_field_borrow
+  触发率归零；剩余 21 个 fix 命中均为合法转译（fix_mutable_params 等）**
 
 ---
 
@@ -211,8 +215,8 @@ lib.rs 自动生成等。无需在技能中教用户绕开。
 （driver/client_impl/memory/validate 等）——plan 376"0 错误"从未覆盖它们，
 待 plan 380+ 处理。
 
-待办：Layer 2 盲迁移（`auto-code-rs/auto/rust/src/json_helpers.rs`，干净会话）
-+ Layer 3 回归/fix 计数器（见 tests/README.md）。
+~~待办：Layer 2 盲迁移 + Layer 3 回归/fix 计数器~~ **✅ 已完成（2026-08-01）**：
+见下文「Layer 2 + Layer 3 完成」节（盲迁移 74→0、fix 计数三 paper-over 归零）。
 
 ---
 
