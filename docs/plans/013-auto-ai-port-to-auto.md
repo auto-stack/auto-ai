@@ -462,7 +462,7 @@ auto-ai"还差什么，按优先级排：
 | G3 交互式 REPL | ✅ auto-ai-react.exe |
 | G4 re-transpile 可重现 | ✅ 0 错误，lib.rs 自动生成 |
 | G5 流式（逐 token） | ✅ StreamingAiClient + channel + printer 线程（2026-08-01） |
-| G6 全栈自举 | ⏳ a2r-std HTTPStream ✅；transpiled client cargo check 待做 |
+| G6 全栈自举 | 🟡 Scope A ✅（transpiled client 独立 0 错编译）；Scope B 待续（接 agent + 实跑） |
 
 ### G5 流式显示 ✅（2026-08-01）
 
@@ -472,13 +472,62 @@ auto-ai"还差什么，按优先级排：
 
 实测："请写一首关于秋天的五言绝句" → token 逐个流式打印（秋思 + 简析）。
 
-### G6 全栈自举（进行中）
+### G6 全栈自举 — Scope A ✅（transpiled client 独立编译）
 
-目标：给 a2r-std 加 `HTTPStream`（`post_stream_with_headers` + `next()`/`is_done()`），
-让 `.at` client 的 `complete_stream` 代码在 a2r→Rust 路径下也能链接（不再依赖真
-Rust auto-ai-client）。
-auto-ai-agent 的全部业务逻辑用 Auto (.at) 编写 → a2r 转译 → 0 错误编译 →
-连接真实 LLM → 真正的 ReAct 对话循环运行。剩余 G5/G6 属远期增强。
+G6 分两步：**Scope A**（让 3 个 client `.at` 转译成独立可编译 crate）→
+**Scope B**（把 agent 从真 auto-ai-client 切到转译版 + 实跑验证 ReAct）。
+2026-08-01 完成 Scope A。
+
+> **澄清**：此前文档写「a2r-std HTTPStream ✅」仅指 **VM 侧**（stdlib + VM native）。
+> a2r 链接的 Rust crate `a2r-std/src/http.rs` 此前**没有任何流式支持**
+>（只有 `post_sync/get_sync`），且 client 的 3 个 `.at` 从未被转译过。
+
+**Scope A 做了什么**（分支 `plan-013-g6-client`，已提交 auto-lang 仓库）：
+
+1. **a2r-std 补能力**（`crates/a2r-std/src/`）：
+   - `http.rs`：`RequestBuilder{header/body/timeout/send}` + `Response{status_code/body_bytes}`
+     + `HTTPStream`（channel 后台线程逐块读 SSE）+ `post_stream_with_headers`。
+   - `str.rs`：`from_bytes`（UTF-8 lossy）；`str_find/str_find_from` 改泛型 `AsRef<str>`
+     （接受 owned String 字段如 `self.buf`）。
+   - `json.rs`：`parse_opt`（`Option<Value>`，对齐 Auto `json.parse -> ?JsonValue` 语义）。
+   - `process.rs`（新）：`spawn(Vec<String>) -> u32`（detached，返回 pid）。
+
+2. **a2r 转译器新映射**（`trans/rust.rs`）：
+   - `json.decode[T](x)` → `serde_json::from_str::<T>(&x)`（`[T]` 被解析成 `Expr::Index`，
+     绕过正常 dispatch，故在 `fn call` 顶部加 pre-check 拦截）。
+   - `json.encode(x)` → `serde_json::to_string(&x).unwrap_or_default()`。
+   - `http.request/post_stream_with_headers` → `a2r_std::http::*`。
+   - `time.now_ms/now_sec/sleep_ms` → `a2r_std::time::*`；`process.spawn` → `a2r_std::process::spawn`。
+   - `s.find(needle)` 2 参 → `str_find`；3 参 → `str_find_from`（此前一律发 3 参版）。
+
+3. **client 独立 crate**（`crates/auto-ai-client/rust/`，新）：
+   - `Cargo.toml`（deps：a2r-std + 真 ai-config crate 提供 Serialize/Deserialize wire 类型）。
+   - `retranspile.sh`：转译 3 `.at` → 组装 `lib.rs`（JsonValue/parse_opt/mod shim +
+     针对已知 a2r codegen 小毛病的 crate-local 后处理）→ `cargo check`。
+   - `src/{lib,error,daemon}.rs`：组装产物，**0 错误，可重复**。
+   - `error.at`：`pub enum ClientError` + pub 方法（跨模块可见性）。
+   - `daemon.at`：`which()` 用 `dir+/+exe` 拼接替代 `path.join`（Auto 无干净转译的 os.path.join）。
+
+**验收**：`retranspile.sh check` → **0 错误**（11 warnings，皆 dead-code 非阻塞）；
+从头重跑可重复。**回归**：a2r golden 套件无变化（`str_find` 经 `AsRef<str>` 向后兼容；
+无 golden 测试用 `.find()`）；agent 转译不受影响。
+
+**踩坑记录（踩坑 #12-14）**：
+12. **`json.encode/decode[T]` 的转译陷阱**：`[T]` 语法 Auto 没有 turbofish，被解析成
+    `Expr::Index(callee, type_ident)`，因此 `json.decode[T](x)` 绕过所有
+    `("json", method)` 分发表（只认 `Bina`/`Dot` callee）。修法：`fn call` 顶部加
+    pre-check 识别 `Index(json.decode, T_ident)`。
+13. **2-段模块调用的 AST 形式是 `Expr::Dot` 而非 `Expr::Bina`**：`json.encode(req)`
+    的 `call.name` 是 `Dot(Ident("json"), "encode")`，不是 `Bina`。映射必须加到
+    `if let Expr::Dot(obj, method)` 分发表（约 L3314），而非 `Expr::Bina` 那张表。
+14. **`json.parse` 的 Option 语义歧义**：agent 代码把 `json.parse(x)` 当裸 `Value`
+    用（skill.at/tool.at），client 代码却用它做 `Some/None` 匹配。同语法两种返回类型，
+    故**不能全局改转译器**。Scope A 的修法是 client crate-local 后处理
+    （`a2r_std::json::parse(` → `parse_opt(`），不影响 agent。
+
+**Scope B（下一步，未做）**：把 agent 的 `Cargo.toml` 从真 `auto-ai-client` path 依赖
+切到转译版 crate，删除手写 `client_impl.rs` 胶水，并实跑验证 ReAct 端到端（对 daemon
+发问 + 工具调用 + 流式）。预计 1 个聚焦会话。
 
 ---
 
