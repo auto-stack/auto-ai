@@ -14,4 +14,4 @@ tracing = "0.1"
 
 [lib]
 name = "auto_ai_client"
-path = "src/lib.rs"
+path = "rust-ref/src/lib.rs"

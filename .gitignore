@@ -1,4 +1,8 @@
-/target
+# Cargo build output (matches root AND nested crate-local target/, e.g.
+# crates/*/rust/target/ which are standalone workspaces).
+target/
+**/target/
+
 Cargo.lock
 
 # aaid config frontend
@@ -7,3 +11,13 @@ crates/auto-ai-daemon/frontend-dist/
 
 # Git worktrees
 .worktrees/
+
+# Local IDE/agent settings (match auto-lang convention)
+.zcode/
+.claude/
+.agent/
+
+# a2r transpiler intermediate output (plan-015: crates/*/src/*.a2r.rs).
+# The final assembled Rust lives in crates/*/rust/src/*.rs (tracked);
+# these .a2r.rs files are ephemeral, regenerated on every retranspile.
+*.a2r.rs

@@ -6,7 +6,7 @@ description = "AutoOS AI agent layer — Profession library, ReAct loop, Workflo
 
 [lib]
 name = "auto_ai_agent"
-path = "src/lib.rs"
+path = "rust-ref/src/lib.rs"
 
 [dependencies]
 # Layer 2: the LLM client (tool-calling, daemon mode).

@@ -6,7 +6,7 @@ description = "Shared AI configuration + canonical wire types for AutoOS AI crat
 
 [lib]
 name = "ai_config"
-path = "src/lib.rs"
+path = "rust-ref/src/lib.rs"
 
 [dependencies]
 auto-atom = { path = "../../../auto-lang/crates/auto-atom" }
