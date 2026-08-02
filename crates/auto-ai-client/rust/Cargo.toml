@@ -1,0 +1,30 @@
+[package]
+name = "auto-ai-client-a2r"
+version = "0.1.0"
+edition = "2021"
+description = "auto-ai-client — Auto-transpiled from .at (a2r→Rust). Thin daemon HTTP client."
+
+# Standalone assembly of transpiled files, kept out of the parent auto-ai
+# workspace. The authoritative source is the sibling src/*.at; this rust/ tree
+# is the a2r product. rust-ref/ holds the legacy hand-written Rust.
+[workspace]
+
+[lib]
+name = "auto_ai_client_a2r"
+path = "src/lib.rs"
+
+[dependencies]
+# Same-repo sibling crate (canonical wire types). a2r emits
+# `use crate::ai_config::...`, resolved by the shim injected in lib.rs.
+ai-config = { path = "../../ai-config" }
+
+# a2r runtime + atom/val bridging live in the sibling auto-lang repo.
+a2r-std = { path = "../../../../auto-lang/crates/a2r-std" }
+auto-atom = { path = "../../../../auto-lang/crates/auto-atom" }
+auto-val = { path = "../../../../auto-lang/crates/auto-val" }
+
+reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+tokio = { version = "1", features = ["time"] }
+futures = "0.3"
+serde_json = "1"
+tracing = "0.1"

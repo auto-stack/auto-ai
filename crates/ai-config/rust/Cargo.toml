@@ -1,0 +1,27 @@
+[package]
+name = "ai-config-a2r"
+version = "0.1.0"
+edition = "2021"
+description = "ai-config — Auto-transpiled from .at (a2r→Rust). Shared AI config + canonical wire types."
+
+# Standalone assembly of transpiled files, kept out of the parent auto-ai
+# workspace. The authoritative source is the sibling src/*.at; this rust/ tree
+# is the a2r product. rust-ref/ holds the legacy hand-written Rust.
+[workspace]
+
+[lib]
+name = "ai_config_a2r"
+path = "src/lib.rs"
+
+[dependencies]
+# atom (.at) parsing + value bridging live in the sibling auto-lang repo.
+# ai-config uses `use.rust auto_atom` / `use.rust auto_val`, which a2r renders
+# as direct external-crate `use` statements (no shim needed).
+a2r-std = { path = "../../../../auto-lang/crates/a2r-std" }
+auto-atom = { path = "../../../../auto-lang/crates/auto-atom" }
+auto-val = { path = "../../../../auto-lang/crates/auto-val" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+dirs = "5"
