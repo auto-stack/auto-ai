@@ -9,25 +9,6 @@
 
 ## 🔴 待修复缺陷（有功能影响）
 
-### F1 — Tier clamp 不生效（跨仓库：auto-musk）
-
-| 字段 | 值 |
-|---|---|
-| 来源计划 | [004-agent-roles-profession-upgrade](plans/004-agent-roles-profession-upgrade.md)（活动） |
-| 所在仓库 | **auto-musk**（非本仓库） |
-| 位置 | `auto-musk/backend/crates/musk/src/lib.rs:118-143` |
-| 严重度 | 🔴 高（功能缺陷） |
-
-**问题**：Tier clamping 计算了 `clamped` 值却从未赋回——`:118-140` 发出警告，`:143` 仍用原始 role。
-声明的 `allowed_tiers` 实际被忽略，用户角色可突破 tier 限制。
-
-**修复方向**：在 auto-musk 的 `OwnedRole` 增加 `override_tier` 字段，clamp 时写入并生效。
-注意：plan 004 §5 错误地标此为 ✅，与代码矛盾——该 ✅ 需在修复后纠正。
-
-**触发条件**：任何依赖 allowed_tiers 强制 tier 边界的场景（如受限用户角色调用 max tier 模型）。
-
----
-
 ### F2 — Budget 从 HardStop 降级为 advisory，三方不一致
 
 | 字段 | 值 |
@@ -110,7 +91,10 @@ HardStop 枚举并更新设计文档为 advisory-only。当前是"代码已决�
 
 ## ✅ 已解决
 
-（暂无。问题解决后在此登记：编号 + 解决日期 + 简述 + 关联 commit。）
+- **F1 — Tier clamp 不生效**（2026-08-04 解决，auto-musk `c0434f8`）：`OwnedRole` 新增
+  `override_tier` 字段 + `with_override_tier()` builder，`model_tier()` 返回 override；
+  `build_agent_from_mode` 的 clamp 逻辑改为通过 builder 应用 `clamped`。此前计算了 `clamped`
+  却只用于日志导致 `allowed_tiers` 失效。附 3 单元测试。Plan 004 §5 错误的 ✅ 已纠正。
 
 ---
 
