@@ -68,10 +68,10 @@
   且 .at 改写可绕过。
 - **动作**：逐类修复 .at 源码（主要在 tier.at/wire.at/loader.at），重跑 retranspile 直到 0 错误。
 - **验证**：`retranspile.sh check` 输出 `error count: 0`；`cargo check`（rust/）0 错误。
-- **状态（2026-08-04）**：**部分进展，阻塞于 Phase A.2**。Phase A 的 A1/A2 已修复（auto-lang
-  `b16614d3`），ai-config 转译 **30→15 错误**。剩余 15 个是 4 个新 a2r 缺陷（A4-A7，见 Phase A.2），
-  待下个会话继续。已做的部分进展（tier.at return 改动、retranspile.sh JsonValue 注入）已提交，
-  rust/src/ 半成品产物未提交（待 A.2 完成后重新转译）。
+- **状态（2026-08-04）**：**部分进展，阻塞于 Phase A.3（借用/移动）**。Phase A 的 A1/A2/A.2 已修复
+  （auto-lang `6c9da95f`），ai-config 转译 **30→4 错误**。剩余 4 个是借用/移动语义（A.3，见 Phase A 节）。
+  已做的 .at 源码改动（tier.at return、validate.at match unwrap + join、loader.at .as_str()）+
+  retranspile.sh JsonValue 注入已提交，rust/src/ 半成品产物未提交（待 A.3 完成后重新转译）。
 
 ### 1.3 auto-ai-client a2r 转译
 
@@ -105,8 +105,8 @@
 - **动作**：`cd ../auto-lang && cargo build`；记录当前 auto-lang commit hash 到本计划文档。
 - **工作量**：S
 - **验证**：`auto --version` 可用；commit hash 记录在案。
-- **记录的 commit hash**：auto-lang `b16614d3`（2026-08-04，含 Phase A A1/A2 修复，重建 auto.exe 0.1.0）。
-  前次：`896db196`（Phase A 前）。后续每次重新转译前应确认 auto-lang 仍在该 commit 或记录新 commit。
+- **记录的 commit hash**：auto-lang `6c9da95f`（2026-08-04，含 Phase A A1/A2 + A.2 全部修复，重建 auto.exe 0.1.0）。
+  前次：`b16614d3`（A1/A2）、`896db196`（Phase A 前）。后续每次重新转译前应确认 auto-lang 仍在该 commit 或记录新 commit。
 
 ---
 
@@ -152,21 +152,37 @@
 
 ### A.2 剩余 a2r 缺陷（A1/A2 修复后新发现，ai-config 15 错误）
 
-> A1/A2 修复后（auto-lang `b16614d3`），ai-config 转译 30→15。剩余 15 个是 4 个新的 a2r 缺陷，
-> 作为 Phase A 后续（A.2），下个会话继续。同样在 auto-lang worktree 修复。
+> A1/A2 修复后（auto-lang `b16614d3`），ai-config 转译 30→15。A.2（A4-A7）修复后
+> （auto-lang `6c9da95f`），ai-config 转译 30→4。剩余 4 个是借用/移动语义（A.3），后续处理。
 
-| 编号 | 缺陷 | 错误数 | 表现 | 修复方向 |
-|---|---|---|---|---|
-| **A4** | builder `return self` 类型不匹配 | 4 | `&mut self` 方法里 `return self` 返回 owned 类型（wire.rs:156,160,164,168）。rust-ref builder 消费 self（`fn(self) -> Self`），a2r 生成 `&mut self` | a2r 对 `mut fn ... return self` 应生成消费 self 的签名，或 `std::mem::take` |
-| **A5** | String/&str 自动借引缺失 | 3 | `fn(&str)` 调用传入 owned String 没自动加 `&`/`.as_str()`（loader.rs:432, validate.rs:6,16） | a2r 在已知 `&str` 形参 + owned String 实参时自动借引 |
-| **A6** | `pub type`（struct）缺 Eq/Ord derive | 3 | ModelDefinition 用于 `max_by_key` 需 Ord，a2r 未生成 derive（tier.rs 相关） | a2r 对 `pub type X { fields }` 生成 Eq/Ord derive |
-| **A7** | `.to_string()` 误插入非 String 类型 | 1+ | `Some(t.to_string())`（t 是 f64，wire.rs:163）+ Option 链式访问(2) + Vec Display(1) | a2r 的 `.to_string()` 自动插入应对非 String 类型跳过 |
+| 编号 | 缺陷 | 错误数 | 状态 |
+|---|---|---|---|
+| **A4** | builder `return self` 类型不匹配 | 4 | ✅ 已修（fn_decl 检测 builder → mut self） |
+| **A5** | String/&str 自动借引缺失 | 3 | 🟡 部分修（get 规则加了，嵌套 Dot 未覆盖，.at 用 .as_str() 补） |
+| **A6** | `pub type`（struct）缺 Eq/Ord derive | 3 | ✅ 已修（fix_non_ord_derives 升级 pass + 传播） |
+| **A7a** | `.to_string()` 误插入非 String（作用域污染） | 1 | ✅ 已修（fix_some_str_to_string 函数作用域化） |
+| **A7b** | Option 链式访问（.get().field） | 2 | ✅ .at 改 match unwrap（validate.at） |
+| **A7c** | Vec Display | 1 | ✅ .at 改 .join(", ")（validate.at） |
+| **A8** | Err(FStr) Box 包装 | 1 | ✅ 已修（FStr 走 .into()） |
+
+### A.3 剩余：借用/移动语义（4 错误）
+
+> A.2 修复后剩余 4 个错误，都是 Auto（无借用概念）→ Rust 借用/移动转换的系统性 gap：
+
+- **E0507**（2 个）：`for m in p.models` —— `p` 是 `&ProviderConfig`（来自 Some(p) match），
+  `p.models` 是引用，a2r 生成 move 迭代。应为 `for m in &p.models`。
+- **E0382**（1 个）：`config.provider_names` 第二次 for 循环 move（第一次已消费）。应为 `&config.provider_names`。
+- 类似 1 个。
+
+**修复方向**：a2r 在 `for x in expr` 生成时，若 expr 是引用上下文（&self 字段、已 move 的变量），
+  应生成 `for x in &expr`。这是 a2r 对借用迭代器的系统性改进。或 .at 层用 `.iter()` 显式写。
 
 ### Phase A 进度与后续动作
 
-**已完成（A1/A2，auto-lang `b16614d3`）**：
-1. ✅ A1 + A2 在 worktree 修复，a2r 测试全绿。
-2. ✅ 合并到 auto-lang master，auto.exe 重建，worktree 清理。
+**已完成（A1/A2/A.2，auto-lang `6c9da95f`）**：
+1. ✅ A1 + A2 修复（tuple 变体构造 + match 尾表达式分号），合并 `b16614d3`。
+2. ✅ A.2 修复（A4 builder self / A6 derive / A7a 作用域 / A5 get / A8 Err FStr），合并 `6c9da95f`。
+3. ✅ auto.exe 重建，worktree 清理。ai-config 转译 30→4。
 3. ✅ 回 auto-ai 验证：ai-config 30→15 错误。
 
 **待办（A.2，下个会话）**：

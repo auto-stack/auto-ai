@@ -470,7 +470,7 @@ fn opt_models(node Node, key str) List<ModelDefinition> {
                         let id = obj_get_str(o, "id")
                         if id.is_empty() == false {
                             let name = obj_get_str(o, "name")
-                            let tier = parse_tier(obj_get_str(o, "tier"))
+                            let tier = parse_tier(obj_get_str(o, "tier").as_str())
                             out.push(ModelDefinition(id: id, name: name, tier: tier))
                         }
                     },
