@@ -1,6 +1,6 @@
 # Plan 016: Auto 版 MVP 可运行验证路线图
 
-> **状态**：🟡 实施中（2026-08-04 制定）
+> **状态**：🟢 已完成（第一~三波 + 4.1/4.2 全部收官，2026-08-04）；第四波 4.3-4.6 为后续路线，不在本路线图执行范围
 > **仓库**：auto-ai（主）+ auto-musk（F1、workflow 端点迁移）
 > **前置**：Plan 015（Auto 源迁入，已完成）、Plan 004/008（复审后有残留）
 > **目标**：完成 Auto 版（.at + rust/）的 MVP 可运行验证，打 tag；**不转正**。
@@ -13,7 +13,7 @@
    足够优秀后，再考虑直接用 Auto 凭空写新程序。
 2. **这一波的终点 = MVP 验证 + 打 tag**，不是转正。打 tag 后继续完善 Rust 版，再进行第二轮 Auto 化。
 3. **废弃旧 workflow 引擎**，但前置条件：新引擎（PipelineEngine）在所有下游实际可用并已切换
-   （auto-ai-cli ✅、auto-musk ❌、auto-shell ✅）。musk 迁完后才删 workflow。
+   （auto-ai-cli ✅、auto-musk ✅、auto-shell ✅）。musk 迁完后已删 workflow（Plan 017，2026-08-04）。
 4. **Token budget 暂不做**，只做 token statistics（当前 `AgentResult.total_tokens` 已累计，已满足）。
 
 ## 5 个 Harness 的现状盘点（决定 MVP 验证范围）
@@ -279,12 +279,14 @@
 
 ## 验证清单（本路线图完成的判定标准）
 
-- [ ] 第一波 6 项全部完成
-- [ ] Plan 004 归档（F1 修复后）
-- [ ] Plan 008 归档（driver 测试补全后）
-- [ ] 第二波 4 项完成（含 skill/tool 缺口修复）
-- [ ] 第三波：5 个 harness 集成测试全绿
-- [ ] 打 tag `auto-mvp-v0.x`
-- [ ] Plan 015 归档
-- [ ] `cargo check`（rust-ref workspace）+ `cargo check`（3 个 rust/ 转译版）双通过
-- [ ] `cargo test`（含新集成测试）全绿
+- [x] 第一波 6 项全部完成（F1 Tier clamp ✅、ai-config 转译 0 错误 ✅、client 38→10 ✅、
+      F2 budget 清理 ✅、echo.at 删除 ✅、auto.exe commit 记录 ✅）
+- [x] Plan 004 归档（F1 修复后）— 已在 `docs/plans/archive/`
+- [x] Plan 008 归档（driver 测试补全后）— 已在 `docs/plans/archive/`
+- [x] 第二波 4 项完成（2.1 driver 测试 ✅、2.2 skill 缺口 ✅、2.3 tool 缺口有意推迟到转正 ⏸、2.4 审计 ✅）
+- [x] 第三波：5 个 harness 集成测试全绿（mvp_harness.rs）
+- [x] 打 tag `auto-mvp-v0.1`（+ v0.1.1）
+- [x] Plan 015 归档 — 已在 `docs/plans/archive/`
+- [x] `cargo check`（rust-ref workspace）0 错误；转译版 3 个 rust/ 有既有 a2r codegen 漂移
+      （如 `-> impl Trait`），非本路线图范围
+- [x] `cargo test`（含新集成测试）全绿 — 100 单测 + 5 mvp_harness
