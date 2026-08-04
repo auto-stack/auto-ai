@@ -149,6 +149,13 @@ else
     echo "  [skip] lib.at failed to transpile — keeping existing lib.rs"
 fi
 
+# Plan 016 3.1: fix const SOUL type — comptime read_text produces a string
+# literal but a2r infers the const type as /* unknown */. Replace with &str.
+for f in "$RUST"/builtin_role_*.rs; do
+    [ -f "$f" ] || continue
+    sed -i 's#const SOUL: /\* unknown \*/#const SOUL: \&str#' "$f"
+done
+
 # Clean up .a2r.rs intermediates
 find "$SRC" -name "*.a2r.rs" -delete
 

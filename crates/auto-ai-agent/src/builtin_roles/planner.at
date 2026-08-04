@@ -7,7 +7,7 @@ use ai_config: ModelTier
 
 """ Soul marker (full soul loaded from resources in Rust original).
 """
-const SOUL = "Soul of the Planner"
+const SOUL = #{read_text("src/resources/souls/planner.md")}
 
 pub type Planner has Role {
     pub fn name() str { return "planner" }

@@ -9,7 +9,7 @@ use ai_config: ModelTier
 
 """ Soul marker (full soul loaded from resources in Rust original).
 """
-const SOUL = "Soul of the Tester"
+const SOUL = #{read_text("src/resources/souls/tester.md")}
 
 /// The Tester: produces tests, runs them, and reports failures precisely.
 pub type Tester has Role {

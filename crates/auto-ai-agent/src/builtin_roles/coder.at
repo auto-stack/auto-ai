@@ -5,9 +5,11 @@
 use role_def: Role
 use ai_config: ModelTier
 
-""" Soul marker (full soul loaded from resources in Rust original).
+""" Soul loaded at transpile time from resources (a2r comptime read_text,
+  equivalent to Rust's include_str! — embeds the file content as a string
+  constant). Path is relative to the retranspile.sh CWD (crates/auto-ai-agent/).
 """
-const SOUL = "Soul of the Coder"
+const SOUL = #{read_text("src/resources/souls/coder.md")}
 
 pub type Coder has Role {
     pub fn name() str { return "coder" }
