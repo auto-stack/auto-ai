@@ -1,6 +1,11 @@
 # Plan 015: auto-ai 三 crate 的 Auto 版源码迁入（从 auto-lang 迁回）
 
-> **状态**：✅ 已实施（2026-08-03：迁移内容落地 + 双版本编译通过 + 文档化）
+> **状态**：✅ MVP 验证完成，归档于 2026-08-04。
+> 迁移内容落地（双版本共存）+ Phase A 转译（ai-config 0 错误、agent 0 错误、client 38→9）+
+> MVP harness 验证 5 测试全绿（tool/skill/role/plan/spec）。打 tag `auto-mvp-v0.1`。
+> 剩余：client 9 个类型限制、转正（plan 017+）。
+
+> **状态（历史）**：✅ 已实施（2026-08-03：迁移内容落地 + 双版本编译通过 + 文档化）
 > **仓库**：auto-ai（本计划）
 > **来源**：auto-lang 仓库 `crates/{ai-config,auto-ai-agent,auto-ai-client}/` 的 Auto 移植版
 > （auto-lang commit `91443c10` 删除了这些目录，本计划把它们迁回 auto-ai 作为权威源）

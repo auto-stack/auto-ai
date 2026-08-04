@@ -1,6 +1,12 @@
 # Plan 008: 编排能力下沉到 auto-ai-agent
 
-> **状态**：实施计划，待执行
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> 所有阶段实施完毕（orchestration 模块：pipeline/driver/flow/handoff/budget）。
+> 复审发现的 F2（budget advisory）已文档清理、F4（handoff path 提取）已在代码修复，
+> driver 单元测试补全（6 个测试含 F4 回归，全绿）。3 项有意暂缓（D1 validator 已移除、
+> M7/M4/M6 各有触发条件）。详见 plan-016 的 2.1 节。
+
+> **状态（历史）**：实施计划，待执行
 > **日期**：2026-07-14
 > **仓库**：`auto-ai`（auto-ai-agent 新增 orchestration 模块）、`auto-musk`（relay 改为消费方）
 > **前置**：Plan 004–007
