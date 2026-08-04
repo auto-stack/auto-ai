@@ -68,14 +68,15 @@
   且 .at 改写可绕过。
 - **动作**：逐类修复 .at 源码（主要在 tier.at/wire.at/loader.at），重跑 retranspile 直到 0 错误。
 - **验证**：`retranspile.sh check` 输出 `error count: 0`；`cargo check`（rust/）0 错误。
-- **状态（2026-08-04）**：**部分进展，阻塞于 Phase A.3（借用/移动）**。Phase A 的 A1/A2/A.2 已修复
-  （auto-lang `6c9da95f`），ai-config 转译 **30→4 错误**。剩余 4 个是借用/移动语义（A.3，见 Phase A 节）。
-  已做的 .at 源码改动（tier.at return、validate.at match unwrap + join、loader.at .as_str()）+
-  retranspile.sh JsonValue 注入已提交，rust/src/ 半成品产物未提交（待 A.3 完成后重新转译）。
+- **状态（2026-08-04）**：✅ **转译通过（0 错误）**。Phase A 全部完成（auto-lang `09f22c16`），
+  ai-config 转译 **30→0 错误**，rust/src/ 产物已生成并入库。auto-ai-agent 同步重新转译也 0 错误。
+  .at 源码改动（tier.at return、validate.at 单遍迭代+as_str+clone、loader.at as_str）已提交。
 
 ### 1.3 auto-ai-client a2r 转译
 
-- **状态**：**阻塞于 Phase A**（与 1.2 同类 a2r 缺陷，待 a2r 修复后一并转译）。
+- **状态**：🟡 **首次转译 38 错误**（A.4 后续）。Phase A 修复后首次转译跑通，
+  但 client 的 async/HTTP 模式（complete/complete_stream/SSE）引入 38 个新 a2r 错误，
+  属于 A.4（async/HTTP 转 Rust 的专项缺陷）。rust/src/ 已生成（半成品，待 A.4 修复后完善）。
 
 ### 1.4 F2 — budget enum/文档清理（Plan 008 残留）
 
@@ -105,8 +106,9 @@
 - **动作**：`cd ../auto-lang && cargo build`；记录当前 auto-lang commit hash 到本计划文档。
 - **工作量**：S
 - **验证**：`auto --version` 可用；commit hash 记录在案。
-- **记录的 commit hash**：auto-lang `6c9da95f`（2026-08-04，含 Phase A A1/A2 + A.2 全部修复，重建 auto.exe 0.1.0）。
-  前次：`b16614d3`（A1/A2）、`896db196`（Phase A 前）。后续每次重新转译前应确认 auto-lang 仍在该 commit 或记录新 commit。
+- **记录的 commit hash**：auto-lang `09f22c16`（2026-08-04，含 Phase A A1/A2/A.2/A.3 全部修复，重建 auto.exe 0.1.0）。
+  前次：`6c9da95f`（A.2）、`b16614d3`（A1/A2）、`896db196`（Phase A 前）。
+  ai-config + auto-ai-agent 转译双双 0 错误。client 38 错误为 A.4 后续。
 
 ---
 
