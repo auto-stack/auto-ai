@@ -51,8 +51,22 @@
 
 - **仓库**：auto-ai（`crates/ai-config/`）
 - **现状**：`rust/src/` 为空；6 个 .at（lib/loader/provider/tier/validate/wire）已就位，纯同步无 async。
-- **动作**：`cd crates/ai-config && ./retranspile.sh check`，修到 0 错误（预期一次过，a2r-first 设计）。
-- **工作量**：S
+- **实际工作量**：**M（比预估的 S 大）**。2026-08-04 首次 `./retranspile.sh check` 产生 30 个错误，
+  分 5 类（均为 .at 源码写法或 a2r codegen 缺陷，非业务逻辑问题）：
+
+  | 类 | 数量 | 根因 | 修复方向 |
+  |---|---|---|---|
+  | `JsonValue` 未找到 | 4 | wire.at 缺 `serde_json::Value as JsonValue` 导入 | .at 加 `use.rust` |
+  | ContentBlock 变体字段访问 | 8 | tuple vs struct 变体访问方式 a2r 处理不一致 | .at 写法或 a2r |
+  | match 尾表达式返回 () | 6+ | a2r 对"match 作为函数返回值"codegen 缺陷（tier.rs 的 display_name/order/description） | .at 改用显式 `return`（对照 agent 已成功模式） |
+  | `Option<&ProviderConfig>` 无 models 字段 | 2 | loader.at 链式 Option 访问 a2r 处理错 | .at 或 a2r |
+  | ModelDefinition 缺 Eq/Ord derive | 3 | a2r 未生成 derive | .at 加 derive 注解 |
+  | Vec\<String\> 无 Display | 1 | a2r 缺 Display 桥接 | 手写或 a2r |
+
+  **对照证据**：已成功转译的 auto-ai-agent 里，返回值方法都用显式 `return`（如
+  `fn model_tier() { return ModelTier::Max; }`），不用 match 尾表达式——印证 a2r 该缺陷存在，
+  且 .at 改写可绕过。
+- **动作**：逐类修复 .at 源码（主要在 tier.at/wire.at/loader.at），重跑 retranspile 直到 0 错误。
 - **验证**：`retranspile.sh check` 输出 `error count: 0`；`cargo check`（rust/）0 错误。
 
 ### 1.3 auto-ai-client a2r 转译
@@ -91,7 +105,7 @@
 - **动作**：`cd ../auto-lang && cargo build`；记录当前 auto-lang commit hash 到本计划文档。
 - **工作量**：S
 - **验证**：`auto --version` 可用；commit hash 记录在案。
-- **记录的 commit hash**：（待填，执行时记录）
+- **记录的 commit hash**：auto-lang `896db196001999694f95efc9b5cce5204b212643`（2026-08-04 重建 auto.exe，version 0.1.0）。后续每次重新转译前应确认 auto-lang 仍在该 commit 或记录新 commit。
 
 ---
 
