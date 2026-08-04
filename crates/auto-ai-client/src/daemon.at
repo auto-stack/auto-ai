@@ -24,14 +24,14 @@ const DEFAULT_DAEMON_URL = "http://127.0.0.1:17654"
 
 /// The default daemon URL (mirrors the Rust `pub const DEFAULT_DAEMON_URL`).
 pub fn default_daemon_url() str {
-    return DEFAULT_DAEMON_URL
+    return DEFAULT_DAEMON_URL.to_string()
 }
 
 /// The daemon URL (overridable via `$AAID_URL`).
 pub fn daemon_url() str {
     let v = env.get("AAID_URL")
     if v.is_empty() {
-        return DEFAULT_DAEMON_URL
+        return DEFAULT_DAEMON_URL.to_string()
     }
     return v
 }
@@ -232,6 +232,6 @@ fn which(exe str) ?str {
 fn spawn_daemon(aaid_path str) bool {
     // process.spawn returns a pid (>0) on success, <=0 on failure. Auto's
     // spawn takes an arg list; the daemon reads its own config, so no args.
-    let pid = process.spawn([aaid_path])
+    let pid = process.spawn([aaid_path.to_string()])
     return pid > 0
 }

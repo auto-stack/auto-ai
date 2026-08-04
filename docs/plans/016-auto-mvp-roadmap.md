@@ -74,12 +74,13 @@
 
 ### 1.3 auto-ai-client a2r 转译
 
-- **状态**：🟡 **转译 38→28 错误**（A.4 进行中，类型推断 gap 剩余）。
-  A.4 转译器修复（auto-lang `7b9fec54`）：time Dot 派发(6)、get 字面量不加&(3)、
-  find 借用(1)、self.field 赋值 .to_string()(1) + .at 绕过（pub/to_string/path join）。
+- **状态**：🟡 **转译 38→10 错误**（A.4 大部分完成，10 个小类型匹配剩余）。
+  A.4 全程修复（auto-lang `7e2b9f67`）：time Dot/get 字面量/find 借用/self.field 赋值 +
+  循环变量跟踪/json.parse_opt/pathbuf type-aware/[]byte→Vec<u8>/split 借引/fs.exists 借引 +
+  .at 绕过（pub/to_string/path join/json 模块重写/bytes/spawn）。
   ai-config/agent 无回归（双双 0 错误）。
-  剩余 28 个是类型推断 gap：to_str(pathbuf regex)、str_as_str、Option get/is_null、
-  Pattern split、Vec/&[u8] 等，属更深 a2r 改进。rust/src/ 已生成（半成品）。
+  剩余 10 个是小类型匹配：sse.push(&str/i64→u32/json.get &Vec/self.buf move，
+  用 .at 绕过收尾。rust/src/ 已生成（半成品）。
 
 ### 1.4 F2 — budget enum/文档清理（Plan 008 残留）
 
@@ -109,9 +110,9 @@
 - **动作**：`cd ../auto-lang && cargo build`；记录当前 auto-lang commit hash 到本计划文档。
 - **工作量**：S
 - **验证**：`auto --version` 可用；commit hash 记录在案。
-- **记录的 commit hash**：auto-lang `7b9fec54`（2026-08-04，含 Phase A A1-A3 + A.4 修复，重建 auto.exe 0.1.0）。
-  前次：`09f22c16`（A.3，ai-config+agent 0 错误）、`6c9da95f`（A.2）、`b16614d3`（A1/A2）。
-  ai-config + agent 转译 0 错误，client 38→28（A.4 类型推断 gap 剩余）。
+- **记录的 commit hash**：auto-lang `7e2b9f67`（2026-08-04，含 Phase A A1-A4 全部修复，重建 auto.exe 0.1.0）。
+  前次：`7b9fec54`（A.4 首批）、`09f22c16`（A.3）、`6c9da95f`（A.2）、`b16614d3`（A1/A2）。
+  ai-config + agent 转译 0 错误，client 38→10（10 个小类型匹配 .at 收尾）。
 
 ---
 
