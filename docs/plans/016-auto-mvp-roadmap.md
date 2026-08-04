@@ -68,10 +68,10 @@
   且 .at 改写可绕过。
 - **动作**：逐类修复 .at 源码（主要在 tier.at/wire.at/loader.at），重跑 retranspile 直到 0 错误。
 - **验证**：`retranspile.sh check` 输出 `error count: 0`；`cargo check`（rust/）0 错误。
-- **状态（2026-08-04）**：**阻塞于 Phase A（a2r 生成器修复）**。已修 2 类（tier.at match→return 6 个、
-  retranspile.sh JsonValue 注入 4 个），30→24 错误。剩余 24 个本质是 3 个 a2r codegen 缺陷（见 Phase A），
-  在 .at 层绕过成本高且可能冲突 AutoVM。已做的部分进展（tier.at return 改动、retranspile.sh
-  JsonValue 注入）已提交，rust/src/ 半成品产物未提交。
+- **状态（2026-08-04）**：**部分进展，阻塞于 Phase A.2**。Phase A 的 A1/A2 已修复（auto-lang
+  `b16614d3`），ai-config 转译 **30→15 错误**。剩余 15 个是 4 个新 a2r 缺陷（A4-A7，见 Phase A.2），
+  待下个会话继续。已做的部分进展（tier.at return 改动、retranspile.sh JsonValue 注入）已提交，
+  rust/src/ 半成品产物未提交（待 A.2 完成后重新转译）。
 
 ### 1.3 auto-ai-client a2r 转译
 
@@ -105,43 +105,41 @@
 - **动作**：`cd ../auto-lang && cargo build`；记录当前 auto-lang commit hash 到本计划文档。
 - **工作量**：S
 - **验证**：`auto --version` 可用；commit hash 记录在案。
-- **记录的 commit hash**：auto-lang `896db196001999694f95efc9b5cce5204b212643`（2026-08-04 重建 auto.exe，version 0.1.0）。后续每次重新转译前应确认 auto-lang 仍在该 commit 或记录新 commit。
+- **记录的 commit hash**：auto-lang `b16614d3`（2026-08-04，含 Phase A A1/A2 修复，重建 auto.exe 0.1.0）。
+  前次：`896db196`（Phase A 前）。后续每次重新转译前应确认 auto-lang 仍在该 commit 或记录新 commit。
 
 ---
 
 ## Phase A：a2r 生成器缺陷修复（阻塞 1.2/1.3 转译）
 
 > **前置发现**（2026-08-04 ai-config 转译实测）：剩余 24 个转译错误本质是 a2r 生成器的
-> 3 个 codegen 缺陷。在 .at 层绕过成本高且可能与 AutoVM bug 冲突，应到 auto-lang 仓库
+> codegen 缺陷。在 .at 层绕过成本高且可能与 AutoVM bug 冲突，应到 auto-lang 仓库
 > 用 worktree 方式修复 a2r 生成器根因。
 > **仓库**：auto-lang（`crates/auto-lang/src/trans/rust.rs`）
 > **工作方式**：在 auto-lang 建 worktree 修复 + 测试，合并后回 auto-ai 重跑转译。
 > **完成后解锁**：1.2（ai-config）+ 1.3（auto-ai-client）转译可推进。
+>
+> **进度（2026-08-04）**：A1 + A2 已修复并合并到 auto-lang master（`b16614d3`），
+> auto.exe 已重建。ai-config 转译 **30→15 错误**（消除 15 个）。
+> 剩余 15 个是 4 个新发现的 a2r 缺陷（见 A.2 节），作为 Phase A 后续。
+> auto-lang worktree 已清理。
 
-### A1. tuple 变体构造生成了 struct 语法
+### A1. tuple 变体构造生成了 struct 语法 ✅ 已修复
 
-- **现象**：.at 定义 `Text(str)`（tuple 变体），构造 `ContentBlock.Text(t)`（位置参数），
-  a2r 生成 `ContentBlock::Text(String)` 定义但构造却生成 `ContentBlock::Text { text: t }`
-  （struct 语法）→ E0559 "no field named" + E0769 "tuple variant written as struct variant"。
-- **影响**：ai-config wire.at 的 ContentBlock 8 个错误。
-- **根因位置**：`trans/rust.rs` 枚举变体构造 codegen（:150-155 缓存区分 tuple/struct，
-  但构造路径未正确使用缓存判断）。
-- **修复方向**：a2r 构造 `Enum.Variant(args)` 时，查缓存判断该变体是 tuple 还是 struct；
-  tuple 用 `Enum::Variant(args)`，struct 用 `Enum::Variant { field: val }`。
-- **工作量**：M（需深入 a2r 构造 codegen + 加测试）
-- **注意**：wire.at 用 tuple 变体是为绕过 AutoVM 的 struct 解构 bug（plan 013 B3）。
-  修好 a2r 后，可考虑把 wire.at 改回 struct 变体（与 rust-ref 一致），前提是 AutoVM 解构
-  bug 也已修或 .at 改用字段访问而非解构。
+- **状态**：✅ 已修复（auto-lang `b16614d3`）。ai-config 消除 14 个错误。
+- **根因**：`seed_known_struct_enum_variants()`（rust.rs:11288）硬编码 struct 变体 seed
+  （如 `ContentBlock::Text { text }`），真实 .at 声明 tuple 变体后 seed 从未被清除，
+  构造代码先查 `enum_struct_variants` 致 seed 优先 → tuple 变体用 struct 语法 + 臆造字段名。
+- **修复**：`fn enum_decl()` 处理每个变体前先 `enum_struct_variants.remove(item_key)`，
+  让真实声明成为权威。单点修复，同时纠正两个构造点（:5705, :6520）。
 
-### A2. match 尾表达式多加分号
+### A2. match 尾表达式多加分号 ✅ 已修复
 
-- **现象**：.at 的 `fn f() T { is x { ... } }`（match 尾表达式），a2r 生成
-  `fn f() -> T { match x { ... }; }`（match 后多了分号）→ 函数返回 `()` 而非 match 值。
-- **影响**：曾致 ai-config tier.rs 6 个错误（已用 .at 改 `return` 绕过，但根因未除）。
-- **根因位置**：`trans/rust.rs` match/`is` 表达式作为函数尾表达式的 codegen。
-- **修复方向**：当 `is` 表达式是函数体的最后一条语句时，不加尾分号。
-- **工作量**：S-M
-- **注**：tier.at 已改用显式 `return` 绕过，此修复为根因清除（让其他 .at 不必绕过）。
+- **状态**：✅ 已修复（auto-lang `b16614d3`）。ai-config 消除 1 个（tier.at 的 parse_name）；
+  tier.at 其余已用显式 `return` 绕过（保留，显式 return 是好风格）。
+- **根因**：`fn stmt()` 对 `Stmt::Is` 无条件加分号（:7670）。`fn body()` 尾表达式路径里
+  `Stmt::Is` 走 `_ =>` 调 `self.stmt()`，继承分号，致 match 尾表达式变语句，函数返回 ()。
+- **修复**：`fn body()` 的尾表达式 match 显式处理 `Stmt::Is`，调 `is_stmt()` 但不加分号。
 
 ### A3. 不支持 type 别名 / `use.rust ... as ...`
 
@@ -152,11 +150,29 @@
 - **工作量**：M（涉及 Auto 解析器 + a2r codegen）
 - **注**：ai-config 已用 retranspile.sh 注入绕过，优先级低于 A1/A2。可作为 a2r 长期改进。
 
-### Phase A 完成后的动作
+### A.2 剩余 a2r 缺陷（A1/A2 修复后新发现，ai-config 15 错误）
 
-1. 在 auto-lang worktree 修复 A1（必做）+ A2（必做）+ A3（可选），a2r 测试全绿。
-2. 合并到 auto-lang master，重建 auto.exe，记录新 commit hash。
-3. 回 auto-ai，重跑 1.2（ai-config）+ 1.3（auto-ai-client）转译，目标各 0 错误。
+> A1/A2 修复后（auto-lang `b16614d3`），ai-config 转译 30→15。剩余 15 个是 4 个新的 a2r 缺陷，
+> 作为 Phase A 后续（A.2），下个会话继续。同样在 auto-lang worktree 修复。
+
+| 编号 | 缺陷 | 错误数 | 表现 | 修复方向 |
+|---|---|---|---|---|
+| **A4** | builder `return self` 类型不匹配 | 4 | `&mut self` 方法里 `return self` 返回 owned 类型（wire.rs:156,160,164,168）。rust-ref builder 消费 self（`fn(self) -> Self`），a2r 生成 `&mut self` | a2r 对 `mut fn ... return self` 应生成消费 self 的签名，或 `std::mem::take` |
+| **A5** | String/&str 自动借引缺失 | 3 | `fn(&str)` 调用传入 owned String 没自动加 `&`/`.as_str()`（loader.rs:432, validate.rs:6,16） | a2r 在已知 `&str` 形参 + owned String 实参时自动借引 |
+| **A6** | `pub type`（struct）缺 Eq/Ord derive | 3 | ModelDefinition 用于 `max_by_key` 需 Ord，a2r 未生成 derive（tier.rs 相关） | a2r 对 `pub type X { fields }` 生成 Eq/Ord derive |
+| **A7** | `.to_string()` 误插入非 String 类型 | 1+ | `Some(t.to_string())`（t 是 f64，wire.rs:163）+ Option 链式访问(2) + Vec Display(1) | a2r 的 `.to_string()` 自动插入应对非 String 类型跳过 |
+
+### Phase A 进度与后续动作
+
+**已完成（A1/A2，auto-lang `b16614d3`）**：
+1. ✅ A1 + A2 在 worktree 修复，a2r 测试全绿。
+2. ✅ 合并到 auto-lang master，auto.exe 重建，worktree 清理。
+3. ✅ 回 auto-ai 验证：ai-config 30→15 错误。
+
+**待办（A.2，下个会话）**：
+1. 在 auto-lang 建 worktree 修复 A4/A5/A6/A7，a2r 测试全绿。
+2. 合并到 master，重建 auto.exe。
+3. 回 auto-ai 重跑 1.2（ai-config）+ 1.3（auto-ai-client），目标各 0 错误。
 4. 更新本计划 1.2/1.3 状态。
 
 ---
