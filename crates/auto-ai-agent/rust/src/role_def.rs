@@ -4,7 +4,7 @@ use crate::ai_config::{ModelTier};
 pub trait Role {
     fn name(&self) -> String;
     fn system_prompt(&self) -> String;
-    fn model_tier(&self) -> ModelTier{
+    fn model_tier(&self) -> impl ModelTier{
         return ModelTier::Mid;
     }    fn model(&self) -> String{
         return "".to_string();

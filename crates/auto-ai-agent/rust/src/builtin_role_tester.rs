@@ -86,7 +86,7 @@ impl Role for Tester {
     fn system_prompt(&self) -> String {
         return SOUL.to_string();
     }
-    fn model_tier(&self) -> ModelTier {
+    fn model_tier(&self) -> impl ModelTier {
         return ModelTier::Mid;
     }
     fn temperature(&self) -> f64 {

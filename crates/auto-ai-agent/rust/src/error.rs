@@ -3,9 +3,8 @@
 use crate::auto_ai_client::{ClientError};
 /// Error types for the agent layer.
 /// 
-/// [AgentError] is the top-level error returned by [agent.Agent] and
-/// [workflow]. It wraps the Layer-2 client error, tool-execution errors, and
-/// configuration/parse errors.
+/// [AgentError] is the top-level error returned by [agent.Agent]. It wraps the
+/// Layer-2 client error, tool-execution errors, and configuration/parse errors.
 /// 
 /// Auto port of crates/auto-ai-agent/src/error.rs (auto-ai v0.4.0).
 /// Errors raised while executing a tool.

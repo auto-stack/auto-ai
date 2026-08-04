@@ -20,22 +20,22 @@ pub fn builtin_names() -> Vec<String> {
     return vec!["assistant".to_string(), "coder".to_string(), "architect".to_string(), "tester".to_string(), "reviewer".to_string(), "documenter".to_string(), "translator".to_string(), "runner".to_string(), "advisor".to_string(), "planner".to_string(), "gofer".to_string(), "super-advisor".to_string(), "super-coder".to_string(), "super-tester".to_string()];
 }
 
-pub fn load_builtin(name: &str) -> Option<Box<dyn Role>> {
+pub fn load_builtin(name: &str) -> Option<impl Role> {
     match name {
-        "assistant" => return Some(Box::new(Assistant {})),
-        "coder" => return Some(Box::new(Coder {})),
-        "architect" => return Some(Box::new(Architect {})),
-        "tester" => return Some(Box::new(Tester {})),
-        "reviewer" => return Some(Box::new(Reviewer {})),
-        "documenter" => return Some(Box::new(Documenter {})),
-        "translator" => return Some(Box::new(Translator {})),
-        "runner" => return Some(Box::new(Runner {})),
-        "advisor" => return Some(Box::new(Advisor {})),
-        "planner" => return Some(Box::new(Planner {})),
-        "gofer" => return Some(Box::new(Gofer {})),
-        "super-advisor" => return Some(Box::new(Superadvisor {})),
-        "super-coder" => return Some(Box::new(Supercoder {})),
-        "super-tester" => return Some(Box::new(Supertester {})),
+        "assistant" => return Some(Assistant {}),
+        "coder" => return Some(Coder {}),
+        "architect" => return Some(Architect {}),
+        "tester" => return Some(Tester {}),
+        "reviewer" => return Some(Reviewer {}),
+        "documenter" => return Some(Documenter {}),
+        "translator" => return Some(Translator {}),
+        "runner" => return Some(Runner {}),
+        "advisor" => return Some(Advisor {}),
+        "planner" => return Some(Planner {}),
+        "gofer" => return Some(Gofer {}),
+        "super-advisor" => return Some(Superadvisor {}),
+        "super-coder" => return Some(Supercoder {}),
+        "super-tester" => return Some(Supertester {}),
         _ => return None,
     }
 }

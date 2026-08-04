@@ -1,8 +1,8 @@
 //! Error types for the agent layer.
 //!
-//! [`AgentError`] is the top-level error returned by [`crate::Agent`] and
-//! [`crate::workflow`]. It wraps the Layer-2 client error, tool-execution
-//! errors, and configuration/parse errors from later phases.
+//! [`AgentError`] is the top-level error returned by [`crate::Agent`]. It wraps
+//! the Layer-2 client error, tool-execution errors, and configuration/parse
+//! errors from later phases.
 
 use thiserror::Error;
 

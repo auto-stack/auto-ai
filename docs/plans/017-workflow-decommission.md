@@ -1,6 +1,6 @@
 # Plan 017: workflow 引擎退役 — 最后一个消费者迁移 + 物理删除
 
-> **状态**：🟡 实施中 — **Phase 1 完成**（2026-08-04），Phase 2 待执行
+> **状态**：🟢 已完成 — **Phase 1 + Phase 2 全部完成**（2026-08-04）
 > **仓库**：auto-ai（Phase 2 主）+ auto-musk（Phase 1 协作）
 > **前置**：Plan 016 第一/二波已完成（auto-ai-cli ✅、auto-shell ✅、auto-musk relay ✅ 均已切到
 > PipelineEngine）；auto-musk 的 `relay/` 模块已基于 `auto_ai_agent::orchestration`。
@@ -93,34 +93,37 @@ auto-musk 的遗留 `/api/workflow/*` 端点。该迁移跨仓库 + 有概念映
 - [x] 1.7 验证：`cargo build` 0 错误；`cargo test` 197 单测 + 全部 parity 套件全绿；
       新增端到端测试 `workflow_run_end_to_end_runs_four_steps`（4 步全跑）+ 流式事件序列测试
 
-## Phase 2 — auto-ai：物理删除 workflow（016 4.2，S）
+## Phase 2 — auto-ai：物理删除 workflow（016 4.2，S）✅ 2026-08-04
 
-> 前置：Phase 1 完成后（musk 不再 import 该 API）。
+> 前置：Phase 1 完成后（musk 不再 import 该 API）— 已核查：auto-musk `src/lib.rs` 无 `pub mod workflow`、
+> `src/auto_generated/` 无 workflow 残留、`src/` 编译路径零 `auto_ai_agent::workflow` 符号引用。
 
-- [ ] 2.1 删 `rust-ref/src/workflow.rs`、`rust-ref/src/workflow_validator.rs`
-- [ ] 2.2 `rust-ref/src/lib.rs` 移除 `pub mod workflow;`（L31-32）、`pub mod workflow_validator;`（L33）、
-      `pub use workflow::{...}`（L48-50）
-- [ ] 2.3 `rust-ref/src/error.rs:4` 的 doc 链接 `[crate::workflow]` 修正
-- [ ] 2.4 删 `.at` 源：`src/workflow.at`、`src/workflow_validator.at`；重跑 `./retranspile.sh`
-      → `rust/src/workflow.rs`（空 stub）与 `rust/src/workflow_validator.rs` 消失、`rust/src/lib.rs` 的
-      `pub mod workflow;` 声明自动消失
-- [ ] 2.5 `docs/workflow-migration.md`：删除 Rollback 一节（`auto_ai_agent::workflow::Workflow` 不再存在），
-      并把表头 "Workflow (deprecated)" 更新为"Workflow (removed)"
-- [ ] 2.6 修订 `docs/plans/016-auto-mvp-roadmap.md`：4.1/4.2 标记 ✅ 完成；4.6 行"转正（plan 017）"
-      → "转正（plan 018）"
-- [ ] 2.7 全仓核查：`grep -rn "workflow" --include="*.rs"`（引擎符号 `Workflow::`/`parse_at_workflow` 归零，
-      docs/archive 历史保留），`cargo check`（workspace）+ `cargo check`（rust/ 转译版）+ `cargo test` 全绿
+- [x] 2.1 删 `rust-ref/src/workflow.rs`、`rust-ref/src/workflow_validator.rs`
+- [x] 2.2 `rust-ref/src/lib.rs` 移除 `pub mod workflow;`、`pub mod workflow_validator;`、
+      `pub use workflow::{...}`（连同 `#[deprecated]` 标注）；crate 顶层 doc 去掉 workflow 段
+- [x] 2.3 `rust-ref/src/error.rs:3-5` 的 doc 链接 `[crate::workflow]` 修正（改为只提 `crate::Agent`）；
+      `src/error.at` 同步修正（驱动转译产物 `rust/src/error.rs`）
+- [x] 2.4 删 `.at` 源：`src/workflow.at`、`src/workflow_validator.at`；重跑 `./retranspile.sh`
+      → `rust/src/workflow.rs` 与 `rust/src/workflow_validator.rs` 消失、`rust/src/lib.rs` 的
+      `pub mod workflow;` 声明自动消失（`read_pub_mods()` 按 `rust/src/*.rs` 现存文件生成）
+- [x] 2.5 `docs/workflow-migration.md`：删除 Rollback 一节，改为"engine 已删除、无回退路径"说明；
+      表头 "Workflow (deprecated)" → "Workflow (removed)"；顶部导语加 Plan 017 Phase 2 标注
+- [x] 2.6 修订 `docs/plans/016-auto-mvp-roadmap.md`：4.2 标记 ✅ 完成（4.1 已标、4.6 已是 plan 018）
+- [x] 2.7 全仓核查：`grep` 引擎符号（`Workflow::`/`parse_at_workflow`/`workflow_validator::`）**全仓归零**；
+      `cargo check --workspace`（0 错误）+ `cargo check -p auto-ai-agent`（0 错误，2 个无关 unused-import 警告）
+      + `cargo test -p auto-ai-agent`（100 单测 + 5 mvp_harness 全绿）。转译版 `rust/` 错误 67→64
+      （减少 3 个：workflow 自身转译错误消失；剩余 64 个是既有的 a2r codegen 漂移 `impl Trait`，与本计划无关）
 
 ---
 
 ## 验证清单（完成判定）
 
-- [ ] auto-musk：`cargo check`/`cargo test` 通过；3 个 workflow 端点行为与旧版等价（含 SSE 事件）
-- [ ] auto-musk：frontend relay 页运行 feature-dev 全流程输出正常
-- [ ] auto-ai：workspace `cargo check -p auto-ai-agent` 无 error（含 deprecation 归零）
-- [ ] auto-ai：`cargo test`（mvp_harness 等）全绿
-- [ ] auto-ai：`cargo check`（`crates/auto-ai-agent/rust/` 转译版）错误数不因本计划增加
-- [ ] 符号级确认：`auto_ai_agent` 导出的 `Workflow`/`WorkflowEvent`/`parse_at_workflow` 等已不存在
+- [x] auto-musk：`cargo check`/`cargo test` 通过；3 个 workflow 端点行为与旧版等价（含 SSE 事件）— Phase 1
+- [x] auto-musk：frontend relay 页运行 feature-dev 全流程输出正常 — Phase 1
+- [x] auto-ai：workspace `cargo check -p auto-ai-agent` 无 error（含 deprecation 归零）
+- [x] auto-ai：`cargo test`（mvp_harness 等）全绿（100 单测 + 5 集成）
+- [x] auto-ai：`cargo check`（`crates/auto-ai-agent/rust/` 转译版）错误数不因本计划增加（67→64，减少 3）
+- [x] 符号级确认：`auto_ai_agent` 导出的 `Workflow`/`WorkflowEvent`/`parse_at_workflow` 等已不存在
 
 ## 风险与注意
 

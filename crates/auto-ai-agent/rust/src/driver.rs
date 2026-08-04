@@ -111,7 +111,7 @@ fn noop_stream_handler(_ev: StreamEvent) {
 }
 
 pub trait AgentFactory {
-    fn build_agent(&self, role_id: &str, handoff: Option<HandoffDocument>) -> Result<Agent, String>;
+    fn build_agent(&self, role_id: &str, handoff: Option<HandoffDocument>) -> Result<impl Agent, String>;
 }
 
 
@@ -150,7 +150,7 @@ impl PipelineDriver {
     pub fn with_gate_handler(&mut self, handler: fn(String) -> GateDecision) {
         self.gate_handler = Some(handler);
     }
-    pub async fn drive(&mut self, task_msg: &str, mut on_event: fn(PipelineEvent) -> ()) -> Result<(), AgentError> {
+    pub async fn drive(&mut self, task_msg: &str, mut on_event: fn(PipelineEvent) -> ()) -> Result<impl None, impl AgentError> {
         self.on_event = on_event;
         let mut last_handoff: Option<HandoffDocument> = None;
         loop {
@@ -213,13 +213,13 @@ impl PipelineDriver {
             },
         }
     }
-    pub fn engine(&self) -> PipelineEngine {
+    pub fn engine(&self) -> impl PipelineEngine {
         return self.engine.clone();
     }
-    pub fn engine_mut(&self) -> PipelineEngine {
+    pub fn engine_mut(&self) -> impl PipelineEngine {
         return self.engine.clone();
     }
-    pub async fn drive_step(&mut self, task_msg: &str, step_id: &str, role_id: &str, last_handoff: Option<HandoffDocument>) -> Result<HandoffDocument, AgentError> {
+    pub async fn drive_step(&mut self, task_msg: &str, step_id: &str, role_id: &str, last_handoff: Option<HandoffDocument>) -> Result<impl HandoffDocument, impl AgentError> {
         let started = PipelineEvent::StepStarted(step_id.to_string(), role_id.to_string());
         (self.on_event)(started);
 
@@ -252,7 +252,7 @@ impl PipelineDriver {
             Err(e) => return Err(e),
         }
     }
-    pub async fn resolve_gate_auto(&mut self, step_id: &str) -> Result<(), AgentError> {
+    pub async fn resolve_gate_auto(&mut self, step_id: &str) -> Result<impl None, impl AgentError> {
         let decision = match self.gate_handler { Some(handler) => handler(step_id.to_string()), None => GateDecision::Approve, };
         let gate_result = self.engine.resolve_gate(decision);
         match gate_result {
@@ -260,7 +260,7 @@ impl PipelineDriver {
             _ => return Ok(()),
         }
     }
-    pub fn build_handoff(&self, role_id: &str, result: AgentResult, content: &str) -> HandoffDocument {
+    pub fn build_handoff(&self, role_id: &str, result: AgentResult, content: &str) -> impl HandoffDocument {
 
 
         let mut h = HandoffDocument::new(role_id, "");
@@ -284,7 +284,7 @@ impl PipelineDriver {
         h.token_usage.step_tokens = result.total_tokens;
         return h;
     }
-    pub async fn handle_after_submit(&mut self, next_result: AdvanceResult) -> Result<(), AgentError> {
+    pub async fn handle_after_submit(&mut self, next_result: AdvanceResult) -> Result<impl None, impl AgentError> {
         match next_result {
             AdvanceResult::Completed => {
                 (self.on_event)(PipelineEvent::Completed);

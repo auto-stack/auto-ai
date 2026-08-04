@@ -1,14 +1,16 @@
 # Migration Guide: Workflow → PipelineEngine
 
-> **Plan 008** — The `Workflow` engine (`.at`-based DAG) is deprecated in favor of
-> `orchestration::PipelineEngine`, which is a strict superset. This guide explains
-> how to migrate existing workflow code.
+> **Plan 008 / Plan 017** — The `Workflow` engine (`.at`-based DAG) has been
+> **removed** (Plan 017 Phase 2, 2026-08-04) in favor of
+> `orchestration::PipelineEngine`, which is a strict superset. The last consumer
+> (auto-musk's `/api/workflow/*` endpoints) was migrated in Plan 017 Phase 1.
+> This guide explains how to migrate any remaining workflow code.
 
 ---
 
 ## Why migrate?
 
-| Feature | Workflow (deprecated) | PipelineEngine |
+| Feature | Workflow (removed) | PipelineEngine |
 |---|---|---|
 | Step ordering | DAG topo-sort (Kahn) | Linear + Loop routing |
 | Human gate | `Gate::Human` — logged only | `GateType::Human` — **enforced** (pauses engine) |
@@ -153,14 +155,10 @@ pauses when the cap is reached.
 
 ---
 
-## Rollback
+## The old engine has been removed
 
-If you need to keep using the old `Workflow` engine, it remains available:
-
-```rust
-#[allow(deprecated)]
-use auto_ai_agent::workflow::Workflow;
-```
-
-However, new code should prefer `PipelineEngine`. The old types will be
-removed in a future major version.
+The `auto_ai_agent::workflow` module (and `workflow_validator`, including the
+`Workflow` / `WorkflowStep` / `WorkflowContext` / `WorkflowResult` /
+`WorkflowEvent` types and `parse_at_workflow`) was physically deleted in
+Plan 017 Phase 2 (2026-08-04). There is no rollback path — any code still
+referencing these symbols must migrate to `PipelineEngine` as shown above.

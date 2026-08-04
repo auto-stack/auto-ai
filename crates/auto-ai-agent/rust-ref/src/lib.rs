@@ -1,17 +1,15 @@
 //! AutoOS AI agent layer (Layer 3 + 4 of the AI stack).
 //!
 //! Built on top of [`auto_ai_client`] (Layer 2 — provider/daemon plumbing and
-//! native tool-calling). This crate adds three things:
+//! native tool-calling). This crate adds two things:
 //!
 //! - **[`agent`]** — an autonomous ReAct loop that drives an LLM to a goal by
 //!   interleaving reasoning and tool calls.
 //! - **built-in **builtin_roles**** — a library of
 //!   "Roles" (system prompts + model/temperature/tool policy), ported
 //!   from AutoForge's relay souls.
-//! - **[`workflow`]** — a multi-step orchestration engine that chains Agents
-//!   together, with a [`relay`] target abstraction.
 //!
-//! `.at` (Atom) config files for custom Professions/Workflows are parsed with
+//! `.at` (Atom) config files for custom Professions are parsed with
 //! the shared [`auto_atom`] parser (see [`config`] in later phases).
 //!
 //! Design doc: `docs/auto-ai-agent-design.md`.
@@ -28,9 +26,6 @@ pub mod roles;
 pub mod skill;
 pub mod tool;
 pub mod validate;
-#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
-pub mod workflow;
-pub mod workflow_validator;
 
 pub use agent::{Agent, AgentResult, Client, StreamEvent, ToolCallRecord};
 pub use config::{load_role, parse_at_role, parse_tier_field, serialize_at_role, ConfigRole, RoleConfig};
@@ -45,9 +40,6 @@ pub use roles::{RoleDetail, RoleRegistry, RoleSummary};
 pub use skill::{Skill, SkillRegistry, SkillTool};
 pub use tool::{Tool, ToolRegistry};
 pub use validate::{load_client_config, validate_role_model};
-#[deprecated(note = "use orchestration::PipelineEngine instead (Plan 008)")]
-#[allow(deprecated)]
-pub use workflow::{parse_at_workflow, Workflow, WorkflowContext, WorkflowEvent, WorkflowResult, WorkflowStep};
 pub use orchestration::{
     BudgetAction, BudgetStrategy, BudgetTracker, TokenBudget,
     ContextPointers, Decision, HandoffDocument, Question, TokenUsage, WorkProduct,

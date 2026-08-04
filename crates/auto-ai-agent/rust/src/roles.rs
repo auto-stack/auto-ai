@@ -4,6 +4,7 @@
 #[allow(unused_imports)]
 use a2r_std;
 use a2r_std::*;
+use crate::error::AgentError;
 
 use std::path::PathBuf;
 use std::fs;
@@ -36,7 +37,7 @@ use crate::config::{RoleConfig, parse_at_role, serialize_at_role, load_role, con
 /// fs support, drop the use.rust lines and swap the bridged calls.
 /// Directory holding user roles: ~/.config/autoos/roles/. None when the home
 /// directory can't be determined.
-fn roles_dir() -> Option<PathBuf> {
+fn roles_dir() -> Option<impl PathBuf> {
     match dirs::home_dir() {
         Some(h) => return Some(h.join(".config/autoos/roles")),
         None => return None,
@@ -45,7 +46,7 @@ fn roles_dir() -> Option<PathBuf> {
 
 /// A role's .at file path: <roles_dir>/<name>.at. None when home is
 /// unknown.
-fn role_at_path(name: &str) -> Option<PathBuf> {
+fn role_at_path(name: &str) -> Option<impl PathBuf> {
     match roles_dir() {
         Some(d) => return Some(d.join(format!("{}.at", name))),
         None => return None,
@@ -53,7 +54,7 @@ fn role_at_path(name: &str) -> Option<PathBuf> {
 }
 
 /// A role's sidecar Soul markdown path: <roles_dir>/<name>.soul.md.
-fn role_soul_path(name: &str) -> Option<PathBuf> {
+fn role_soul_path(name: &str) -> Option<impl PathBuf> {
     match roles_dir() {
         Some(d) => return Some(d.join(format!("{}.soul.md", name))),
         None => return None,
@@ -96,7 +97,7 @@ pub struct RoleDetail {
 /// UI/API can present built-ins uniformly alongside user roles.
 /// 
 /// (Ports the private profession_to_config helper from roles.rs.)
-fn profession_to_config(prof: Box<dyn Role>) -> RoleConfig {
+fn profession_to_config(prof: Box<dyn Role>) -> impl RoleConfig {
     let t = prof.allowed_tools();
     let at = prof.allowed_tiers();
     let s = prof.skills();
@@ -205,7 +206,7 @@ impl RoleRegistry {
 
         return RoleRegistry { roles: roles, names: names };
     }
-    pub fn resolve_role(&self, name: &str) -> Option<Arc<Box<dyn Role>>> {
+    pub fn resolve_role(&self, name: &str) -> Option<Arc<impl Role>> {
 
 
 
@@ -279,7 +280,7 @@ impl RoleRegistry {
         }
         return None;
     }
-    pub fn save(&self, mut name: &str, cfg: RoleConfig, soul_md: Option<String>) -> Result<(), AgentError> {
+    pub fn save(&self, mut name: &str, cfg: RoleConfig, soul_md: Option<String>) -> Result<impl None, impl AgentError> {
         if load_builtin(name).is_some() {
             return Err(AgentError::Config(format!("cannot overwrite built-in role '{}'; choose a different name or use inherit", name)));
         }
@@ -329,7 +330,7 @@ impl RoleRegistry {
             },
         }
     }
-    pub fn delete(&self, name: &str) -> Result<(), AgentError> {
+    pub fn delete(&self, name: &str) -> Result<impl None, impl AgentError> {
         if load_builtin(name).is_some() {
             return Err(AgentError::Config(format!("cannot delete built-in role '{}'", name)));
         }

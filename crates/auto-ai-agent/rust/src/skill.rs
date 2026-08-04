@@ -4,6 +4,7 @@
 #[allow(unused_imports)]
 use a2r_std;
 use a2r_std::*;
+use crate::error::ToolError;
 
 use std::path::PathBuf;
 use std::fs;
@@ -368,10 +369,10 @@ impl Tool for SkillTool {
     fn description(&self) -> String {
         return self.description_cache.clone();
     }
-    fn parameters(&self) -> JsonValue {
+    fn parameters(&self) -> impl JsonValue {
         return self.parameters_cache.clone();
     }
-    async fn execute(&self, args: JsonValue) -> Result<String, ToolError> {
+    async fn execute(&self, args: JsonValue) -> Result<String, impl ToolError> {
         let v = args.get("skill_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         if v.is_empty() {
             return Err(ToolError::Args("missing 'skill_name' argument".to_string()));
@@ -441,7 +442,7 @@ fn build_description(registry: SkillRegistry) -> String {
 /// Build the parameters JSON schema, embedding the registry's skill names as
 /// the `skill_name` enum. Uses json.parse over a stringified schema (the
 /// Auto VM's generic json.encode[T] is unreliable — plan 013 gotcha B4).
-fn build_parameters(registry: SkillRegistry) -> JsonValue {
+fn build_parameters(registry: SkillRegistry) -> impl JsonValue {
     let mut enum_parts: Vec<String> = vec![];
     for n in registry.names() {
         enum_parts.push(format!("\"{}\"", n));
