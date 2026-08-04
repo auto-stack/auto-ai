@@ -40,7 +40,7 @@ fn roles_dir() -> Option<PathBuf> {
     match dirs::home_dir() {
         Some(h) => return Some(h.join(".config/autoos/roles")),
         None => return None,
-    };
+    }
 }
 
 /// A role's .at file path: <roles_dir>/<name>.at. None when home is
@@ -49,7 +49,7 @@ fn role_at_path(name: &str) -> Option<PathBuf> {
     match roles_dir() {
         Some(d) => return Some(d.join(format!("{}.at", name))),
         None => return None,
-    };
+    }
 }
 
 /// A role's sidecar Soul markdown path: <roles_dir>/<name>.soul.md.
@@ -57,12 +57,12 @@ fn role_soul_path(name: &str) -> Option<PathBuf> {
     match roles_dir() {
         Some(d) => return Some(d.join(format!("{}.soul.md", name))),
         None => return None,
-    };
+    }
 }
 
 /// A flat summary of a role, for listing. Built-in roles are flagged so the UI
 /// can render them read-only.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RoleSummary {
     pub name: String,
     pub description: String,
@@ -241,7 +241,7 @@ impl RoleRegistry {
         match load_builtin(name) {
             Some(b) => return Some(Arc::new(b)),
             None => return None,
-        };
+        }
     }
     pub fn list(&self) -> Vec<RoleSummary> {
         let mut user_list: Vec<RoleSummary> = vec![];
@@ -327,7 +327,7 @@ impl RoleRegistry {
                 }
                 return Ok(());
             },
-        };
+        }
     }
     pub fn delete(&self, name: &str) -> Result<(), AgentError> {
         if load_builtin(name).is_some() {
@@ -358,7 +358,7 @@ impl RoleRegistry {
                 }
                 return Ok(());
             },
-        };
+        }
     }
 }
 
@@ -406,7 +406,7 @@ fn load_one_builtin(name: &str) -> Option<RoleDetail> {
             return Some(detail);
         },
         None => return None,
-    };
+    }
 }
 
 /// True when path's extension is exactly "at".
@@ -415,7 +415,7 @@ fn is_at_file(path: PathBuf) -> bool {
     match ext {
         Some(e) => return e == "at",
         None => return false,
-    };
+    }
 }
 
 /// Read + parse one user .at role file, returning its RoleDetail (or None).
@@ -463,7 +463,7 @@ fn load_user_at_file(path: PathBuf) -> Option<RoleDetail> {
             let detail = RoleDetail { summary: summary, soul: soul.markdown.to_string(), soul_from_file: soul.from_file, config: cfg };
             return Some(detail);
         },
-    };
+    }
 }
 
 /// The result of resolving a role's Soul markdown.
@@ -503,5 +503,5 @@ fn resolve_soul(cfg: RoleConfig, at_path: PathBuf) -> SoulResolve {
             };
         },
         None => return SoulResolve { markdown: cfg.system_prompt.unwrap_or("".to_string()).to_string(), from_file: false },
-    };
+    }
 }

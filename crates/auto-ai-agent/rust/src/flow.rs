@@ -85,7 +85,7 @@ pub enum GateDecision {
 
 
 /// A single step in a flow.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FlowStep {
     pub id: String,
     pub role_id: String,

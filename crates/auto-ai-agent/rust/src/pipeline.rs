@@ -149,7 +149,7 @@ impl PipelineStatus {
             PipelineStatus::Completed => return "completed".to_string(),
             PipelineStatus::Failed(_e) => return "failed".to_string(),
             PipelineStatus::Paused(_at) => return "paused".to_string(),
-        };
+        }
     }
 }
 
@@ -279,7 +279,7 @@ impl PipelineEngine {
                 self.status = PipelineStatus::Failed("submit_handoff called but no step is running".to_string());
                 return self.advance();
             },
-        };
+        }
     }
     pub fn resolve_gate(&mut self, decision: GateDecision) -> AdvanceResult {
         match self.pending_gate.clone() {
@@ -300,7 +300,7 @@ impl PipelineEngine {
                     },
                 };
             },
-        };
+        }
     }
     pub fn pause(&mut self) {
         match self.status.clone() {
@@ -354,7 +354,7 @@ impl PipelineEngine {
         match self.gate_feedback.get(step_id) {
             Some(v) => return v.clone(),
             None => return vec![],
-        };
+        }
     }
     pub fn running_context(&self) -> Option<RunningContext> {
         match self.status.clone() {
@@ -363,13 +363,13 @@ impl PipelineEngine {
                 return Some(RunningContext { step_id: sid.to_string(), role_id: rid.to_string(), exit: step.exit, started_at: started });
             },
             _ => return None,
-        };
+        }
     }
     pub fn loop_count(&self, step_id: &str) -> u32 {
         match self.loop_counters.get(step_id) {
             Some(n) => return n.clone(),
             None => return 0 as u32,
-        };
+        }
     }
     pub fn set_loop_counter(&mut self, step_id: &str, n: u32) {
         if self.loop_counters.contains_key(step_id) == false {
@@ -441,7 +441,7 @@ impl PipelineEngine {
                 let sid = self.flow.steps[(self.current_step) as usize].clone().id;
                 return AdvanceResult::Paused(sid, reason);
             },
-        };
+        }
     }
     pub fn resolve_next_step(&mut self, step_id: &str, exit: ExitRouting) -> NextStep {
         match exit {
@@ -462,7 +462,7 @@ impl PipelineEngine {
                     None => return NextStep::Error(format!("Loop target '{}' not found", target_step_id)),
                 };
             },
-        };
+        }
     }
 }
 
@@ -546,7 +546,7 @@ fn is_paused(status: PipelineStatus) -> bool {
     match status {
         PipelineStatus::Paused(_at) => return true,
         _ => return false,
-    };
+    }
 }
 
 /// True when the status is the Failed variant.
@@ -554,7 +554,7 @@ fn is_failed(status: PipelineStatus) -> bool {
     match status {
         PipelineStatus::Failed(_e) => return true,
         _ => return false,
-    };
+    }
 }
 
 /// The role id the handoff target SHOULD be, given the exit routing.
@@ -574,5 +574,5 @@ fn expected_target_role(eng: PipelineEngine, exit: ExitRouting) -> Option<String
                 None => return None,
             };
         },
-    };
+    }
 }

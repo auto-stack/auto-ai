@@ -73,7 +73,7 @@ impl Validator {
             },
             Validator::All(validators) => return check_all(validators.clone(), output),
             Validator::Any(validators) => return check_any(validators.clone(), output),
-        };
+        }
     }
 }
 

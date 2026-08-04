@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Cost/performance tier for model selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTier {
     /// Ultra-cheap: high-volume, low-complexity tasks (Haiku, GPT-4o-mini).

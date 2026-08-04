@@ -157,7 +157,7 @@ impl Role for ConfigRole {
             Some(extra) => return format!("{}
 {}", prompt, extra),
             None => return prompt,
-        };
+        }
     }
     fn model_tier(&self) -> ModelTier {
         return self.cfg.model_tier.clone().unwrap_or(self.base_tier());
@@ -178,7 +178,7 @@ impl Role for ConfigRole {
         match self.cfg.memory_limit.clone() {
             Some(n) => return Some(n as u32),
             None => return Some(20),
-        };
+        }
     }
     fn skills(&self) -> Vec<String> {
         return self.cfg.skills.clone().unwrap_or_default();
@@ -252,7 +252,7 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
             };
         },
         Err(e) => return Err(AgentError::Config(format!("failed to parse role .at: {}", e))),
-    };
+    }
 }
 
 pub fn load_role(content: &str) -> Result<RoleConfig, AgentError> {
@@ -290,7 +290,7 @@ pub fn load_role(content: &str) -> Result<RoleConfig, AgentError> {
             return Ok(result);
         },
         Err(e) => return Err(e),
-    };
+    }
 }
 
 pub fn parse_tier_field(s: &str) -> Option<ModelTier> {
@@ -344,7 +344,7 @@ fn opt_str(node: auto_val::Node, key: &str) -> Option<String> {
         Value::String(s) => return Some(s.to_string()),
         Value::Nil => return None,
         _ => return Some(val.to_astr().to_string()),
-    };
+    }
 }
 
 fn opt_float(node: auto_val::Node, key: &str) -> Option<f64> {
@@ -354,7 +354,7 @@ fn opt_float(node: auto_val::Node, key: &str) -> Option<f64> {
         Value::Double(d) => return Some(d),
         Value::Int(i) => return (Some(i as f64)),
         _ => return None,
-    };
+    }
 }
 
 fn opt_uint(node: auto_val::Node, key: &str) -> Option<u32> {
@@ -368,7 +368,7 @@ fn opt_uint(node: auto_val::Node, key: &str) -> Option<u32> {
             return None;
         },
         _ => return None,
-    };
+    }
 }
 
 fn opt_str_list(node: auto_val::Node, key: &str) -> Option<Vec<String>> {
@@ -385,7 +385,7 @@ fn opt_str_list(node: auto_val::Node, key: &str) -> Option<Vec<String>> {
             return Some(out);
         },
         _ => return None,
-    };
+    }
 }
 
 fn parse_tier(s: &str) -> Option<ModelTier> {

@@ -206,7 +206,7 @@ impl PipelineDriver {
                     Err(e) => return DriveOutcome::Fail(e),
                 };
             },
-        };
+        }
     }
     pub fn engine(&self) -> PipelineEngine {
         return self.engine.clone();
@@ -245,7 +245,7 @@ impl PipelineDriver {
         match self.handle_after_submit(submitted).await {
             Ok(_) => return Ok(handoff_doc),
             Err(e) => return Err(e),
-        };
+        }
     }
     pub async fn resolve_gate_auto(&mut self, step_id: &str) -> Result<(), AgentError> {
         let decision = match self.gate_handler { Some(handler) => handler(step_id.to_string()), None => GateDecision::Approve, };
@@ -253,7 +253,7 @@ impl PipelineDriver {
         match gate_result {
             AdvanceResult::Failed(_e) => return Err(AgentError::Config("gate resolution failed".to_string())),
             _ => return Ok(()),
-        };
+        }
     }
     pub fn build_handoff(&self, role_id: &str, result: AgentResult, content: &str) -> HandoffDocument {
 
@@ -305,7 +305,7 @@ impl PipelineDriver {
                 };
             },
             AdvanceResult::ExecuteStep(_sid, _rid) => return Ok(()),
-        };
+        }
     }
 }
 
@@ -366,7 +366,7 @@ fn build_step_input(task_msg: &str, last_handoff: Option<HandoffDocument>) -> St
     match last_handoff {
         Some(h) => return h.render(),
         None => return task_msg.to_string(),
-    };
+    }
 }
 
 /// If the engine's budget check reports a Warning, emit a BudgetWarning event.

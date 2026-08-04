@@ -37,5 +37,5 @@ pub fn load_builtin(name: &str) -> Option<Box<dyn Role>> {
         "super-coder" => return Some(Box::new(Supercoder {})),
         "super-tester" => return Some(Box::new(Supertester {})),
         _ => return None,
-    };
+    }
 }

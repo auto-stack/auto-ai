@@ -5,7 +5,7 @@ use crate::ai_config::{ModelTier};
 const SOUL: &str = "Soul of the Tester";
 
 /// The Tester: produces tests, runs them, and reports failures precisely.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tester {}
 
 impl Role for Tester {

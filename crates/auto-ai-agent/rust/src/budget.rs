@@ -8,7 +8,11 @@ use std::collections::HashMap;
 /// 
 /// Auto port of crates/auto-ai-agent/src/orchestration/budget.rs (auto-ai v0.4.0).
 /// How to react when a budget threshold is crossed.
-/// Halt step and request human decision.
+/// 
+/// **Deprecated in spirit (Plan 016 F2)**: the pipeline treats all budget
+/// signals as advisory — it never reads this enum to decide behavior. Kept for
+/// API compatibility. HardStop does NOT actually halt a run.
+/// Intended: halt step and request human decision. **Actual**: unused (advisory).
 /// Switch to a cheaper model for the remainder.
 /// Aggressively compress context.
 /// Skip non-critical work.
@@ -166,7 +170,7 @@ impl BudgetTracker {
         match self.per_step.get(step) {
             Some(n) => return n.clone(),
             None => return 0 as u32,
-        };
+        }
     }
 }
 

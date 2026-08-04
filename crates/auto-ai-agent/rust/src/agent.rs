@@ -394,7 +394,7 @@ fn is_cancelled(cancel: Option<Arc<AtomicBool>>) -> bool {
             let v = c.load(Ordering::SeqCst);
             return v;
         },
-    };
+    }
 }
 
 /// Increment the recurrence count for a (tool, args) key, returning the new
@@ -421,7 +421,7 @@ fn record_usage(result: AgentResult, resp: CompletionResponse) -> u32 {
     match resp.usage {
         Some(u) => return result.total_tokens + u.total_tokens(),
         None => return result.total_tokens,
-    };
+    }
 }
 
 /// A Cancelled event carrying a snapshot of the current result.

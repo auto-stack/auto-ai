@@ -69,7 +69,7 @@ impl TokenUsage {
 /// `to` is a reserved keyword in Auto (range syntax). This is a faithful
 /// behavioral port; the rename is the only API divergence (plan 013 gotcha,
 /// same workaround as TierRouting.routes -> entries).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HandoffDocument {
     pub from: String,
     pub target: String,
@@ -177,7 +177,7 @@ fn format_size(lines: Option<u32>) -> String {
     match lines {
         Some(n) => return format!(" ({} lines)", n),
         None => return "".to_string(),
-    };
+    }
 }
 
 /// True when any of the context pointer lists is non-empty.
