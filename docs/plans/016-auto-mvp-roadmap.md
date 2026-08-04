@@ -74,9 +74,12 @@
 
 ### 1.3 auto-ai-client a2r 转译
 
-- **状态**：🟡 **首次转译 38 错误**（A.4 后续）。Phase A 修复后首次转译跑通，
-  但 client 的 async/HTTP 模式（complete/complete_stream/SSE）引入 38 个新 a2r 错误，
-  属于 A.4（async/HTTP 转 Rust 的专项缺陷）。rust/src/ 已生成（半成品，待 A.4 修复后完善）。
+- **状态**：🟡 **转译 38→28 错误**（A.4 进行中，类型推断 gap 剩余）。
+  A.4 转译器修复（auto-lang `7b9fec54`）：time Dot 派发(6)、get 字面量不加&(3)、
+  find 借用(1)、self.field 赋值 .to_string()(1) + .at 绕过（pub/to_string/path join）。
+  ai-config/agent 无回归（双双 0 错误）。
+  剩余 28 个是类型推断 gap：to_str(pathbuf regex)、str_as_str、Option get/is_null、
+  Pattern split、Vec/&[u8] 等，属更深 a2r 改进。rust/src/ 已生成（半成品）。
 
 ### 1.4 F2 — budget enum/文档清理（Plan 008 残留）
 
@@ -106,9 +109,9 @@
 - **动作**：`cd ../auto-lang && cargo build`；记录当前 auto-lang commit hash 到本计划文档。
 - **工作量**：S
 - **验证**：`auto --version` 可用；commit hash 记录在案。
-- **记录的 commit hash**：auto-lang `09f22c16`（2026-08-04，含 Phase A A1/A2/A.2/A.3 全部修复，重建 auto.exe 0.1.0）。
-  前次：`6c9da95f`（A.2）、`b16614d3`（A1/A2）、`896db196`（Phase A 前）。
-  ai-config + auto-ai-agent 转译双双 0 错误。client 38 错误为 A.4 后续。
+- **记录的 commit hash**：auto-lang `7b9fec54`（2026-08-04，含 Phase A A1-A3 + A.4 修复，重建 auto.exe 0.1.0）。
+  前次：`09f22c16`（A.3，ai-config+agent 0 错误）、`6c9da95f`（A.2）、`b16614d3`（A1/A2）。
+  ai-config + agent 转译 0 错误，client 38→28（A.4 类型推断 gap 剩余）。
 
 ---
 

@@ -135,9 +135,9 @@ fn find_aaid_binary() ?str {
 
     // 2. PATH lookup.
     let exe_name = if is_windows() {
-        "aaid.exe"
+        "aaid.exe".to_string()
     } else {
-        "aaid"
+        "aaid".to_string()
     }
     is which(exe_name) {
         Some(p) -> return Some(p),
@@ -205,7 +205,7 @@ fn which(exe str) ?str {
         if dir.is_empty() {
             // skip empty entries
         } else {
-            let candidate = path.join(dir, exe)
+            let candidate = f"${dir}/${exe}"
             if fs.exists(candidate) {
                 // On Windows, also try with .exe if not already suffixed.
                 if candidate.ends_with(".exe") == false && is_windows() {

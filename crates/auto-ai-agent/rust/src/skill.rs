@@ -372,7 +372,7 @@ impl Tool for SkillTool {
         return self.parameters_cache.clone();
     }
     async fn execute(&self, args: JsonValue) -> Result<String, ToolError> {
-        let v = args.get(&"skill_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let v = args.get("skill_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         if v.is_empty() {
             return Err(ToolError::Args("missing 'skill_name' argument".to_string()));
         }

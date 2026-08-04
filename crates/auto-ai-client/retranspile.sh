@@ -22,6 +22,9 @@ read_shims() {
 pub mod ai_config {
     pub use ::ai_config::*;
 }
+// JsonValue alias (a2r can't express `serde_json::Value as JsonValue`; the .at
+// sources use the short name JsonValue which resolves here via ai_config).
+pub type JsonValue = serde_json::Value;
 
 SHIMS
 }
@@ -78,6 +81,10 @@ if [ -f "$SRC/lib.a2r.rs" ]; then
         /^#!\[allow/ { print; print ""; print shims; print pubmods; next }
         { print }
     ' "$SRC/lib.a2r.rs" > "$RUST/lib.rs"
+    # Remove `pub use crate::daemon;` — it conflicts with the injected
+    # `pub mod daemon;` (E0255 name defined multiple times). The pub mod is
+    # sufficient to export the daemon module.
+    sed -i '/^pub use crate::daemon;$/d' "$RUST/lib.rs"
     echo "  [lib] assembled lib.rs (crate-root transpile + shims + pub mod decls)"
 else
     echo "  [skip] lib.at failed to transpile — keeping existing lib.rs"

@@ -7,7 +7,7 @@
 /// Auto port of crates/auto-ai-client/src/error.rs (auto-ai v0.4.0).
 
 /// Unified error type for the (thin) daemon client.
-enum ClientError {
+pub enum ClientError {
     /// The daemon could not be discovered or started.
     DaemonUnavailable
     /// The HTTP request to the daemon failed (network/transport).
