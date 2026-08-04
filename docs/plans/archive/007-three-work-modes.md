@@ -1,6 +1,8 @@
 # 007 — 三种工作模式实现计划
 
-> **状态**：实施计划，待执行。
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> 6 个 super-roles 全部实现为 builtin roles（advisor/planner/gofer/super_advisor/super_coder/
+> super_tester）+ musk flows。零遗留（见 docs/reviews/002）。
 > **日期**：2026-07-10
 > **影响**：auto-ai-agent（Part A）+ auto-musk（Part B）
 

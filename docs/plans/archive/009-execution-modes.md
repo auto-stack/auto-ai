@@ -1,6 +1,9 @@
 # Plan 009: auto-ai-cli 三种执行模式 + 自动路由
 
-> **状态**：已批准，实施中
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> 4 个 phase 全部实现。dead code（final_summary_clone）已于 2026-08-04 验证删除；
+> D2（spawn_pipeline 用 base roles）已在代码注释中标注为 demo 简化（有意偏差）。
+> --mode superpowers/relay 用 legacy 文本 REPL 而非 TUI，是有意设计取舍。
 > **仓库**：`auto-ai`（auto-ai-cli + auto-ai-agent）
 > **前置**：Plan 007（auto-ai-cli）、Plan 008（orchestration 下沉）
 

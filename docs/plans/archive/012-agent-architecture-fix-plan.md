@@ -1,5 +1,10 @@
 # 修复计划 012：agent 核心架构 + 配置层（review 003）
 
+> **状态**：✅ 已完成（阶段 1/2/3/5），归档于 2026-08-04。
+> 必做阶段全部实施并提交（30d3b6b…194710c）：truncate_tool_result、auth_required、
+> pairing-aware memory trim、run_inner 统一、StreamEvent::Warning、register_skill_tool 等。
+> 任务 2.4（M3 loop 连续计数）经文档自纠明确为暂缓（当前保守计数更安全）；阶段 4 为选做。
+
 - 日期：2026-07-20
 - 对应审查：`docs/reviews/003-architecture-review.md`
 - 范围：review 003 的严重（S1–S5）+ 中等（M1–M10）+ 精选轻微项

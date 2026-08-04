@@ -1,6 +1,9 @@
 # Plan 001: auto-ai-agent 实施（Agent 引擎 + Profession 库 + Workflow）
 
-> **Status**: Draft
+> **状态**：✅ 已完成（核心阶段 1-5），归档于 2026-08-04。
+> **废弃说明**：阶段 6（Forge 迁移）未实施——auto-forge 不使用 auto-ai-agent；
+> 阶段 7（Ash F3）已由 auto-shell Plan 027 取代。详见文末「实施状态复核」。
+> **Status**: Draft (历史标记，实际核心已完成)
 > **设计文档**: [docs/auto-ai-agent-design.md](../docs/auto-ai-agent-design.md)
 > **仓库**: `auto-ai`
 > **依赖**: `auto-ai-client`(Layer 2,已完成)

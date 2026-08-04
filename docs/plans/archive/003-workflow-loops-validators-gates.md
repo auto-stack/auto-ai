@@ -1,6 +1,11 @@
 # 003 — Workflow 扩展:循环 / 验证 / 门控(C,优先级中)
 
-> **状态**:设计 + 实施计划。
+> **状态**：✅ 已完成（后被取代），归档于 2026-08-04。
+> 4 项能力（loops/validators/tool-guard/gates）均已实现于 workflow.rs，但整个 workflow 模块
+> 已 `#[deprecated]`，被 Plan 008 的 `orchestration::PipelineEngine` 取代。生产路径走 PipelineEngine。
+> 残留小项（run_with_progress 跳过 validator 等）均在废弃代码中，低优先级。
+
+> **状态（历史）**:设计 + 实施计划。
 > **仓库**:auto-ai(`crates/auto-ai-agent/src/workflow.rs` + 配置解析)。
 > **优先级**:3️⃣ 中 —— 给 `.at` Workflow 补 auto-forge Flow 的核心能力,作为 Skill 驱动的可靠性兜底。
 > **触发时机**:当 Skill 驱动的三步曲跑多了、发现"模型不够可靠遵守流程"时,做这个。

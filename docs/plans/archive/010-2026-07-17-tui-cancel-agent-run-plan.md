@@ -1,5 +1,10 @@
 # TUI 取消 Agent 运行 — 实现计划
 
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> 方案 A（Esc 软中断 + 检查点取消）全部实现：StreamEvent::Cancelled、cancel: Arc<AtomicBool>、
+> 3 个取消检查点、TUI Esc 处理与 ⊘ 已取消 提示。方案 C（SSE 立即中断）的前向引用已由
+> Plan 011 阶段 2 闭环。
+
 日期：2026-07-17
 关联设计：`docs/designs/2026-07-17-tui-cancel-agent-run-design.md`
 范围：方案 A（Esc 软中断，检查点取消）

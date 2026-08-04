@@ -1,6 +1,8 @@
 # Plan 007: auto-ai-cli — 交互式 Agent Demo
 
-> **状态**：实施计划，待执行
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> auto-ai-cli crate 已实现（main/tools/chat_model/tui/session/spawn_pipeline），含 TUI。
+> 仅余测试缺口（0 tests，低优先级）。2026-08-04 已验证 CLI 可正常启动运行。
 > **仓库**：`auto-ai`（新 crate `auto-ai-cli`）
 > **前置**：Plan 005（Assistant role）、Plan 006（streaming tool_calls）
 > **定位**：auto-ai 的"hello world agent"——clone 后 `cargo run` 即可体验 agent 能力，不需要 auto-musk 或任何前端。

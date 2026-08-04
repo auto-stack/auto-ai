@@ -1,6 +1,12 @@
 # 006 — 流式 tool_calls 支持（消除 run_stream 双重请求）
 
-> **状态**：实施计划，待执行。
+> **状态**：✅ 已完成（经 2026-08-04 代码验证），归档于 2026-08-04。
+> 4 个任务全部达成：provider 解析 tool_calls（daemon/provider/openai.rs:142）、
+> done 事件携带 tool_calls（daemon/server.rs:300）、client 从 done 收集 tool_calls
+> （client/lib.rs:124，注释标注 Plan 006）、agent 单次流式请求（agent.rs:372 注释
+> "Single streaming request"）。原 double-request 已消除。
+
+> **状态（历史）**：实施计划，待执行。
 > **日期**：2026-07-09
 > **影响**：auto-ai-daemon + auto-ai-client + auto-ai-agent（三层）
 > **前置**：无

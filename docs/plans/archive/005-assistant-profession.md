@@ -1,6 +1,11 @@
 # Plan 005: 添加 Assistant Profession
 
-> **Status**: Draft — 待实施
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> 核心全部实现（assistant.md soul、assistant.rs Role impl、load_builtin 注册、identity 测试、
+> musk superpowers 切换）。有意偏差（allowed_tools 返回空集改为 mode 层控制、max_turns 12→20、
+> 新增 handoff_to）已在文末「实施状态复核」记录。
+
+> **Status** (历史): Draft — 待实施
 > **仓库**: `auto-ai`(crates/auto-ai-agent)
 > **背景**: auto-ai-agent 有 7 个内置 profession(coder/architect/tester/reviewer/documenter/translator/runner),缺少 `assistant`——用户对话的第一入口角色。musk 及未来所有 app 的 chat 默认应使用 assistant,而非 coder。
 

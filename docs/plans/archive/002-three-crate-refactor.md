@@ -1,5 +1,9 @@
 # 三库职责重构 Implementation Plan
 
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> 核心全部落地（见 docs/reviews/002-historical-plans-review.md）：daemon 成为唯一 LLM 出口、
+> client 瘦化为纯 HTTP 客户端、新建 ai-config crate 统一配置。仅余少量过时注释（cosmetic）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 LLM API 通信能力从 `auto-ai-client` 迁到 `auto-ai-daemon`,client 瘦化为纯 daemon HTTP 客户端,并抽出公共 `ai-config` crate 统一三处配置。

@@ -1,5 +1,10 @@
 # 修复计划 011：auto-ai-daemon + auto-ai-client
 
+> **状态**：✅ 已完成（阶段 1-4），归档于 2026-08-04。
+> 4 阶段全部实施并提交（ab61027…d3a76eb）：连接池超时、CancellationToken、LlmError 结构化、
+> fallback 候选迭代。3 项有意暂缓（M7 SseParser 共享 crate、M4 services Drop、M6 client 异步化），
+> 各有明确触发条件，记录在文末。
+
 - 日期：2026-07-20
 - 对应审查：`docs/reviews/001-daemon-client-review.md`
 - 目标：修复审查发现的 3 个严重问题 + 9 个中等问题，按 ROI 分阶段执行
