@@ -265,7 +265,7 @@ impl PipelineDriver {
 
         let mut h = HandoffDocument::new(role_id, "");
         h.summary = truncate_chars(content, 200);
-        for tc in result.tool_calls {
+        for tc in &result.tool_calls {
             if tc.tool == "write_file" {
                 let p = extract_path(tc.args);
                 

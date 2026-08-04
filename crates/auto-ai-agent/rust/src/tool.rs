@@ -104,7 +104,7 @@ impl ToolRegistry {
             }
             return out;
         }
-        for n in filter {
+        for n in &filter {
             match self.tools.get(n.as_str()) {
                 Some(t) => out.push(t.clone()),
                 None => {},

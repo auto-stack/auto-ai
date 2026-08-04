@@ -120,7 +120,7 @@ impl RoleConfig {
                     Some(existing) => combined = existing,
                     None => {},
                 };
-                for t in extra {
+                for t in &extra {
                     combined.push(t.clone());
                 }
                 r.tools = Some(combined);
@@ -376,7 +376,7 @@ fn opt_str_list(node: auto_val::Node, key: &str) -> Option<Vec<String>> {
     match val {
         Value::Array(arr) => {
             let mut out: Vec<String> = vec![];
-            for el in arr.values {
+            for el in &arr.values {
                 match el {
                     Value::Str(s) => out.push(s.to_string()),
                     _ => {},

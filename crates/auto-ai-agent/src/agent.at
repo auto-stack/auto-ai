@@ -55,6 +55,7 @@ use auto_ai_client: ClientError, CompletionRequest, CompletionResponse, Message
 use error: AgentError
 use memory: Memory
 use role_def: Role
+use skill: SkillTool
 use ai_config: ModelTier
 use tool: ToolRegistry, tool_to_definition, Tool
 use wire: ContentBlock, JsonValue, ToolDefinition
@@ -225,6 +226,15 @@ ext Agent {
     /// Register a tool the agent may call (takes a spec value).
     pub mut fn register_shared(tool Arc<Tool>) void {
         self.tools.register_shared(tool)
+    }
+
+    /// Cache the available-skills block from a SkillTool so build_system_prompt
+    /// injects the skill directory into the system prompt. The caller must also
+    /// register the SkillTool via register_shared (Auto can't Arc-wrap a spec
+    /// value in one call; rust-ref's register_skill_tool does both, but a2r
+    /// needs the Arc construction split). (Plan 016 2.2.)
+    pub mut fn register_skill_tool(tool SkillTool) void {
+        self.skills_block = Some(tool.available_skills_block())
     }
 
     // NOTE: `tools()`, `role()`, `client()` accessors from the Rust original

@@ -73,7 +73,7 @@ impl SkillRegistry {
         let mut names: Vec<String> = vec![];
         match fs::read_dir(dir) {
             Ok(entries) => {
-                for entry in entries {
+                for entry in &entries {
                     
 
                     match entry {
@@ -406,7 +406,7 @@ impl SkillTool {
         out = format!("{}{}", out, "You have access to skills — reusable techniques you load on demand.\n");
         out = format!("{}{}", out, "To use a skill, call the `skill` tool with its name; its content will be\n");
         out = format!("{}{}", out, "returned to you, and you follow its instructions directly.\n\n");
-        for pair in descs {
+        for pair in &descs {
             out = format!("{}{}", out, format!("- {}: {}
 ", pair.0.clone(), pair.1.clone()));
         }
@@ -431,7 +431,7 @@ fn build_description(registry: SkillRegistry) -> String {
         return "Load a skill's instructions. No skills are currently configured.".to_string();
     }
     let mut out: String = "Load a skill's instructions by name. Call this whenever a skill's trigger applies.\n\nAvailable skills:\n".to_string();
-    for pair in descs {
+    for pair in &descs {
         out = format!("{}{}", out, format!("- {}: {}
 ", pair.0.clone(), pair.1.clone()));
     }

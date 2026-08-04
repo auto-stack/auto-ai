@@ -10,6 +10,7 @@ use crate::auto_ai_client::{ClientError, CompletionRequest, CompletionResponse, 
 use crate::error::{AgentError};
 use crate::memory::{Memory};
 use crate::role_def::{Role};
+use crate::skill::{SkillTool};
 use crate::ai_config::{ModelTier};
 use crate::tool::{ToolRegistry, tool_to_definition, Tool};
 use crate::wire::{ContentBlock, JsonValue, ToolDefinition};
@@ -186,6 +187,9 @@ impl Agent {
     pub fn register_shared(&mut self, tool: Arc<Box<dyn Tool>>) {
         self.tools.register_shared(tool);
     }
+    pub fn register_skill_tool(&mut self, tool: SkillTool) {
+        self.skills_block = Some(tool.available_skills_block());
+    }
     pub fn memory_messages(&self) -> Vec<Message> {
         return self.memory.messages();
     }
@@ -336,7 +340,7 @@ impl Agent {
         let allowed = self.role.allowed_tools();
         let visible = self.tools.filter(allowed);
         let mut tool_defs: Vec<ToolDefinition> = vec![];
-        for t in visible {
+        for t in &visible {
             tool_defs.push(tool_to_definition(t));
         }
 
@@ -362,6 +366,11 @@ impl Agent {
 /// Inject project context (e.g. the contents of .musk.md or CLAUDE.md) into
 /// the system prompt. Prepended before the role's soul.
 /// Register a tool the agent may call (takes a spec value).
+/// Cache the available-skills block from a SkillTool so build_system_prompt
+/// injects the skill directory into the system prompt. The caller must also
+/// register the SkillTool via register_shared (Auto can't Arc-wrap a spec
+/// value in one call; rust-ref's register_skill_tool does both, but a2r
+/// needs the Arc construction split). (Plan 016 2.2.)
 /// Snapshot of the current conversation memory (for session persistence).
 /// Current conversation memory.
 /// Run the ReAct loop against `task`, returning the agent's final answer.

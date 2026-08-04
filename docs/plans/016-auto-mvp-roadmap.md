@@ -210,24 +210,17 @@
   client 错误不 Completed + summary 200 字截断。
 - **完成后**：**归档 Plan 008**。
 
-### 2.2 skill 缺口修复（MVP 前置）
+### 2.2 skill 缺口修复（MVP 前置） ✅ 已完成
 
-- **仓库**：auto-ai（`crates/auto-ai-agent/src/agent.at` + retranspile）
-- **现状**：`skills_block` 字段（agent.at:171）和 `build_system_prompt` 注入管线（:348,459）都在，
-  但 `register_skill_tool` 方法**完全没写**（注释 :185-188 说"Set by register_skill_tool"却无定义）。
-- **动作**：在 agent.at 加 `fn register_skill_tool(tool SkillTool)`：设 `self.skills_block =
-  Some(tool.available_skills_block())` + 转发 `register_shared`。重跑 retranspile。
-- **工作量**：S
-- **验证**：转译后 `rust/src/agent.rs` 含该方法；grep 确认 skills_block 非 None。
+- **状态**：✅ 已完成。agent.at 加了 `register_skill_tool(tool SkillTool)`：设 `skills_block`（核心价值——
+  让模型看到技能目录）。工具注册拆分（Auto 不能 Arc 包 spec 值，调用方另用 register_shared）。
+- **注**：agent 转译版重新转译后有 8 个预先存在的 a2r 限制（&ReadDir iterator、&Arc、tc.args move），
+  不影响 rust-ref（主版本）和 MVP 验证。
 
-### 2.3 tool 缺口修复（MVP 前置）
+### 2.3 tool 缺口修复（推迟到转正）
 
-- **仓库**：auto-ai（`crates/auto-ai-agent/src/agent.at` 或 `auto-ai-cli/src/main.rs`）
-- **现状**：转译版只有 `register_shared(Arc<Box<dyn Tool>>)`，缺泛型 `register_tool<T>`。
-- **动作**：方案 A——在 agent.at 加值类型 `register_tool(tool Tool)`（Auto spec 可接受值类型，内部 box）。
-  方案 B——改 CLI 的 8 处调用为 box。倾向方案 A（对调用方透明）。
-- **工作量**：S
-- **验证**：`cargo check -p auto-ai-cli`（临时指向转译版）通过。
+- **状态**：⏸ 推迟。`register_tool<T>` 泛型构造在 Auto 里无法表达（spec 值 → Arc<Box<dyn>> 需要泛型）。
+  MVP 不需要（auto-ai-react.exe 不用 CLI 的 register_tool）。转正时再处理。
 
 ### 2.4 ai-config + auto-ai-client 功能对齐审计
 

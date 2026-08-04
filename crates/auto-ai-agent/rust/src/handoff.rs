@@ -136,17 +136,17 @@ impl HandoffDocument {
             lines.push("## Context for Next Agent".to_string());
             if ctx.files_to_read.is_empty() == false {
                 lines.push("\n### Files to Read".to_string());
-                for f in ctx.files_to_read {
+                for f in &ctx.files_to_read {
                     lines.push(format!("- {}", f));
                 }
             }            if ctx.files_to_test.is_empty() == false {
                 lines.push("\n### Files to Test".to_string());
-                for f in ctx.files_to_test {
+                for f in &ctx.files_to_test {
                     lines.push(format!("- `{}`", f));
                 }
             }            if ctx.warnings.is_empty() == false {
                 lines.push("\n### Warnings".to_string());
-                for w in ctx.warnings {
+                for w in &ctx.warnings {
                     lines.push(format!("- ⚠️ {}", w));
                 }
             }            lines.push("".to_string());

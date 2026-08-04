@@ -164,7 +164,7 @@ impl RoleRegistry {
             Some(dir) => {
                 match fs::read_dir(dir) {
                     Ok(entries) => {
-                        for entry in entries {
+                        for entry in &entries {
                             
 
                             match entry {
@@ -265,10 +265,10 @@ impl RoleRegistry {
         user_list.sort_by_key(|s| s.name.clone());
         builtin_list.sort_by_key(|s| s.name.clone());
         let mut out: Vec<RoleSummary> = vec![];
-        for s in user_list {
+        for s in &user_list {
             out.push(s.clone());
         }
-        for s in builtin_list {
+        for s in &builtin_list {
             out.push(s.clone());
         }
         return out;
