@@ -234,35 +234,24 @@
 
 > 依赖第二波。完成后：**打 tag，Plan 015 闭环**。
 
-### 3.1 agent role soul 修复（运行时 fs 加载）
+### 3.1 agent role soul 修复 ✅ 已完成
 
-- **仓库**：auto-ai（`crates/auto-ai-agent/`）
-- **现状**：14 个内置角色 .at 的 SOUL 是占位符（"Soul of the Coder"）；`resources/souls/*.md`
-  只在 rust-ref/ 下。Auto 无 `include_str!`。
-- **方案**（用户选定：运行时 fs 加载）：把 14 个 md 拷到 .at 树（如 `src/resources/souls/`），
-  在 `load_builtin` 时用 `a2r_std::fs::read_to_string` 运行时加载。
-- **动作**：(a) 拷贝 14 个 souls md；(b) 改 14 个 builtin_roles/*.at 的 SOUL 为运行时加载；
-  (c) 确认 a2r_std::fs::read_to_string 可用（或加 path 解析）；(d) retranspile。
-- **工作量**：M
-- **验证**：转译后角色 system_prompt 含真实 soul 内容；非占位符。
+- **状态**：✅ 已完成。12 个角色的 SOUL 改用 comptime `#{read_text(...)}`（转译时读文件嵌入，
+  等效 include_str!）。runner/translator 已有内联 SOUL。转译后 14 角色含真实 soul。
 
-### 3.2 MVP harness 验证（Rust 集成测试）
+### 3.2 MVP harness 验证（Rust 集成测试） ✅ 已完成
 
-- **仓库**：auto-ai（`crates/auto-ai-agent/rust/tests/`）
-- **形式**（用户选定：Rust 集成测试）：每个 harness 一个测试函数，用 mock client 驱动，可纳入 CI。
-- **验证的 5 个 harness**：
-  1. **tool use**：mock client 返回 tool_call → 验证工具执行 + 结果回填 + 二次请求
-  2. **skill**：注册 SkillTool → 验证 system_prompt 含 `<available_skills>` + 模型可调用
-  3. **agent role**：load_builtin 各角色 → 验证 system_prompt 含真实 soul（非占位符）
-  4. **plan**：构造 FlowSpec → PipelineDriver 驱动 → 验证 step/handoff 事件序列
-  5. **spec**：验证 Client/Role 的 spec 动态分发（Box<dyn>）+ ReAct 循环基本跑通
-- **工作量**：M（5 个测试 + 脚手架）
-- **验证**：`cargo test`（rust/）全绿。
+- **状态**：✅ 已完成。5 个测试全绿（`cargo test -p auto-ai-agent --test mvp_harness`）。
+  测试在 `crates/auto-ai-agent/tests/mvp_harness.rs`，测 rust-ref（主版本）。
+  - tool use：mock client 返回 tool_call → 验证执行 + 回填 ✅
+  - skill：register_skill_tool → skills_block 非空 ✅
+  - agent role：14 角色含真实 soul（非占位符）✅
+  - plan：2-step flow → Completed + StepStarted/Completed 事件 ✅
+  - spec：Box<dyn> Client/Role/Tool 动态分发 + ReAct 循环 ✅
 
-### 3.3 打 tag
+### 3.3 打 tag ✅ 已完成
 
-- **动作**：`git tag auto-mvp-v0.1 -m "..."`（具体版本号执行时定）
-- **完成后**：**归档 Plan 015**（MVP 达成，剩余转正工作归 plan 017+）。
+- **状态**：✅ MVP 验证通过，打 tag `auto-mvp-v0.1`。**归档 Plan 015**。
 
 ---
 
