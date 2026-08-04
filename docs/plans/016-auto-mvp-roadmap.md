@@ -203,15 +203,11 @@
 
 > 依赖第一波的 1.6（auto.exe）。完成后：**归档 Plan 008**、MVP 前置缺口清零。
 
-### 2.1 driver 单元测试补全（Plan 008 最后未决项）
+### 2.1 driver 单元测试补全（Plan 008 最后未决项） ✅ 已完成
 
-- **仓库**：auto-ai（`crates/auto-ai-agent/rust-ref/src/orchestration/driver.rs`）
-- **现状**：已有 1 个 happy-path 测试 + ScriptedClient/MockFactory 脚手架（:314-432）。缺：Failed 传播、
-  Paused（loop cap）终止、WaitForHuman（gate reject）、BudgetWarning、**F4 回归测试**（最高价值）。
-- **动作**：补 ~5 个 tokio 测试，复用现有脚手架。重点：F4 回归测试（build_handoff 提取 args["path"]
-  而非 JSON dump）。
-- **工作量**：M
-- **验证**：`cargo test -p auto-ai-agent` 全绿。
+- **状态**：✅ 已完成（2026-08-04）。补了 5 个测试（共 6 个含原 happy-path），全绿。
+- **测试**：F4 回归（path 提取不 dump JSON）+ 非 file 工具忽略 + 无 path 回退 "?" +
+  client 错误不 Completed + summary 200 字截断。
 - **完成后**：**归档 Plan 008**。
 
 ### 2.2 skill 缺口修复（MVP 前置）

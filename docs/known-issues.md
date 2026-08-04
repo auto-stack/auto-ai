@@ -9,21 +9,7 @@
 
 ## 🔴 待修复缺陷（有功能影响）
 
-### F4 — build_handoff path 提取（代码已修，缺回归测试）
-
-| 字段 | 值 |
-|---|---|
-| 来源计划 | [008-orchestration-down](plans/008-orchestration-down.md)（活动） |
-| 所在仓库 | auto-ai（本仓库） |
-| 位置 | `crates/auto-ai-agent/rust-ref/src/orchestration/driver.rs:276-292 build_handoff` |
-| 严重度 | 🟢 低（代码已修复，仅缺回归测试锁定） |
-
-**状态**：代码已在 commit `3eecf4f`（2026-07-20）修复——`build_handoff` 现用
-`tc.args.get("path").and_then(|p| p.as_str()).unwrap_or("?")`，不再 dump 整个 JSON。
-.at 版（driver.at:344-370）同样已修。
-
-**剩余工作**：缺回归测试（plan 016 第二波 2.1 会补——`build_handoff` 对 write_file/edit_file
-工具调用断言 `work_product[0].path == args["path"]`）。.at 版 driver 0 测试，待补。
+（F4 已解决，见下方"已解决"节。当前无其他待修复缺陷。）
 
 ---
 
@@ -78,6 +64,10 @@
   `override_tier` 字段 + `with_override_tier()` builder，`model_tier()` 返回 override；
   `build_agent_from_mode` 的 clamp 逻辑改为通过 builder 应用 `clamped`。此前计算了 `clamped`
   却只用于日志导致 `allowed_tiers` 失效。附 3 单元测试。Plan 004 §5 错误的 ✅ 已纠正。
+- **F4 — build_handoff path 提取**（2026-08-04 回归测试补全）：代码早在 `3eecf4f` 修复
+  （`args.get("path")` 替代 JSON dump），本次补了回归测试 `build_handoff_extracts_path_field_not_json_dump`
+  + 4 个相关测试（非 file 工具忽略、无 path 回退、client 错误不 Completed、summary 截断），
+  共 6 个 driver 测试全绿。Plan 008 归档。
 - **F2 — Budget HardStop 三方不一致**（2026-08-04 文档清理）：确认 `BudgetStrategy` 枚举的
   `strategy` 字段是死代码（全代码库无读取），pipeline 实际行为是 advisory（由 `BudgetAction::LimitReached`
   表达，已有测试锁定）。给 `BudgetStrategy` 加 deprecated-in-spirit 文档标注，`new()` 注释说明 advisory，

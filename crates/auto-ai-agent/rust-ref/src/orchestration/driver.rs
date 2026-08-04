@@ -437,4 +437,152 @@ mod tests {
             *got
         );
     }
+
+    // ── F4 regression: build_handoff extracts args["path"], not JSON dump ──
+
+    /// Directly test build_handoff's path extraction (review-002 F4 fix).
+    /// Previously it dumped the whole args JSON as the path; now it extracts
+    /// the "path" field. This test locks the fix.
+    #[test]
+    fn build_handoff_extracts_path_field_not_json_dump() {
+        let client = Arc::new(ScriptedClient {
+            responses: Mutex::new(vec![]),
+        });
+        let factory = MockFactory { client };
+        let driver = PipelineDriver::new(two_step_flow(), factory, "test");
+
+        // Simulate an agent result with a write_file tool call.
+        let result = AgentResult {
+            output: "wrote the file".into(),
+            turns: 1,
+            tool_calls: vec![crate::agent::ToolCallRecord {
+                tool: "write_file".into(),
+                args: serde_json::json!({"path": "/tmp/main.rs", "content": "fn main() {}"}),
+                result: "ok".into(),
+            }],
+            total_tokens: 100,
+        };
+
+        let h = driver.build_handoff("a", "coder", &result, "wrote the file");
+
+        assert_eq!(h.work_product.len(), 1);
+        // The path must be the extracted field, NOT the JSON dump.
+        assert_eq!(h.work_product[0].path, "/tmp/main.rs");
+        assert!(h.work_product[0].path != *"{\"path\":\"/tmp/main.rs\",\"content\":\"fn main() {}\"}",
+            "F4 regression: build_handoff dumped JSON instead of extracting path");
+    }
+
+    /// build_handoff ignores non-file tool calls (only write_file/edit_file
+    /// produce work_product entries).
+    #[test]
+    fn build_handoff_ignores_non_file_tools() {
+        let client = Arc::new(ScriptedClient {
+            responses: Mutex::new(vec![]),
+        });
+        let factory = MockFactory { client };
+        let driver = PipelineDriver::new(two_step_flow(), factory, "test");
+
+        let result = AgentResult {
+            output: "read the file".into(),
+            turns: 1,
+            tool_calls: vec![
+                crate::agent::ToolCallRecord {
+                    tool: "read_file".into(),
+                    args: serde_json::json!({"path": "/tmp/main.rs"}),
+                    result: "fn main() {}".into(),
+                },
+                crate::agent::ToolCallRecord {
+                    tool: "run_command".into(),
+                    args: serde_json::json!({"cmd": "ls"}),
+                    result: "file1 file2".into(),
+                },
+            ],
+            total_tokens: 50,
+        };
+
+        let h = driver.build_handoff("a", "coder", &result, "read the file");
+        assert!(h.work_product.is_empty(), "non-file tools should not produce work_product");
+    }
+
+    /// build_handoff falls back to "?" when args has no "path" field.
+    #[test]
+    fn build_handoff_falls_back_when_no_path_field() {
+        let client = Arc::new(ScriptedClient {
+            responses: Mutex::new(vec![]),
+        });
+        let factory = MockFactory { client };
+        let driver = PipelineDriver::new(two_step_flow(), factory, "test");
+
+        let result = AgentResult {
+            output: "wrote".into(),
+            turns: 1,
+            tool_calls: vec![crate::agent::ToolCallRecord {
+                tool: "write_file".into(),
+                args: serde_json::json!({"content": "data"}), // no "path"
+                result: "ok".into(),
+            }],
+            total_tokens: 0,
+        };
+
+        let h = driver.build_handoff("a", "coder", &result, "wrote");
+        assert_eq!(h.work_product.len(), 1);
+        assert_eq!(h.work_product[0].path, "?");
+    }
+
+    /// Failed event propagation: when the client returns an error, the driver
+    /// surfaces it (either as a Failed event or as a drive() Err return).
+    /// A client that always errors must NOT produce a Completed event.
+    #[tokio::test]
+    async fn drive_does_not_complete_on_client_error() {
+        use auto_ai_client::ClientError;
+        struct ErrorClient;
+        #[async_trait]
+        impl Client for ErrorClient {
+            async fn complete(
+                &self,
+                _req: &auto_ai_client::CompletionRequest,
+            ) -> Result<auto_ai_client::CompletionResponse, ClientError> {
+                Err(ClientError::Http("connection refused".into()))
+            }
+        }
+        let client = Arc::new(ErrorClient);
+        struct ErrorFactory { client: Arc<ErrorClient> }
+        impl AgentFactory for ErrorFactory {
+            fn build_agent(&self, _role_id: &str, _h: Option<&HandoffDocument>) -> Result<Agent, String> {
+                Ok(Agent::new(EchoRole, self.client.clone()))
+            }
+        }
+        let factory = ErrorFactory { client };
+        let mut driver = PipelineDriver::new(two_step_flow(), factory, "fail fast");
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let on_event: Arc<dyn Fn(PipelineEvent) + Send + Sync> = Arc::new(move |ev| {
+            sink.lock().unwrap().push(ev);
+        });
+        let _ = driver.drive("fail fast", on_event).await;
+
+        let got = events.lock().unwrap();
+        // The key assertion: a client error must NOT silently succeed.
+        assert!(
+            !got.iter().any(|e| matches!(e, PipelineEvent::Completed)),
+            "should not emit Completed when client errors; events: {:?}", *got
+        );
+    }
+
+    /// Summary truncation: build_handoff caps the summary at 200 chars.
+    #[test]
+    fn build_handoff_truncates_long_summary() {
+        let client = Arc::new(ScriptedClient {
+            responses: Mutex::new(vec![]),
+        });
+        let factory = MockFactory { client };
+        let driver = PipelineDriver::new(two_step_flow(), factory, "test");
+
+        let long_content = "x".repeat(500);
+        let result = AgentResult::default();
+        let h = driver.build_handoff("a", "coder", &result, &long_content);
+        assert!(h.summary.len() <= 200, "summary not truncated: {} chars", h.summary.len());
+        assert_eq!(h.summary.len(), 200);
+    }
 }
