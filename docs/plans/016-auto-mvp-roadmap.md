@@ -261,12 +261,12 @@
 
 | 序 | 工作 | 仓库 | 工作量 | 时机/前置 |
 |---|---|---|---|---|
-| 4.1 | workflow 端点迁移：auto-musk 的 `/api/workflow/run` + `/stream` 迁到 relay | auto-musk | M | 独立任务，可与本路线图并行 |
-| 4.2 | workflow 物理删除（rust-ref + .at + lib.rs 导出） | auto-ai | S | 4.1 完成后 |
+| 4.1 | workflow 端点迁移：auto-musk 的 `/api/workflow/run` + `/stream` 迁到 relay | auto-musk | M | ✅ 已完成（plan 017 Phase 1，2026-08-04） |
+| 4.2 | workflow 物理删除（rust-ref + .at + lib.rs 导出） | auto-ai | S | 4.1 已完成 → 可执行（plan 017 Phase 2） |
 | 4.3 | spec 流式补齐（complete_stream / 事件队列 / Auto actors） | auto-ai + auto-lang | L | 需 Auto 解析器支持 `dyn Fn` |
 | 4.4 | 完善 Rust 参考版（新一轮功能开发） | auto-ai | — | MVP 打 tag 后 |
 | 4.5 | 第二轮 Auto 化（凭 Rust 版生成 Auto） | auto-ai | — | Auto skill 成熟后 |
-| 4.6 | 转正（plan 017）：翻转 [lib] path，删 rust-ref | auto-ai | M | 第二轮 Auto 化达成 100% 功能后 |
+| 4.6 | 转正（plan 018）：翻转 [lib] path，删 rust-ref | auto-ai | M | 第二轮 Auto 化达成 100% 功能后 |
 
 > **分叉记账（Plan 381）**:rust-ref/ 已迁移 auto-val serde Deserialize + lenient 辅助
 > (loader.rs / role_config.rs,Plan 381)并修复 provider 反序列化错误静默跳过的问题;
