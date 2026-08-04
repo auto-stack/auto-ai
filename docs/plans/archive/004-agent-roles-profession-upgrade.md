@@ -1,6 +1,11 @@
 # Plan 004: Agent Roles（Profession 升级为可配置的 Role）
 
-> **Status**: Approved
+> **状态**：✅ 已完成，归档于 2026-08-04。
+> 唯一功能缺陷 F1（Tier clamp 不生效）已于 2026-08-04 修复（auto-musk c0434f8）：
+> `OwnedRole::with_override_tier` 让钳制真正生效，§5 的错误 ✅ 已纠正。
+> Token Budget 强制按 plan 016 决策继续暂缓（token statistics 已满足）。
+
+> **Status** (历史): Approved
 > **设计参考**: auto-forge 的 Profession/Soul/AgentConfig 三段式；本仓库 `docs/`（若有）
 > **仓库**: `auto-ai`（核心）+ `auto-musk`（接通 + API + UI）+ `auto-os-config`（注册模块）
 > **依赖**: 现有 `Profession` trait、`ProfessionConfig` .at 解析器、`ModelTier`、`ModeRegistry`
@@ -214,9 +219,12 @@ role {
 ## 5. 范围与边界（明确告知）
 
 - ✅ **Skills 白名单生效**（role 指定的 skills 才注册给 agent）
-- ✅ **Tier 校验生效**（越界 warn + 钳制到范围最高）
+- ✅ **Tier 校验生效**（越界 warn + 钳制到范围最高）— **F1 已修复（2026-08-04，auto-musk c0434f8）**：
+  此前 clamp 计算了 `clamped` 却未赋回（`allowed_tiers` 形同虚设），现已通过 `OwnedRole::with_override_tier`
+  让 `model_tier()` 真正返回钳制后的 tier。
 - ✅ **Soul 继承 + Mode 定制**生效（extra_system_prompt 修复）
-- ⏸ **Token Budget 仅存盘不强制**（用户明确要求"暂时不生效"，保留字段为将来 BudgetTracker）
+- ⏸ **Token Budget 仅存盘不强制**（用户明确要求"暂时不生效"，保留字段为将来 BudgetTracker）—
+  按 plan 016 决策，本轮只做 token statistics（已由 `AgentResult.total_tokens` 满足），budget 强制继续暂缓。
 - 内置 7 role 只读（要改就"复制为新 Role"，基于 `inherit`）；不删除编译 trait（零回归）
 - 用户 Role 只能 inherit 内置，不能 inherit 另一个用户 Role（首期简化）
 

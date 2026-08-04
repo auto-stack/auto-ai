@@ -68,14 +68,14 @@
   且 .at 改写可绕过。
 - **动作**：逐类修复 .at 源码（主要在 tier.at/wire.at/loader.at），重跑 retranspile 直到 0 错误。
 - **验证**：`retranspile.sh check` 输出 `error count: 0`；`cargo check`（rust/）0 错误。
+- **状态（2026-08-04）**：**阻塞于 Phase A（a2r 生成器修复）**。已修 2 类（tier.at match→return 6 个、
+  retranspile.sh JsonValue 注入 4 个），30→24 错误。剩余 24 个本质是 3 个 a2r codegen 缺陷（见 Phase A），
+  在 .at 层绕过成本高且可能冲突 AutoVM。已做的部分进展（tier.at return 改动、retranspile.sh
+  JsonValue 注入）已提交，rust/src/ 半成品产物未提交。
 
 ### 1.3 auto-ai-client a2r 转译
 
-- **仓库**：auto-ai（`crates/auto-ai-client/`）
-- **现状**：`rust/src/` 为空；3 个 .at（lib/daemon/error）已就位，async/HTTP 模式已在 plan 013 G5/G6 验证。
-- **动作**：`cd crates/auto-ai-client && ./retranspile.sh check`，修到 0 错误。
-- **工作量**：S
-- **验证**：同 1.2。
+- **状态**：**阻塞于 Phase A**（与 1.2 同类 a2r 缺陷，待 a2r 修复后一并转译）。
 
 ### 1.4 F2 — budget enum/文档清理（Plan 008 残留）
 
@@ -106,6 +106,58 @@
 - **工作量**：S
 - **验证**：`auto --version` 可用；commit hash 记录在案。
 - **记录的 commit hash**：auto-lang `896db196001999694f95efc9b5cce5204b212643`（2026-08-04 重建 auto.exe，version 0.1.0）。后续每次重新转译前应确认 auto-lang 仍在该 commit 或记录新 commit。
+
+---
+
+## Phase A：a2r 生成器缺陷修复（阻塞 1.2/1.3 转译）
+
+> **前置发现**（2026-08-04 ai-config 转译实测）：剩余 24 个转译错误本质是 a2r 生成器的
+> 3 个 codegen 缺陷。在 .at 层绕过成本高且可能与 AutoVM bug 冲突，应到 auto-lang 仓库
+> 用 worktree 方式修复 a2r 生成器根因。
+> **仓库**：auto-lang（`crates/auto-lang/src/trans/rust.rs`）
+> **工作方式**：在 auto-lang 建 worktree 修复 + 测试，合并后回 auto-ai 重跑转译。
+> **完成后解锁**：1.2（ai-config）+ 1.3（auto-ai-client）转译可推进。
+
+### A1. tuple 变体构造生成了 struct 语法
+
+- **现象**：.at 定义 `Text(str)`（tuple 变体），构造 `ContentBlock.Text(t)`（位置参数），
+  a2r 生成 `ContentBlock::Text(String)` 定义但构造却生成 `ContentBlock::Text { text: t }`
+  （struct 语法）→ E0559 "no field named" + E0769 "tuple variant written as struct variant"。
+- **影响**：ai-config wire.at 的 ContentBlock 8 个错误。
+- **根因位置**：`trans/rust.rs` 枚举变体构造 codegen（:150-155 缓存区分 tuple/struct，
+  但构造路径未正确使用缓存判断）。
+- **修复方向**：a2r 构造 `Enum.Variant(args)` 时，查缓存判断该变体是 tuple 还是 struct；
+  tuple 用 `Enum::Variant(args)`，struct 用 `Enum::Variant { field: val }`。
+- **工作量**：M（需深入 a2r 构造 codegen + 加测试）
+- **注意**：wire.at 用 tuple 变体是为绕过 AutoVM 的 struct 解构 bug（plan 013 B3）。
+  修好 a2r 后，可考虑把 wire.at 改回 struct 变体（与 rust-ref 一致），前提是 AutoVM 解构
+  bug 也已修或 .at 改用字段访问而非解构。
+
+### A2. match 尾表达式多加分号
+
+- **现象**：.at 的 `fn f() T { is x { ... } }`（match 尾表达式），a2r 生成
+  `fn f() -> T { match x { ... }; }`（match 后多了分号）→ 函数返回 `()` 而非 match 值。
+- **影响**：曾致 ai-config tier.rs 6 个错误（已用 .at 改 `return` 绕过，但根因未除）。
+- **根因位置**：`trans/rust.rs` match/`is` 表达式作为函数尾表达式的 codegen。
+- **修复方向**：当 `is` 表达式是函数体的最后一条语句时，不加尾分号。
+- **工作量**：S-M
+- **注**：tier.at 已改用显式 `return` 绕过，此修复为根因清除（让其他 .at 不必绕过）。
+
+### A3. 不支持 type 别名 / `use.rust ... as ...`
+
+- **现象**：Auto 无 `type X = Y` 别名语法；`use.rust serde_json::Value as JsonValue` 报 E0099。
+  导致 `JsonValue` 这类短别名在转译产物里无法表达。
+- **影响**：ai-config wire.at 的 JsonValue（已用 retranspile.sh 注入 `use serde_json::Value as JsonValue;` 绕过）。
+- **修复方向**：在 Auto 语法层支持 `use.rust X as Y` 别名，或支持 `type X = extern::Y`。
+- **工作量**：M（涉及 Auto 解析器 + a2r codegen）
+- **注**：ai-config 已用 retranspile.sh 注入绕过，优先级低于 A1/A2。可作为 a2r 长期改进。
+
+### Phase A 完成后的动作
+
+1. 在 auto-lang worktree 修复 A1（必做）+ A2（必做）+ A3（可选），a2r 测试全绿。
+2. 合并到 auto-lang master，重建 auto.exe，记录新 commit hash。
+3. 回 auto-ai，重跑 1.2（ai-config）+ 1.3（auto-ai-client）转译，目标各 0 错误。
+4. 更新本计划 1.2/1.3 状态。
 
 ---
 

@@ -23,22 +23,22 @@ ext ModelTier {
     /// Human-readable name for display (e.g. "Min", "Mid").
     fn display_name() str {
         is self {
-            ModelTier.Min -> "Min",
-            ModelTier.Lite -> "Lite",
-            ModelTier.Mid -> "Mid",
-            ModelTier.Pro -> "Pro",
-            ModelTier.Max -> "Max"
+            ModelTier.Min -> return "Min",
+            ModelTier.Lite -> return "Lite",
+            ModelTier.Mid -> return "Mid",
+            ModelTier.Pro -> return "Pro",
+            ModelTier.Max -> return "Max"
         }
     }
 
     /// Short description of the tier's intended use case.
     fn description() str {
         is self {
-            ModelTier.Min -> "Ultra-cheap: high-volume, low-complexity tasks",
-            ModelTier.Lite -> "Cheap: routing, chat, simple coding",
-            ModelTier.Mid -> "Balanced: planning, coding, most tasks",
-            ModelTier.Pro -> "Strong: architecture, review, complex tasks",
-            ModelTier.Max -> "Ultra-strong: deepest reasoning, research"
+            ModelTier.Min -> return "Ultra-cheap: high-volume, low-complexity tasks",
+            ModelTier.Lite -> return "Cheap: routing, chat, simple coding",
+            ModelTier.Mid -> return "Balanced: planning, coding, most tasks",
+            ModelTier.Pro -> return "Strong: architecture, review, complex tasks",
+            ModelTier.Max -> return "Ultra-strong: deepest reasoning, research"
         }
     }
 
@@ -49,11 +49,11 @@ ext ModelTier {
     /// clean without explicit casts. (Plan 013 B13.)
     fn order() int {
         is self {
-            ModelTier.Min -> 0,
-            ModelTier.Lite -> 1,
-            ModelTier.Mid -> 2,
-            ModelTier.Pro -> 3,
-            ModelTier.Max -> 4
+            ModelTier.Min -> return 0,
+            ModelTier.Lite -> return 1,
+            ModelTier.Mid -> return 2,
+            ModelTier.Pro -> return 3,
+            ModelTier.Max -> return 4
         }
     }
 

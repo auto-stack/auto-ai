@@ -66,6 +66,15 @@ for f in "$SRC"/*.at; do
     copy_if_exists "$SRC/${bn}.a2r.rs" "$RUST/${bn}.rs"
 done
 
+# wire.rs uses `JsonValue` (a short alias a2r can't express — Auto has no
+# `type X = Y` alias and rejects `serde_json::Value as JsonValue` / full-path
+# enum field types). Inject the alias as a use-statement at the top of wire.rs,
+# mirroring rust-ref's `use serde_json::Value as JsonValue;`.
+if [ -f "$RUST/wire.rs" ]; then
+    sed -i '1a use serde_json::Value as JsonValue;' "$RUST/wire.rs"
+    echo "  [wire] injected JsonValue alias"
+fi
+
 # Assemble lib.rs: transpiled crate-root + pub mod decls (no extern shims).
 if [ -f "$SRC/lib.a2r.rs" ]; then
     awk -v pubmods="$(read_pub_mods)" '
