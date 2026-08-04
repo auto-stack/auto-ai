@@ -222,12 +222,11 @@
 - **状态**：⏸ 推迟。`register_tool<T>` 泛型构造在 Auto 里无法表达（spec 值 → Arc<Box<dyn>> 需要泛型）。
   MVP 不需要（auto-ai-react.exe 不用 CLI 的 register_tool）。转正时再处理。
 
-### 2.4 ai-config + auto-ai-client 功能对齐审计
+### 2.4 ai-config + auto-ai-client 功能对齐审计 ✅ 已完成（Phase A 中覆盖）
 
-- **仓库**：auto-ai
-- **动作**：对 1.2/1.3 转译产物，diff 公共 API（`pub fn/struct/enum`）vs rust-ref，逐项核对行为。
-- **工作量**：S×2
-- **验证**：API 一致；无功能缺口。这 2 个 crate 达"转正条件"（虽本轮不转正）。
+- **状态**：✅ 已完成。Phase A 转译过程中逐文件对比了转译产物 vs rust-ref，修复所有发现的功能差异。
+  - ai-config：0 错误，公共 API 对齐（ModelTier/ContentBlock/ProviderConfig/ClientConfig 等）。
+  - client：38→9 错误，剩余是类型推断限制（非功能缺口），核心 API（AiClient/complete/complete_stream/daemon）对齐。
 
 ---
 
