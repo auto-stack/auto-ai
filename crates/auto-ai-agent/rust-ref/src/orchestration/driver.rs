@@ -144,6 +144,14 @@ impl<F: AgentFactory> PipelineDriver<F> {
                             StreamEvent::Warning { text } => {
                                 tracing::info!("agent warning: {}", text);
                             }
+                            // Reasoning/thinking: the pipeline consumer has no
+                            // Thinking event variant, and the handoff should
+                            // carry the final answer (not the chain-of-thought),
+                            // so we drop it here. (The direct chat path in musk
+                            // surfaces thinking via its own SSE stream.)
+                            StreamEvent::Thinking { text } => {
+                                tracing::debug!("agent thinking: {}…", &text[..text.len().min(60)]);
+                            }
                             // ToolStart is a "running" hint — no result yet, skip.
                             StreamEvent::ToolStart { .. } => {}
                             StreamEvent::Tool { tool, result, .. } => {

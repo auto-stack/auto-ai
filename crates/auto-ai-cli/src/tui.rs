@@ -499,6 +499,9 @@ fn handle_stream_event(app: &mut App, ev: StreamEvent) {
         StreamEvent::Delta { text } => {
             app.chat.append_delta(&text);
         }
+        StreamEvent::Thinking { text } => {
+            app.chat.append_thinking(&text);
+        }
         StreamEvent::Warning { text } => {
             // Advisory (e.g. near-turn-cap) — show as a dimmed system note in
             // the current turn so it's not mistaken for the model's answer.

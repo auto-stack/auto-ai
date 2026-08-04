@@ -174,7 +174,7 @@ impl AiProvider for OpenAiProvider {
     async fn complete_stream(
         &self,
         req: &CompletionRequest,
-        on_delta: Arc<dyn Fn(String) + Send + Sync>,
+        on_delta: Arc<dyn Fn(super::StreamDelta) + Send + Sync>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<CompletionResponse, LlmError> {
         let mut body = self.build_body(req);
@@ -220,10 +220,18 @@ impl AiProvider for OpenAiProvider {
                             tool_call_accum: &mut Vec<AccumToolCall>,
                             finish_reason: &mut Option<String>,
                             usage: &mut Option<Usage>,
-                            on_delta: &Arc<dyn Fn(String) + Send + Sync>| {
+                            on_delta: &Arc<dyn Fn(super::StreamDelta) + Send + Sync>| {
             if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
                 content.push_str(delta);
-                on_delta(delta.to_string());
+                on_delta(super::StreamDelta::Text(delta.to_string()));
+            }
+            // Reasoning content (deepseek-reasoner / GLM thinking models put
+            // chain-of-thought under delta.reasoning_content).
+            if let Some(r) = json["choices"][0]["delta"]["reasoning_content"]
+                .as_str()
+                .or_else(|| json["choices"][0]["delta"]["reasoning"].as_str())
+            {
+                on_delta(super::StreamDelta::Reasoning(r.to_string()));
             }
             if let Some(finish) = json["choices"][0]["finish_reason"].as_str() {
                 *finish_reason = Some(finish.to_string());

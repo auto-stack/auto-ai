@@ -250,7 +250,8 @@ async fn chat_completions(
 ///
 /// Uses an mpsc channel to bridge the provider's `on_delta` callback (which is
 /// sync) to axum's async stream. Events emitted:
-/// - `data: {"type":"delta","text":"..."}` for each token chunk
+/// - `data: {"type":"delta","text":"..."}` for each visible text chunk
+/// - `data: {"type":"reasoning","text":"..."}` for each reasoning/thinking chunk
 /// - `data: {"type":"done","turns":1,"usage":{...}}` at the end
 /// - `data: {"type":"error","message":"..."}` on failure
 async fn streaming_response(
@@ -276,13 +277,19 @@ async fn streaming_response(
     let tx2 = tx.clone();
     let cancel_for_task = cancel.clone();
     let provider_task = tokio::spawn(async move {
-        let on_delta: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |delta: String| {
-            // best-effort push; ignore if channel closed (client disconnected)
-            let _ = tx2.try_send(format!(
-                "data: {}\n\n",
-                json!({"type": "delta", "text": delta})
-            ));
-        });
+        let on_delta: Arc<dyn Fn(crate::provider::StreamDelta) + Send + Sync> =
+            Arc::new(move |chunk: crate::provider::StreamDelta| {
+                // best-effort push; ignore if channel closed (client disconnected)
+                let payload = match chunk {
+                    crate::provider::StreamDelta::Text(t) => {
+                        json!({"type": "delta", "text": t})
+                    }
+                    crate::provider::StreamDelta::Reasoning(t) => {
+                        json!({"type": "reasoning", "text": t})
+                    }
+                };
+                let _ = tx2.try_send(format!("data: {}\n\n", payload));
+            });
 
         match provider.complete_stream(&req, on_delta, cancel_for_task).await {
             Ok(resp) => {

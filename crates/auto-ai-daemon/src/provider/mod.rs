@@ -22,6 +22,21 @@ use tokio_util::sync::CancellationToken;
 
 use crate::LlmError;
 
+/// One streamed chunk from a provider.
+///
+/// `Text` is the model's visible answer; `Reasoning` is the model's
+/// chain-of-thought (emitted by reasoning-capable models like glm-5.2 /
+/// deepseek-v4-pro *before* the answer). Consumers route the two kinds to
+/// separate UI regions.
+#[derive(Clone, Debug)]
+pub enum StreamDelta {
+    /// A chunk of the model's visible answer.
+    Text(String),
+    /// A chunk of the model's reasoning/thinking (kept separate from Text so
+    /// consumers can render it in a collapsible "thinking" section).
+    Reasoning(String),
+}
+
 /// Trait that every LLM provider implements.
 #[async_trait]
 pub trait AiProvider: Send + Sync {
@@ -34,7 +49,8 @@ pub trait AiProvider: Send + Sync {
     /// Non-streaming completion.
     async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, LlmError>;
 
-    /// Streaming completion. Calls `on_delta` for each text chunk.
+    /// Streaming completion. Calls `on_delta` for each chunk — either visible
+    /// text or reasoning — so the caller can route them independently.
     ///
     /// `cancel` lets the caller (e.g. when the SSE client disconnects) abort
     /// the upstream fetch early, so a dropped connection doesn't keep pulling
@@ -43,7 +59,7 @@ pub trait AiProvider: Send + Sync {
     async fn complete_stream(
         &self,
         req: &CompletionRequest,
-        on_delta: Arc<dyn Fn(String) + Send + Sync>,
+        on_delta: Arc<dyn Fn(StreamDelta) + Send + Sync>,
         cancel: CancellationToken,
     ) -> Result<CompletionResponse, LlmError>;
 }

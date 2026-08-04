@@ -56,7 +56,7 @@ impl AiProvider for OllamaProvider {
     async fn complete_stream(
         &self,
         req: &CompletionRequest,
-        on_delta: Arc<dyn Fn(String) + Send + Sync>,
+        on_delta: Arc<dyn Fn(super::StreamDelta) + Send + Sync>,
         cancel: CancellationToken,
     ) -> Result<CompletionResponse, LlmError> {
         self.inner.complete_stream(req, on_delta, cancel).await

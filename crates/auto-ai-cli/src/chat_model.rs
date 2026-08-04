@@ -169,6 +169,16 @@ impl ChatLog {
         }
     }
 
+    /// Append reasoning/thinking text to the current streaming assistant turn.
+    /// Goes into a trailing Thinking block (separate from the Answer).
+    pub fn append_thinking(&mut self, text: &str) {
+        if let Some(idx) = self.streaming_idx {
+            if let ChatLine::Assistant(turn) = &mut self.lines[idx] {
+                turn.append_thinking(text);
+            }
+        }
+    }
+
     /// A tool is starting (running state). First demotes any trailing Answer
     /// text to Thinking (it was reasoning before this tool call), then pushes
     /// a new running Tool block.

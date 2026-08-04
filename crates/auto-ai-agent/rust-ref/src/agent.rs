@@ -89,6 +89,11 @@ impl Client for AiClient {
 pub enum StreamEvent {
     /// A chunk of the model's text output.
     Delta { text: String },
+    /// A chunk of the model's reasoning/thinking output (emitted by
+    /// reasoning-capable models like glm-5.2 / deepseek-v4-pro, typically
+    /// *before* the [`Self::Delta`] answer). Consumers render this in a
+    /// collapsible "thinking" section, separate from the visible answer.
+    Thinking { text: String },
     /// A tool is about to be executed (the request has been parsed, the tool
     /// call is starting). Emitted before [`Self::Tool`] so consumers can show
     /// a "running…" state.
@@ -376,8 +381,16 @@ impl Agent {
             let resp = self
                 .client
                 .complete_stream(&req, Arc::new(move |ev| {
+                    let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
                     if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
-                        on_delta(StreamEvent::Delta { text: t.to_string() });
+                        match ty {
+                            "reasoning" => {
+                                on_delta(StreamEvent::Thinking { text: t.to_string() });
+                            }
+                            _ => {
+                                on_delta(StreamEvent::Delta { text: t.to_string() });
+                            }
+                        }
                     }
                 }))
                 .await?;

@@ -155,7 +155,7 @@ impl AiProvider for AnthropicProvider {
     async fn complete_stream(
         &self,
         req: &CompletionRequest,
-        on_delta: Arc<dyn Fn(String) + Send + Sync>,
+        on_delta: Arc<dyn Fn(super::StreamDelta) + Send + Sync>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<CompletionResponse, LlmError> {
         let mut body = self.build_body(req);
@@ -201,14 +201,14 @@ impl AiProvider for AnthropicProvider {
                             tool_blocks: &mut Vec<ToolBlock>,
                             stop_reason: &mut Option<String>,
                             usage: &mut Option<Usage>,
-                            on_delta: &Arc<dyn Fn(String) + Send + Sync>| {
+                            on_delta: &Arc<dyn Fn(super::StreamDelta) + Send + Sync>| {
             let event_type = json["type"].as_str().unwrap_or("");
 
             match event_type {
                 "content_block_delta" => {
                     if let Some(text) = json["delta"]["text"].as_str() {
                         content.push_str(text);
-                        on_delta(text.to_string());
+                        on_delta(super::StreamDelta::Text(text.to_string()));
                     }
                     // Tool input JSON fragments.
                     if let Some(partial) = json["delta"]["partial_json"].as_str() {
@@ -217,6 +217,15 @@ impl AiProvider for AnthropicProvider {
                             tool_blocks.push(ToolBlock::default());
                         }
                         tool_blocks[index].input_json.push_str(partial);
+                    }
+                    // Reasoning/thinking deltas (standard Anthropic uses
+                    // delta.thinking; some GLM/deepseek anthropic-compatible
+                    // endpoints put it under delta.reasoning_content).
+                    let reasoning = json["delta"]["thinking"]
+                        .as_str()
+                        .or_else(|| json["delta"]["reasoning_content"].as_str());
+                    if let Some(r) = reasoning {
+                        on_delta(super::StreamDelta::Reasoning(r.to_string()));
                     }
                 }
                 "content_block_start" => {

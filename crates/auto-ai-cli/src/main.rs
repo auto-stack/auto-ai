@@ -390,6 +390,11 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                     print!("{text}");
                     let _ = io::stdout().flush();
                 }
+                StreamEvent::Thinking { text } => {
+                    // Dim the reasoning so it's visually distinct from the answer.
+                    print!("\x1b[2m{text}\x1b[0m");
+                    let _ = io::stdout().flush();
+                }
                 StreamEvent::Warning { text } => {
                     // Advisory message (e.g. near-turn-cap) — dimmed so it's
                     // visually distinct from the model's answer.
