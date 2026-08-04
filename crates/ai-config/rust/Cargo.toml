@@ -6,7 +6,15 @@ description = "ai-config — Auto-transpiled from .at (a2r→Rust). Shared AI co
 
 # Standalone assembly of transpiled files, kept out of the parent auto-ai
 # workspace. The authoritative source is the sibling src/*.at; this rust/ tree
-# is the a2r product. rust-ref/ holds the legacy hand-written Rust.
+# is the a2r product.
+#
+# ⚠️ STALE RELATIVE TO rust-ref/: rust-ref/ is the workspace's ACTIVE
+# implementation and holds the Plan 381 serde migration (auto-val Deserialize +
+# lenient_* helpers) and later fixes (e.g. provider deserialize errors now
+# propagate instead of silently skipping). This transpiled tree is generated
+# from src/*.at and does NOT reflect any of that — its loader/role_config still
+# use the old opt_* style. The planned switch to this tree (auto-ai Plan 016
+# §4.6) must account for the divergence before flipping the [lib] path.
 [workspace]
 
 [lib]

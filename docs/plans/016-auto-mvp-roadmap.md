@@ -268,6 +268,13 @@
 | 4.5 | 第二轮 Auto 化（凭 Rust 版生成 Auto） | auto-ai | — | Auto skill 成熟后 |
 | 4.6 | 转正（plan 017）：翻转 [lib] path，删 rust-ref | auto-ai | M | 第二轮 Auto 化达成 100% 功能后 |
 
+> **分叉记账（Plan 381）**:rust-ref/ 已迁移 auto-val serde Deserialize + lenient 辅助
+> (loader.rs / role_config.rs,Plan 381)并修复 provider 反序列化错误静默跳过的问题;
+> 转译产物 `crates/ai-config/rust/` 是从 src/*.at 生成的旧 opt_* 风格,**不反映该迁移**。
+> 4.6 翻转 [lib] path 前需决策:在 .at 源/转译器层面同步 serde 支持(让 retranspile 产物
+> 跟上 rust-ref),或评估转译树取舍。
+
+
 ---
 
 ## 验证清单（本路线图完成的判定标准）
