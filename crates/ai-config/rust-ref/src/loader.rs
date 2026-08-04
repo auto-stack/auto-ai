@@ -122,7 +122,7 @@ pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
     let s: ClientScalars = node
         .deserialize()
         .map_err(|e| ConfigError::Parse(format!("client.at: {e}")))?;
-    let providers = parse_provider_blocks(&node);
+    let providers = parse_provider_blocks(&node)?;
 
     if providers.is_empty() {
         return Err(ConfigError::Parse(
@@ -183,7 +183,7 @@ pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
         default_model: s.default_model.unwrap_or_default(),
         ..DaemonConfig::default()
     };
-    cfg.providers = parse_provider_blocks(&node);
+    cfg.providers = parse_provider_blocks(&node)?;
     cfg.tier_routing = parse_tier_routing(&node);
 
     if cfg.default_provider.is_empty() && !cfg.providers.is_empty() {
@@ -265,14 +265,25 @@ fn parse_tier_routing(node: &Node) -> TierRouting {
 /// Walk a node's children, turning each `name { … }` block into a
 /// `ProviderConfig`. The per-provider scalar fields are deserialized via serde
 /// (Plan 381); `models` stays hand-written (`opt_models` handles 3 input shapes).
-fn parse_provider_blocks(node: &Node) -> HashMap<String, ProviderConfig> {
+///
+/// A child node is a provider iff it carries a `kind` prop (same convention as
+/// the daemon's `enum_self_providers`). Other child nodes — e.g. the daemon's
+/// `tier_routing { … }` block — are skipped without being deserialized. A
+/// provider whose scalars fail to deserialize (a garbage-typed value such as
+/// `auth_required : "maybe"`) is a **config error**, not a silent skip: a
+/// provider must never quietly vanish from the registry.
+fn parse_provider_blocks(node: &Node) -> Result<HashMap<String, ProviderConfig>, ConfigError> {
     let mut providers = HashMap::new();
     for (_key, kid) in node.kids_iter() {
         if let Kid::Node(child) = kid {
-            let s: ProviderScalars = match child.deserialize() {
-                Ok(s) => s,
-                Err(_) => continue, // a non-provider child node; skip
-            };
+            // Provider iff the child declares a `kind` prop.
+            let kind_prop = child.get_prop_of("kind");
+            if matches!(kind_prop, Value::Nil | Value::Null | Value::Void) {
+                continue; // not a provider block (e.g. tier_routing { … })
+            }
+            let s: ProviderScalars = child.deserialize().map_err(|e| {
+                ConfigError::Parse(format!("provider '{}': {e}", child.name))
+            })?;
             let pc = ProviderConfig {
                 kind: s.kind.unwrap_or_default(),
                 base_url: s.base_url.unwrap_or_default(),
@@ -287,7 +298,7 @@ fn parse_provider_blocks(node: &Node) -> HashMap<String, ProviderConfig> {
             }
         }
     }
-    providers
+    Ok(providers)
 }
 
 /// Read the `models` field as a list of [`ModelDefinition`]s (id + tier).
@@ -487,5 +498,40 @@ mod tests {
         assert_eq!(cfg.providers.len(), 2);
         assert!(cfg.providers.contains_key("anthropic"));
         assert!(cfg.providers.contains_key("zhipu"));
+    }
+
+    #[test]
+    fn non_provider_child_blocks_are_skipped() {
+        // tier_routing has no `kind` prop — it must be skipped, not treated as
+        // a provider (and must not break the parse).
+        let src = r#"
+            daemon {
+                tier_routing {
+                    max : [{ provider : "zhipu", model : "glm-5.2" }]
+                }
+                zhipu { kind : openai, models : ["glm-4.6"] }
+            }
+        "#;
+        let cfg = parse_daemon_config(src).unwrap();
+        assert_eq!(cfg.providers.len(), 1);
+        assert!(cfg.providers.contains_key("zhipu"));
+        assert_eq!(cfg.tier_routing.candidates("max").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn provider_with_garbage_scalar_is_a_config_error() {
+        // A provider whose scalar fails to deserialize (auth_required: "maybe")
+        // must error the whole parse — NOT silently drop the provider.
+        let src = r#"
+            client {
+                zhipu {
+                    kind : openai
+                    auth_required : "maybe"
+                    models : ["glm-4.6"]
+                }
+            }
+        "#;
+        let err = parse_client_config(src).unwrap_err();
+        assert!(err.to_string().contains("zhipu"), "got: {err}");
     }
 }
