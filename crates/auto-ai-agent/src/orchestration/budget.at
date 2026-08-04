@@ -12,8 +12,12 @@ use.rust std::collections::HashMap
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// How to react when a budget threshold is crossed.
+///
+/// **Deprecated in spirit (Plan 016 F2)**: the pipeline treats all budget
+/// signals as advisory — it never reads this enum to decide behavior. Kept for
+/// API compatibility. HardStop does NOT actually halt a run.
 pub enum BudgetStrategy {
-    /// Halt step and request human decision.
+    /// Intended: halt step and request human decision. **Actual**: unused (advisory).
     HardStop
     /// Switch to a cheaper model for the remainder.
     EscalateModel

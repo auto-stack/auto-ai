@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Token budget with limit, warning threshold, and enforcement strategy.
+///
+/// **Note** (Plan 016 F2 cleanup): the `strategy` field / `BudgetStrategy` enum
+/// are retained for API compatibility but are **advisory only** — the pipeline
+/// does not currently honor them (it logs `LimitReached` and continues; see
+/// `BudgetAction` docs). Do not rely on `HardStop` actually halting a run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenBudget {
     pub limit: u64,
@@ -29,6 +34,8 @@ impl TokenBudget {
         Self {
             limit,
             warning_at: (limit as f64 * 0.7) as u64,
+            // Advisory only (Plan 016 F2): the pipeline does not hard-stop on
+            // budget. HardStop here is a marker, not an enforced behavior.
             strategy: BudgetStrategy::HardStop,
         }
     }
@@ -42,9 +49,17 @@ impl TokenBudget {
     }
 }
 
+/// How a caller *could* respond to a budget limit.
+///
+/// **Deprecated in spirit (Plan 016 F2)**: the pipeline treats all budget
+/// signals as advisory — it never reads this enum to decide behavior. Kept for
+/// API compatibility so callers that construct `TokenBudget` still compile.
+/// The variants describe intended consumer-side responses, none of which the
+/// default pipeline implements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BudgetStrategy {
-    /// Halt step and request human decision.
+    /// Intended: halt step and request human decision.
+    /// **Actual**: unused — pipeline is advisory-only.
     HardStop,
     /// Switch to a cheaper model for the remainder.
     EscalateModel,

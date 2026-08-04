@@ -9,38 +9,21 @@
 
 ## 🔴 待修复缺陷（有功能影响）
 
-### F2 — Budget 从 HardStop 降级为 advisory，三方不一致
+### F4 — build_handoff path 提取（代码已修，缺回归测试）
 
 | 字段 | 值 |
 |---|---|
 | 来源计划 | [008-orchestration-down](plans/008-orchestration-down.md)（活动） |
 | 所在仓库 | auto-ai（本仓库） |
-| 位置 | `crates/auto-ai-agent/rust-ref/src/orchestration/pipeline.rs:289,480` |
-| 严重度 | 🟡 中（行为与设计文档不符） |
+| 位置 | `crates/auto-ai-agent/rust-ref/src/orchestration/driver.rs:276-292 build_handoff` |
+| 严重度 | 🟢 低（代码已修复，仅缺回归测试锁定） |
 
-**问题**：Budget 静默从 HardStop 降级为 advisory。`BudgetStrategy::HardStop` 枚举仍存在（暗示可硬停），
-但 pipeline 实际只监控不中止（注释 "advisory by design"）。设计文档、枚举、实现三方不一致。
+**状态**：代码已在 commit `3eecf4f`（2026-07-20）修复——`build_handoff` 现用
+`tc.args.get("path").and_then(|p| p.as_str()).unwrap_or("?")`，不再 dump 整个 JSON。
+.at 版（driver.at:344-370）同样已修。
 
-**待决**：明确决策——要么实现真正的 HardStop（pipeline 在 LimitReached 时中止），要么移除
-HardStop 枚举并更新设计文档为 advisory-only。当前是"代码已决定 advisory，文档/枚举未跟上"。
-
-**触发条件**：依赖 token budget 硬停的长时间运行 pipeline（超预算时应停却继续跑）。
-
----
-
-### F4 — build_handoff 用 to_string() 提取 path，dump 整个 JSON
-
-| 字段 | 值 |
-|---|---|
-| 来源计划 | [008-orchestration-down](plans/008-orchestration-down.md)（活动） |
-| 所在仓库 | auto-ai（本仓库） |
-| 位置 | `crates/auto-ai-agent/rust-ref/src/orchestration/driver.rs:261 build_handoff`（及 :285 `.to_string()`） |
-| 严重度 | 🟡 中（功能瑕疵：handoff 上下文质量差） |
-
-**问题**：`build_handoff` 提取路径时用 `tc.args.to_string()`，把整个 args JSON 序列化塞进去，
-而非取 `tc.args["path"]` 字段。导致 handoff 上下文包含冗余 JSON，下游 agent 收到混乱信息。
-
-**修复方向**：改为 `tc.args.get("path")`（或对应字段名），只提取路径字符串。
+**剩余工作**：缺回归测试（plan 016 第二波 2.1 会补——`build_handoff` 对 write_file/edit_file
+工具调用断言 `work_product[0].path == args["path"]`）。.at 版 driver 0 测试，待补。
 
 ---
 
@@ -95,6 +78,10 @@ HardStop 枚举并更新设计文档为 advisory-only。当前是"代码已决�
   `override_tier` 字段 + `with_override_tier()` builder，`model_tier()` 返回 override；
   `build_agent_from_mode` 的 clamp 逻辑改为通过 builder 应用 `clamped`。此前计算了 `clamped`
   却只用于日志导致 `allowed_tiers` 失效。附 3 单元测试。Plan 004 §5 错误的 ✅ 已纠正。
+- **F2 — Budget HardStop 三方不一致**（2026-08-04 文档清理）：确认 `BudgetStrategy` 枚举的
+  `strategy` 字段是死代码（全代码库无读取），pipeline 实际行为是 advisory（由 `BudgetAction::LimitReached`
+  表达，已有测试锁定）。给 `BudgetStrategy` 加 deprecated-in-spirit 文档标注，`new()` 注释说明 advisory，
+  消除误导。保留枚举以维持 API 兼容（auto-musk re-export 它但未使用）。rust-ref + .at 双版本同步。
 
 ---
 
