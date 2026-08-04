@@ -323,7 +323,7 @@ fn parse_candidates(val: Value) -> Vec<TierRouteCandidate> {
     let mut out: Vec<TierRouteCandidate> = vec![];
     match val {
         Value::Array(arr) => {
-            for v in arr.values {
+            for v in &arr.values {
                 match v {
                     Value::Obj(o) => {
                         let provider = obj_get_str(o.clone(), "provider");
@@ -423,7 +423,7 @@ fn opt_models(node: Node, key: &str) -> Vec<ModelDefinition> {
     let mut out: Vec<ModelDefinition> = vec![];
     match val {
         Value::Array(arr) => {
-            for el in arr.values {
+            for el in &arr.values {
                 match el {
                     Value::Obj(o) => {
                         let id = obj_get_str(o.clone(), "id");
@@ -446,7 +446,7 @@ fn opt_models(node: Node, key: &str) -> Vec<ModelDefinition> {
             
 
             let parts = s.split(",").collect::<Vec<_>>();
-            for raw in parts {
+            for raw in &parts {
                 let m = raw.trim().to_string();
                 if m.is_empty() == false {
                     out.push(ModelDefinition::new(m.as_str(), ModelTier::Mid));

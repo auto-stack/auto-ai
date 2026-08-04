@@ -136,7 +136,7 @@ pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Opt
     let mut best_key: i32 = 0;
     let mut first: bool = true;
     let desired_order = desired.order();
-    for m in models {
+    for m in &models {
         
         if m.tier.order() == desired_order {
             return Some(m.id);

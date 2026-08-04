@@ -85,7 +85,7 @@ pub fn truncate_tool_result(s: &str) -> String {
 
 #[async_trait::async_trait]
 pub trait Client {
-    async fn complete(&self, req: CompletionRequest) -> Result<impl CompletionResponse, impl ClientError>;
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, ClientError>;
 }
 
 
@@ -196,13 +196,13 @@ impl Agent {
     pub fn history(&self) -> Vec<Message> {
         return self.memory.messages();
     }
-    pub async fn run(&mut self, task_msg: &str) -> Result<AgentResult, impl AgentError> {
+    pub async fn run(&mut self, task_msg: &str) -> Result<AgentResult, AgentError> {
         return self.run_inner(task_msg, None).await;
     }
-    pub async fn run_stream(&mut self, task_msg: &str, cancel: Arc<AtomicBool>) -> Result<AgentResult, impl AgentError> {
+    pub async fn run_stream(&mut self, task_msg: &str, cancel: Arc<AtomicBool>) -> Result<AgentResult, AgentError> {
         return self.run_inner(task_msg, Some(cancel)).await;
     }
-    pub async fn run_inner(&mut self, task_msg: &str, cancel: Option<Arc<AtomicBool>>) -> Result<AgentResult, impl AgentError> {
+    pub async fn run_inner(&mut self, task_msg: &str, cancel: Option<Arc<AtomicBool>>) -> Result<AgentResult, AgentError> {
 
 
         let mut events: Vec<StreamEvent> = vec![];
@@ -336,7 +336,7 @@ impl Agent {
         events.push(err.clone());
         return Err(AgentError::MaxTurnsExceeded(hard_limit));
     }
-    pub fn build_request(&self) -> impl CompletionRequest {
+    pub fn build_request(&self) -> CompletionRequest {
         let allowed = self.role.allowed_tools();
         let visible = self.tools.filter(allowed);
         let mut tool_defs: Vec<ToolDefinition> = vec![];

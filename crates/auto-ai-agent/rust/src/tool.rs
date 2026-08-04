@@ -4,7 +4,6 @@
 #[allow(unused_imports)]
 use a2r_std;
 use a2r_std::*;
-use crate::error::ToolError;
 
 use std::sync::Arc;
 use std::pin::Pin;
@@ -16,16 +15,16 @@ use crate::error::{ToolError};
 pub trait Tool {
     fn name(&self) -> String;
     fn description(&self) -> String;
-    fn parameters(&self) -> impl JsonValue{
+    fn parameters(&self) -> JsonValue{
 
 
 
         return a2r_std::json::parse("{\"type\":\"object\",\"properties\":{}}");
-    }    async fn execute(&self, args: JsonValue) -> Result<String, impl ToolError>;
+    }    async fn execute(&self, args: JsonValue) -> Result<String, ToolError>;
 }
 
 
-pub fn tool_to_definition(tool: Arc<Box<dyn Tool>>) -> impl ToolDefinition {
+pub fn tool_to_definition(tool: Arc<Box<dyn Tool>>) -> ToolDefinition {
     return ToolDefinition::new(tool.name(), tool.description(), tool.parameters());
 }
 
@@ -113,7 +112,7 @@ impl ToolRegistry {
         }
         return out;
     }
-    pub async fn execute(&self, name: &str, args: JsonValue) -> Result<String, impl ToolError> {
+    pub async fn execute(&self, name: &str, args: JsonValue) -> Result<String, ToolError> {
         match self.get(name) {
             Some(tool) => return tool.execute(args).await,
             None => return Err(ToolError::Exec(format!("tool not found: {}", name))),

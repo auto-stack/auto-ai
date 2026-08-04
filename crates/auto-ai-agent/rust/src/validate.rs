@@ -4,7 +4,6 @@
 #[allow(unused_imports)]
 use a2r_std;
 use a2r_std::*;
-use crate::error::AgentError;
 
 use std::path::PathBuf;
 use std::fs;
@@ -12,7 +11,7 @@ use dirs;
 use crate::error::{AgentError};
 use crate::role_def::{Role};
 use crate::ai_config;
-pub fn validate_role_model(role: Box<dyn Role>) -> Result<impl None, impl AgentError> {
+pub fn validate_role_model(role: Box<dyn Role>) -> Result<(), AgentError> {
     match load_client_config() {
         Ok(cfg) => {
             
@@ -28,7 +27,7 @@ pub fn validate_role_model(role: Box<dyn Role>) -> Result<impl None, impl AgentE
     }
 }
 
-pub fn load_client_config() -> Result<ai_config::ClientConfig, impl AgentError> {
+pub fn load_client_config() -> Result<ai_config::ClientConfig, AgentError> {
     match home_dir() {
         Some(home) => {
             let path = home.join(".config/autoos/ai-client.at");
@@ -64,7 +63,7 @@ pub fn load_client_config() -> Result<ai_config::ClientConfig, impl AgentError> 
 /// Load the client config from the standard path. Errors if the file is
 /// missing or malformed — callers may downgrade to a warning.
 /// The user's home directory, or None if it can't be determined.
-fn home_dir() -> Option<impl PathBuf> {
+fn home_dir() -> Option<PathBuf> {
     return dirs::home_dir();
 }
 

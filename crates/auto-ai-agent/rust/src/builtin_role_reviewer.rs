@@ -63,7 +63,7 @@ impl Role for Reviewer {
     fn system_prompt(&self) -> String {
         return SOUL.to_string();
     }
-    fn model_tier(&self) -> impl ModelTier {
+    fn model_tier(&self) -> ModelTier {
         return ModelTier::Pro;
     }
     fn temperature(&self) -> f64 {

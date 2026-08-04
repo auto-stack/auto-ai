@@ -6,7 +6,7 @@ pub fn validate_model_exists(config: ClientConfig, model: &str) -> Result<(), St
 
 
     let mut available: Vec<String> = vec![];
-    for name in config.provider_names {
+    for name in &config.provider_names {
         match config.providers.get(name.as_str()) {
             Some(p) => {
                 for m in p.models.clone() {

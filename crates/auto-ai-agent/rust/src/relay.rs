@@ -2,5 +2,5 @@
 
 use crate::error::{AgentError};
 pub trait RelayTarget {
-    fn delegate(&self, task_msg: &str) -> Result<String, impl AgentError>;
+    fn delegate(&self, task_msg: &str) -> Result<String, AgentError>;
 }

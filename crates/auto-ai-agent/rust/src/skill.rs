@@ -4,7 +4,6 @@
 #[allow(unused_imports)]
 use a2r_std;
 use a2r_std::*;
-use crate::error::ToolError;
 
 use std::path::PathBuf;
 use std::fs;
@@ -189,7 +188,7 @@ fn parse_skill_file(path: PathBuf) -> Result<Skill, String> {
 
 
 
-    let raw = a2r_std::fs::read_to_string(path.to_str().unwrap());
+    let raw = a2r_std::fs::read_to_string(path);
     let parsed = parse_frontmatter(raw.as_str());
     if parsed.name.is_empty() {
         return Err("frontmatter is missing 'name:'".into());
@@ -225,7 +224,7 @@ fn parse_frontmatter(raw: &str) -> Frontmatter {
 
             return Frontmatter { name: "".to_string(), description: "".to_string(), content: stripped.to_string() };
         },
-        Some(after_open) => return parse_frontmatter_body(after_open),
+        Some(after_open) => return parse_frontmatter_body(after_open.as_str()),
     }
 }
 
@@ -369,10 +368,10 @@ impl Tool for SkillTool {
     fn description(&self) -> String {
         return self.description_cache.clone();
     }
-    fn parameters(&self) -> impl JsonValue {
+    fn parameters(&self) -> JsonValue {
         return self.parameters_cache.clone();
     }
-    async fn execute(&self, args: JsonValue) -> Result<String, impl ToolError> {
+    async fn execute(&self, args: JsonValue) -> Result<String, ToolError> {
         let v = args.get("skill_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         if v.is_empty() {
             return Err(ToolError::Args("missing 'skill_name' argument".to_string()));
@@ -442,7 +441,7 @@ fn build_description(registry: SkillRegistry) -> String {
 /// Build the parameters JSON schema, embedding the registry's skill names as
 /// the `skill_name` enum. Uses json.parse over a stringified schema (the
 /// Auto VM's generic json.encode[T] is unreliable — plan 013 gotcha B4).
-fn build_parameters(registry: SkillRegistry) -> impl JsonValue {
+fn build_parameters(registry: SkillRegistry) -> JsonValue {
     let mut enum_parts: Vec<String> = vec![];
     for n in registry.names() {
         enum_parts.push(format!("\"{}\"", n));

@@ -159,7 +159,7 @@ impl Role for ConfigRole {
             None => return prompt,
         }
     }
-    fn model_tier(&self) -> impl ModelTier {
+    fn model_tier(&self) -> ModelTier {
         return self.cfg.model_tier.clone().unwrap_or(self.base_tier());
     }
     fn model(&self) -> String {
@@ -192,7 +192,7 @@ impl ConfigRole {
     pub fn base_prompt(&self) -> String {
         return "".to_string();
     }
-    pub fn base_tier(&self) -> impl ModelTier {
+    pub fn base_tier(&self) -> ModelTier {
         return ModelTier::Mid;
     }
     pub fn base_model_str(&self) -> String {
@@ -217,7 +217,7 @@ pub fn config_role_with_base(cfg: RoleConfig, base: Box<dyn Role>) -> ConfigRole
     return ConfigRole { cfg: cfg, base: Some(base) };
 }
 
-pub fn parse_at_role(content: &str) -> Result<RoleConfig, impl AgentError> {
+pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
     match auto_atom::AtomParser::parse(content) {
         Ok(atom) => {
             match atom {
@@ -255,7 +255,7 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, impl AgentError> {
     }
 }
 
-pub fn load_role(content: &str) -> Result<RoleConfig, impl AgentError> {
+pub fn load_role(content: &str) -> Result<RoleConfig, AgentError> {
     match parse_at_role(content) {
         Ok(cfg) => {
             let mut result = cfg;
@@ -293,7 +293,7 @@ pub fn load_role(content: &str) -> Result<RoleConfig, impl AgentError> {
     }
 }
 
-pub fn parse_tier_field(s: &str) -> Option<impl ModelTier> {
+pub fn parse_tier_field(s: &str) -> Option<ModelTier> {
     return ModelTier::parse_name(s);
 }
 
@@ -388,6 +388,6 @@ fn opt_str_list(node: auto_val::Node, key: &str) -> Option<Vec<String>> {
     }
 }
 
-fn parse_tier(s: &str) -> Option<impl ModelTier> {
+fn parse_tier(s: &str) -> Option<ModelTier> {
     return ModelTier::parse_name(s);
 }
