@@ -154,7 +154,7 @@ fn find_aaid_binary() ?str {
     ]
     for rel in rels {
         if fs.exists(rel) {
-            return Some(rel)
+            return Some(rel.clone())
         }
     }
     return None

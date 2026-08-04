@@ -149,7 +149,8 @@ ext AiClient {
                     is json.parse(data_line) {
                         Some(value) -> {
                             full = full + text_of(value)
-                            is value.get("type").as_string() {
+                            let event_type = value.get("type").as_string()
+                            is event_type {
                                 "error" -> {
                                     error_msg = Some(value.get("message").as_string())
                                 },
