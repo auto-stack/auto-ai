@@ -15,7 +15,7 @@ auto-ai-client = { path = "../auto-ai-client" }
 ai-config = { path = "../ai-config" }
 # Atom (.at) config parsing — shared with AutoForge, lives in ../auto-lang.
 auto-atom = { path = "../../../auto-lang/crates/auto-atom" }
-auto-val = { path = "../../../auto-lang/crates/auto-val" }
+auto-val = { path = "../../../auto-lang/crates/auto-val", features = ["serde"] }
 
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

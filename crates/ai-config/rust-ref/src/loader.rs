@@ -33,6 +33,7 @@ use std::collections::HashMap;
 
 use auto_atom::{Atom, AtomParser};
 use auto_val::{Kid, Node, Value};
+use serde::Deserialize;
 
 use crate::provider::ProviderConfig;
 use crate::tier::{ModelDefinition, ModelTier};
@@ -79,12 +80,48 @@ impl Default for DaemonConfig {
     }
 }
 
+// ── serde deserialization views (Plan 381) ──────────────────────────────────
+// These read the scalar props of a config node in one call, replacing the
+// hand-written opt_str/opt_uint/opt_bool helpers. Complex structures (providers
+// keyed by child-node name, tier_routing nested block, models' 3 shapes) stay
+// hand-written below — only the simple scalar fields migrate.
+
+#[derive(Debug, Deserialize)]
+struct ClientScalars {
+    #[serde(default)] default_provider: String,
+    #[serde(default)] default_model: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DaemonScalars {
+    #[serde(default)] listen_addr: Option<String>,
+    #[serde(default)] idle_timeout_min: Option<u64>,
+    #[serde(default)] log_level: Option<String>,
+    #[serde(default)] default_provider: Option<String>,
+    #[serde(default)] default_model: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProviderScalars {
+    #[serde(default)] kind: Option<String>,
+    #[serde(default)] base_url: Option<String>,
+    #[serde(default)] api_key: Option<String>,
+    #[serde(default)] key_env: Option<String>,
+    #[serde(default)] max_concurrency: Option<usize>,
+    /// auth_required accepts bool / 0,1 / "yes","on",… (loader.rs opt_bool).
+    #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")]
+    auth_required: Option<bool>,
+}
+
 /// Parse `ai-client.at` content (root must be `client { … }`).
 pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
     let node = root_node(content, "client")?;
 
-    let default_provider = opt_str(&node, "default_provider").unwrap_or_default();
-    let default_model = opt_str(&node, "default_model").unwrap_or_default();
+    // Top-level scalar fields via serde (Plan 381). Providers stay hand-written
+    // (they're child nodes keyed by node name — dynamic, not a fixed struct).
+    let s: ClientScalars = node
+        .deserialize()
+        .map_err(|e| ConfigError::Parse(format!("client.at: {e}")))?;
     let providers = parse_provider_blocks(&node);
 
     if providers.is_empty() {
@@ -92,16 +129,16 @@ pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
             "no providers configured in client { } block".into(),
         ));
     }
-    let default_provider = if default_provider.is_empty() {
+    let default_provider = if s.default_provider.is_empty() {
         providers.keys().next().cloned().unwrap_or_default()
     } else {
-        default_provider
+        s.default_provider
     };
 
     Ok(ClientConfig {
         providers,
         default_provider,
-        default_model,
+        default_model: s.default_model,
     })
 }
 
@@ -133,18 +170,19 @@ impl TierRouting {
 pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
     let node = root_node(content, "daemon")?;
 
-    let mut cfg = DaemonConfig::default();
-    if let Some(s) = opt_str(&node, "listen_addr") {
-        cfg.listen_addr = s;
-    }
-    if let Some(n) = opt_uint(&node, "idle_timeout_min") {
-        cfg.idle_timeout_min = n as u64;
-    }
-    if let Some(s) = opt_str(&node, "log_level") {
-        cfg.log_level = s;
-    }
-    cfg.default_provider = opt_str(&node, "default_provider").unwrap_or_default();
-    cfg.default_model = opt_str(&node, "default_model").unwrap_or_default();
+    // Top-level scalar fields via serde (Plan 381). Providers and tier_routing
+    // stay hand-written (child-node-keyed / nested-block structures).
+    let s: DaemonScalars = node
+        .deserialize()
+        .map_err(|e| ConfigError::Parse(format!("daemon.at: {e}")))?;
+    let mut cfg = DaemonConfig {
+        listen_addr: s.listen_addr.unwrap_or_default(),
+        idle_timeout_min: s.idle_timeout_min.unwrap_or(0),
+        log_level: s.log_level.unwrap_or_default(),
+        default_provider: s.default_provider.unwrap_or_default(),
+        default_model: s.default_model.unwrap_or_default(),
+        ..DaemonConfig::default()
+    };
     cfg.providers = parse_provider_blocks(&node);
     cfg.tier_routing = parse_tier_routing(&node);
 
@@ -225,19 +263,24 @@ fn parse_tier_routing(node: &Node) -> TierRouting {
 }
 
 /// Walk a node's children, turning each `name { … }` block into a
-/// `ProviderConfig`.
+/// `ProviderConfig`. The per-provider scalar fields are deserialized via serde
+/// (Plan 381); `models` stays hand-written (`opt_models` handles 3 input shapes).
 fn parse_provider_blocks(node: &Node) -> HashMap<String, ProviderConfig> {
     let mut providers = HashMap::new();
     for (_key, kid) in node.kids_iter() {
         if let Kid::Node(child) = kid {
+            let s: ProviderScalars = match child.deserialize() {
+                Ok(s) => s,
+                Err(_) => continue, // a non-provider child node; skip
+            };
             let pc = ProviderConfig {
-                kind: opt_str(child, "kind").unwrap_or_default(),
-                base_url: opt_str(child, "base_url").unwrap_or_default(),
-                api_key: opt_str(child, "api_key"),
-                key_env: opt_str(child, "key_env"),
+                kind: s.kind.unwrap_or_default(),
+                base_url: s.base_url.unwrap_or_default(),
+                api_key: s.api_key,
+                key_env: s.key_env,
                 models: opt_models(child, "models"),
-                max_concurrency: opt_uint(child, "max_concurrency"),
-                auth_required: opt_bool(child, "auth_required").unwrap_or(true),
+                max_concurrency: s.max_concurrency,
+                auth_required: s.auth_required.unwrap_or(true),
             };
             if !pc.kind.is_empty() {
                 providers.insert(child.name.to_string(), pc);
@@ -247,19 +290,10 @@ fn parse_provider_blocks(node: &Node) -> HashMap<String, ProviderConfig> {
     providers
 }
 
-fn opt_str(node: &Node, key: &str) -> Option<String> {
-    match node.get_prop_of(key) {
-        Value::Str(s) => Some(s.to_string()),
-        Value::Nil => None,
-        other => Some(other.to_astr().to_string()),
-    }
-}
-
-/// Read the `models` field. Accepts either a quoted-string array
-/// `["glm-4.6", "glm-flash"]` (preferred — model names contain dots) or a
-/// legacy comma-separated bare string `glm-4.6,glm-flash` (only works when
-/// names don't trip the number parser).
 /// Read the `models` field as a list of [`ModelDefinition`]s (id + tier).
+/// (Stays hand-written: accepts 3 input shapes — Obj array, bare-Str array,
+/// and legacy comma-separated string — plus lenient tier parsing. Too
+/// specialized for a generic deserialize_with helper.)
 ///
 /// Accepted shapes (each element of the `models` array):
 /// - `Obj { id: "glm-5.2", name: "...", tier: max }` — full, preferred.
@@ -316,31 +350,10 @@ fn parse_tier(s: &str) -> ModelTier {
     ModelTier::parse_name(s).unwrap_or_default()
 }
 
-/// Read a non-negative integer prop. auto-atom parses whole numbers as
-/// `Value::Int` (i32) or `Value::Uint` (u32); accept both.
-fn opt_uint(node: &Node, key: &str) -> Option<usize> {
-    match node.get_prop_of(key) {
-        Value::Uint(u) => Some(u as usize),
-        Value::Int(i) if i >= 0 => Some(i as usize),
-        Value::Nil => None,
-        _ => None,
-    }
-}
-
-/// Parse a boolean property: `true`/`false`, `1`/`0`, `yes`/`no`.
-fn opt_bool(node: &Node, key: &str) -> Option<bool> {
-    match node.get_prop_of(key) {
-        Value::Bool(b) => Some(b),
-        Value::Uint(0) | Value::Int(0) => Some(false),
-        Value::Uint(_) | Value::Int(_) => Some(true),
-        Value::Str(s) => match s.to_ascii_lowercase().as_str() {
-            "true" | "yes" | "1" | "on" => Some(true),
-            "false" | "no" | "0" | "off" => Some(false),
-            _ => None,
-        },
-        _ => None,
-    }
-}
+/// Read the `models` field as a list of [`ModelDefinition`]s (id + tier).
+/// (Stays hand-written: accepts 3 input shapes — Obj array, bare-Str array,
+/// and legacy comma-separated string — plus lenient tier parsing. Too
+/// specialized for a generic deserialize_with helper.)
 
 #[cfg(test)]
 mod tests {

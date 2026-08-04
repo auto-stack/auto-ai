@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use auto_atom::{Atom, AtomParser};
 use auto_val::Value;
+use serde::Deserialize;
 
 use crate::error::AgentError;
 use crate::role_def::Role;
@@ -47,6 +48,44 @@ pub struct RoleConfig {
     /// Sidecar Soul markdown file (same dir as the .at). When set, the Soul
     /// comes from this file instead of the inline `system_prompt`.
     pub soul_file: Option<String>,
+}
+
+/// Deserialization view for a `role { … }` block (Plan 381 migration).
+///
+/// Reads the scalar/string fields via auto-val's serde `Deserialize` in one
+/// call, replacing the hand-written `opt_string`/`opt_float`/`opt_uint`/
+/// `opt_string_list` helpers. Tier-named fields (`model_tier`, `allowed_tiers`)
+/// are read as raw strings here and converted to `ModelTier` by
+/// [`parse_at_role`] (tier parsing is ai-config domain logic, not a
+/// `deserialize_with` helper).
+///
+/// `tools`/`tools_append`/`skills` use `string_or_list` so a bare string reads
+/// as a one-element list (matching the old `opt_string_list`).
+#[derive(Debug, Deserialize)]
+struct RoleDecl {
+    #[serde(default)] name: Option<String>,
+    #[serde(default)] description: Option<String>,
+    #[serde(default)] model: Option<String>,
+    /// Raw tier name (e.g. "max"); converted to ModelTier after deserialize.
+    #[serde(default)] model_tier: Option<String>,
+    #[serde(default, deserialize_with = "auto_val::lenient_f64_opt")]
+    temperature: Option<f64>,
+    #[serde(default)] max_turns: Option<u64>,
+    #[serde(default)] memory_limit: Option<u64>,
+    #[serde(default)] system_prompt: Option<String>,
+    #[serde(default)] system_prompt_append: Option<String>,
+    #[serde(default)] inherit: Option<String>,
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    tools: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    tools_append: Option<Vec<String>>,
+    /// Raw tier names; converted to Vec<ModelTier> after deserialize.
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    allowed_tiers: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    skills: Option<Vec<String>>,
+    #[serde(default)] token_budget: Option<u64>,
+    #[serde(default)] soul_file: Option<String>,
 }
 
 impl RoleConfig {
@@ -122,28 +161,34 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
         }
     };
 
-    let mut cfg = RoleConfig::default();
-    cfg.name = opt_string(&node, "name");
-    cfg.description = opt_string(&node, "description");
-    cfg.model = opt_string(&node, "model");
-    cfg.model_tier = opt_string(&node, "model_tier").map(|s| parse_tier(&s)).flatten();
-    cfg.temperature = opt_float(&node, "temperature");
-    cfg.max_turns = opt_uint(&node, "max_turns");
-    cfg.memory_limit = opt_uint(&node, "memory_limit").map(|u| u as usize);
-    cfg.system_prompt = opt_string(&node, "system_prompt");
-    cfg.system_prompt_append = opt_string(&node, "system_prompt_append");
-    cfg.inherit = opt_string(&node, "inherit");
-    cfg.tools = opt_string_list(&node, "tools");
-    cfg.tools_append = opt_string_list(&node, "tools_append");
-    // Plan 004: Agent Roles extensions.
-    cfg.allowed_tiers = opt_string_list(&node, "allowed_tiers").map(|names| {
-        names.into_iter().filter_map(|s| parse_tier(&s)).collect()
-    });
-    cfg.skills = opt_string_list(&node, "skills");
-    cfg.token_budget = opt_uint(&node, "token_budget").map(|u| u as u64);
-    cfg.soul_file = opt_string(&node, "soul_file");
+    // Deserialize the scalar/string fields via auto-val's serde support
+    // (Plan 381). The hand-written opt_* helpers are replaced by #[derive]
+    // on RoleDecl + deserialize_with for the lenient fields. Tier-name fields
+    // are read as raw strings and converted below (parse_tier is domain logic).
+    let d: RoleDecl = node.deserialize().map_err(|e| {
+        AgentError::Config(format!("failed to deserialize role block: {e}"))
+    })?;
 
-    Ok(cfg)
+    Ok(RoleConfig {
+        name: d.name,
+        description: d.description,
+        model: d.model,
+        model_tier: d.model_tier.and_then(|s| parse_tier(&s)),
+        temperature: d.temperature,
+        max_turns: d.max_turns.map(|u| u as usize),
+        memory_limit: d.memory_limit.map(|u| u as usize),
+        system_prompt: d.system_prompt,
+        system_prompt_append: d.system_prompt_append,
+        inherit: d.inherit,
+        tools: d.tools,
+        tools_append: d.tools_append,
+        allowed_tiers: d.allowed_tiers.map(|names| {
+            names.into_iter().filter_map(|s| parse_tier(&s)).collect()
+        }),
+        skills: d.skills,
+        token_budget: d.token_budget,
+        soul_file: d.soul_file,
+    })
 }
 
 /// Serialize a [`RoleConfig`] back to round-trippable `.at` source for a
@@ -245,60 +290,6 @@ pub fn parse_tier(s: &str) -> Option<ai_config::ModelTier> {
 /// Public alias for [`parse_tier`], for downstream (musk API) use.
 pub fn parse_tier_field(s: &str) -> Option<ai_config::ModelTier> {
     parse_tier(s)
-}
-
-// ── small Value readers (the auto-atom navigation pattern) ──────────────────
-//
-// Every reader treats Value::Nil (the "prop absent" sentinel from
-// `Node::get_prop_of`) as None.
-
-fn opt_string(node: &auto_val::Node, key: &str) -> Option<String> {
-    match node.get_prop_of(key) {
-        Value::Str(s) => Some(s.to_string()),
-        Value::Nil => None,
-        other => Some(other.to_astr().to_string()),
-    }
-}
-
-/// Read a float prop. auto-atom parses decimals as `Value::Double`, so we must
-/// match both `Float` and `Double` (the design-doc's `get_float_or` only
-/// matches `Float` — a footgun noted in the Explore report).
-fn opt_float(node: &auto_val::Node, key: &str) -> Option<f64> {
-    match node.get_prop_of(key) {
-        Value::Double(f) | Value::Float(f) => Some(f),
-        Value::Int(i) => Some(i as f64),
-        Value::Uint(u) => Some(u as f64),
-        Value::Nil => None,
-        _ => None,
-    }
-}
-
-fn opt_uint(node: &auto_val::Node, key: &str) -> Option<usize> {
-    match node.get_prop_of(key) {
-        Value::Uint(u) => Some(u as usize),
-        Value::Int(i) if i >= 0 => Some(i as usize),
-        Value::Nil => None,
-        _ => None,
-    }
-}
-
-fn opt_string_list(node: &auto_val::Node, key: &str) -> Option<Vec<String>> {
-    match node.get_prop_of(key) {
-        Value::Array(arr) => {
-            let items: Vec<String> = arr
-                .values
-                .iter()
-                .map(|v| match v {
-                    Value::Str(s) => s.to_string(),
-                    other => other.to_astr().to_string(),
-                })
-                .collect();
-            Some(items)
-        }
-        Value::Str(s) => Some(vec![s.to_string()]),
-        Value::Nil => None,
-        _ => None,
-    }
 }
 
 // ── ConfigRole: a Role built from a merged config ───────────────
