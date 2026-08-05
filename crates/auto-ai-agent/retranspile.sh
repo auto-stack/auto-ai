@@ -180,6 +180,15 @@ for f in "$RUST"/driver.rs "$RUST"/agent.rs "$RUST"/skill.rs "$RUST"/roles.rs; d
     sed -i 's#after_open\.as_str()#after_open#g' "$f"
 done
 
+# Plan 021: a2r (auto-lang Plan 387 §16 aftermath) now renders Auto's
+# `mut eng PipelineEngine` parameter as `&mut PipelineEngine` (borrow inference
+# change), and the call site as `&mut self.clone()` / `&mut h.clone()`. Align
+# both back to by-value to match the .at source intent.
+if [ -f "$RUST/pipeline.rs" ]; then
+    sed -i 's#fn correct_handoff_target(eng: &mut PipelineEngine, mut h: &mut HandoffDocument,#fn correct_handoff_target(mut eng: PipelineEngine, mut h: HandoffDocument,#g;
+            s#correct_handoff_target(\&mut self.clone(), \&mut h.clone(),#correct_handoff_target(self.clone(), h.clone(),#g' "$RUST/pipeline.rs"
+fi
+
 # Clean up .a2r.rs intermediates
 find "$SRC" -name "*.a2r.rs" -delete
 

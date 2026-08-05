@@ -5,8 +5,6 @@
 use a2r_std;
 use a2r_std::*;
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use a2r_std::time;
 use crate::flow::{FlowSpec};
 use crate::handoff::{HandoffDocument, WorkProduct};
@@ -31,9 +29,10 @@ use crate::wire::{JsonValue};
 /// Auto port of crates/auto-ai-agent/src/orchestration/driver.rs (auto-ai v0.4.0).
 /// 
 /// a2r-FIRST NOTE: depends on crate::agent::{Agent, AgentResult, StreamEvent}
-/// (ported in agent.at), std::sync::Arc/atomic, and `Fn(...)` closure types
-/// carried as fields. The pure AutoVM cannot resolve these; the runtime path is
-/// a2r->Rust (cargo).
+/// (ported in agent.at) and `Fn(...)` closure types carried as fields. The pure
+/// AutoVM cannot resolve these; the runtime path is a2r->Rust (cargo).
+/// Plan 021: steps run the agent non-streaming (`Agent.run` — run_stream now
+/// requires a TaskRef<StreamEvent> actor sink; see agent.at EventSink).
 /// 
 /// VARIANT NOTE: all struct-style enum variants below are modeled as tuple
 /// variants (plan 013 gotcha B3). Field order:
@@ -232,8 +231,10 @@ impl PipelineDriver {
         let input = build_step_input(task_msg, last_handoff.clone());
 
 
-        let no_cancel = Arc::new(AtomicBool::new(false));
-        let agent_result = agent_inst.run_stream(input.as_str(), no_cancel).await?;
+
+
+
+        let agent_result = agent_inst.run(input.as_str()).await?;
 
 
         let content = agent_result.content();

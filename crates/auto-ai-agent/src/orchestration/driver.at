@@ -14,9 +14,10 @@
 /// Auto port of crates/auto-ai-agent/src/orchestration/driver.rs (auto-ai v0.4.0).
 ///
 /// a2r-FIRST NOTE: depends on crate::agent::{Agent, AgentResult, StreamEvent}
-/// (ported in agent.at), std::sync::Arc/atomic, and `Fn(...)` closure types
-/// carried as fields. The pure AutoVM cannot resolve these; the runtime path is
-/// a2r->Rust (cargo).
+/// (ported in agent.at) and `Fn(...)` closure types carried as fields. The pure
+/// AutoVM cannot resolve these; the runtime path is a2r->Rust (cargo).
+/// Plan 021: steps run the agent non-streaming (`Agent.run` — run_stream now
+/// requires a TaskRef<StreamEvent> actor sink; see agent.at EventSink).
 ///
 /// VARIANT NOTE: all struct-style enum variants below are modeled as tuple
 /// variants (plan 013 gotcha B3). Field order:
@@ -32,8 +33,6 @@
 /// Note: the Rust field `handoff.to` is `handoff.target` in Auto (reserved
 /// word, see handoff.at). The driver leaves target empty ("engine decides").
 
-use.rust std::sync::Arc
-use.rust std::sync::atomic::AtomicBool
 // Plan 380 (A15): `time.now_sec()` needs the a2r_std::time module bridged in
 // (E0425 `time` otherwise).
 use.rust a2r_std::time
@@ -288,7 +287,7 @@ ext PipelineDriver {
 
         // Build the agent for this step. (clone: build_agent consumes the
         // handoff, but we still need it for the step input + budget warning.)
-        // `var` (let mut): run_stream takes &mut self.
+        // `var` (let mut): run takes &mut self.
         var agent_inst = is self.factory.build_agent(role_id, last_handoff.clone()) {
             Ok(a) -> a,
             Err(msg) -> return Err(AgentError.Config(msg))
@@ -297,9 +296,11 @@ ext PipelineDriver {
         // Construct the input: original task for step 0, else the handoff render.
         let input = build_step_input(task_msg, last_handoff)
 
-        // Pipelines run to completion — pass a never-cancel dummy.
-        let no_cancel = Arc.new(AtomicBool.new(false))
-        let agent_result = agent_inst.run_stream(input.as_str(), no_cancel).await.?
+        // Pipelines run to completion — run() is non-cancellable and consumes
+        // the agent's events in a throwaway EventSink (Plan 021: run_stream now
+        // requires a TaskRef<StreamEvent> sink; the pipeline consumer has no
+        // agent-event forwarding path yet — the handoff uses AgentResult below).
+        let agent_result = agent_inst.run(input.as_str()).await.?
 
         // Build the handoff from the result + the agent's text output.
         let content = agent_result.content()
