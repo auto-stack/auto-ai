@@ -33,14 +33,24 @@
   - **B（备选，M）**：用 Auto actor/channel 机制（agent.at:42 注释已埋伏笔）在 spec 层做事件队列，
     绕开 dyn-Fn。不依赖解析器改动。
 
-### 缺口 2：`register_tool<T>` 泛型（中，M 级）
+### 缺口 2：`register_tool` 泛型 → 📌 重新定性（2026-08-06 实证），路线改走 spec-param + a2r call-site 修复
+
+> **2026-08-06 实证推翻原始判断**：无需泛型语法。a2r 的 spec-param 机制（`fn register(tool Tool)`，
+> `Tool` 是 spec）已转译为 `fn register(tool: Box<dyn Tool>)`，达到 rust-ref `register<T: Tool>(tool: T)`
+> 的全部人体工学价值（调用方写 `register(my_tool)` 即可）。真缺陷是 **a2r call-site 不自动 `Box::new`
+> 具体结构体实参**（`r.register(t)` 转译无包装 → E0308）。
+>
+> **泛型语法路线 ❌ 否决**（spec-param 已够，泛型 + `'static` 是 L 级过度设计）。
 
 - **现状**：rust-ref 的 `ToolRegistry::register<T: Tool + 'static>(tool: T)` 内部 `Arc::new(tool)`。
-  Auto 版只有 `register_shared(tool: Arc<Tool>)`——缺"接受任意 Tool 实现类型"的泛型入口。
-- **阻塞**：Auto 语言没有 `<T: Tool>` 泛型方法语法。Plan 016 §2.3 明确"推迟到转正"。
-- **影响**：下游（auto-ai-cli）若想 `register(MyTool{...})` 必须先 `Arc::new` 包箱。
-  功能可用但不便，且与 rust-ref API 不完全对齐。
-- **修复路径**：需 auto-lang 支持泛型方法声明（或 Auto 层面的 trait object 自动装箱语法）。
+  Auto 版只有 `register_shared(tool: Arc<Tool>)`——缺"接受任意 Tool 实现类型"的入口。
+- ~~**阻塞**：Auto 语言没有 `<T: Tool>` 泛型方法语法~~ → **重新定性**：阻塞在 a2r call-site
+  不自动装箱 spec 参数的具体值实参（三处协调缺陷，详见 auto-lang Plan 390 §11.2）。
+- **影响**：下游（auto-ai-cli）若想 `register(MyTool{...})` 必须先 `Arc::new(Box::new(...))` 手包箱。
+- ~~**修复路径**：需 auto-lang 支持泛型方法声明~~ → **新修复路径**：
+  - **Phase E（auto-lang）**：a2r call-site spec 自动装箱修复（3 处 `trans/rust.rs` 改动）→ auto-lang **Plan 390 §11**
+  - **Phase F（auto-ai）**：`tool.at`/`agent.at` 加 `register(tool Tool)` / `register_tool(tool Tool)` → auto-lang Plan 390 §12
+  - 存储类型仍 `Arc<Box<dyn Tool>>`（双层包装，Plan 019 已知限制，功能可用）
 
 ### 缺口 3：Plan 381 serde 同步到 .at 源（中，M 级）
 
@@ -103,12 +113,14 @@
 自引用 task state 字段解析失败（已用 `+` 拼接绕过）。修复后 EventSink handler 可真正外发到
 app 的 channel/SSE。
 
-### Phase 2 — 缺口 2 泛型工具注册（需 auto-lang 评估）
+### Phase 2 — 缺口 2 工具注册 → 📌 路线改走 spec-param + a2r call-site 修复（2026-08-06）
 
-- [ ] 2.1 评估 Auto 语言能否表达"接受任意 Tool 实现"的语义（泛型方法 / trait object 自动装箱 / 其他）
-- [ ] 2.2 若 auto-lang 可支持：在 auto-lang worktree 实现泛型方法语法（或装箱语法）
-- [ ] 2.3 回 auto-ai 在 tool.at 加 `register` 方法，重跑 retranspile 验证
-- [ ] 2.4 若 auto-lang 暂不支持：记录为语言能力前置，保持 `register_shared` workaround
+> 泛型语法否决（见"缺口 2"章节）。auto-lang **Plan 390 §11 (Phase E)** + **§12 (Phase F)** 承接。
+
+- [x] 2.1 ~~评估泛型方法可行性~~ → **已重评估**：spec-param 机制已够，真缺陷在 a2r call-site 自动装箱
+- [ ] 2.2 auto-lang worktree：a2r call-site spec 自动装箱修复（3 处 `trans/rust.rs`）→ Plan 390 **Phase E**
+- [ ] 2.3 回 auto-ai：`tool.at`/`agent.at` 加 `register(tool Tool)` / `register_tool(tool Tool)` → Plan 390 **Phase F**
+- [ ] 2.4 retranspile 0 错；auto-ai-cli `register_tool` call site 不再手包箱 → 勾选缺口 2 完成判定
 
 ### Phase 3 — 缺口 1 完整路径（dyn-Fn，auto-lang，L 级，若 Phase 1 备选不可行）
 
