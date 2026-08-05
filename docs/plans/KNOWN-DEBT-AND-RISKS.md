@@ -15,5 +15,5 @@
 
 | Plan | 类别 | 描述 | 参考 |
 |---|---|---|---|
-| 019 | 未来增强 | a2r 借用推理的 4 类根因（B: 借用循环变量字段传 owned 参数未 clone；C: for-in 对 ReadDir 无条件加 &；D: 函数参数 move 后重用未 clone；E: 对 &str 多余插 .as_str()）应到 auto-lang 根因修复，届时删除 retranspile.sh 的对应 sed 规则。 | `crates/auto-ai-agent/retranspile.sh` |
-| 019 | 未来增强 | ai-config/rust（2 错：`for m in &models` 借用迭代器）+ auto-ai-client/rust（9 错：str_as_str/borrow/mismatched）仍有既有 a2r 错误，非本 plan 范围。转正（plan 019+ 的后续）需一并清零。 | `crates/ai-config/rust/src/tier.rs:154` 等 |
+| 019 | 未来增强 | a2r 借用推理的 4 类根因（B: 借用循环变量字段传 owned 参数未 clone；C: for-in 对 ReadDir 无条件加 &；D: 函数参数 move 后重用未 clone；E: 对 &str 多余插 .as_str()）应到 auto-lang 根因修复，届时删除 retranspile.sh 的对应 sed 规则。**由用户在 auto-lang 单独推进。** | `crates/auto-ai-agent/retranspile.sh` |
+| 020 | 已完成 | ~~ai-config/rust + auto-ai-client/rust 转译版错误清零~~ — Plan 020 已通过 retranspile.sh sed 绕过清零（ai-config 1→0、client 8→0）。sed workaround 同 019 模式，a2r 根因修复后自动 no-op。 | `crates/ai-config/retranspile.sh`、`crates/auto-ai-client/retranspile.sh` |
