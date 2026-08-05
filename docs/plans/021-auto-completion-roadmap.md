@@ -97,10 +97,29 @@
 
 ### Phase 4 — 缺口 3 serde 同步（转正前置）
 
+> **由用户在 auto-lang 单独推进**（a2r 加 serde derive 注解转译）。
+
 - [ ] 4.1 评估 a2r 对 `#[derive(Deserialize)]` 注解的支持现状
 - [ ] 4.2 auto-lang worktree：a2r 扩展 serde derive 注解转译（或 retranspile.sh 注入绕过）
 - [ ] 4.3 回 auto-ai：role_config.at / loader.at 用 serde 重写，对齐 rust-ref
 - [ ] 4.4 同步 Plan 381 的 provider 错误硬传播行为
+
+### Phase 5 — orchestration 功能对齐审计（auto-ai 内，转正前置）
+
+> 不依赖 auto-lang。确认转译版 rust/ 的 orchestration 与 rust-ref 功能等价（无缺失）。
+
+- [x] 5.1 行数/测试占比审计：五个文件（budget/driver/flow/handoff/pipeline）的业务代码差异
+      **结论：转译版无功能缺失**——所有文件业务差为负数（rust/ 比 rust-ref 业务代码多），
+      差异全是 a2r codegen 膨胀（显式类型注解、显式 return）+ rust-ref 内嵌测试。
+      driver.rs：rust-ref 321 业务 + 267 测试 = 588；rust/ 404（无测试），业务多 83 行。
+- [x] 5.2 方法等价性抽查：转译版 driver 有 13 个方法（含 dispatch/drive_step/resolve_gate_auto/
+      handle_after_submit/build_step_input），rust-ref 有 7 个（部分逻辑内联在 drive 里）。
+      **转译版方法更多，非更少**。
+- [x] 5.3 API 兼容性差异记录（转正时需同步改下游）：
+      - `PipelineDriver`：rust-ref 泛型 `<F: AgentFactory>` → rust/ 非泛型 + `Box<dyn AgentFactory>`
+      - `PipelineDriver::new`：`factory: F` → `factory: Box<dyn AgentFactory>`（cli 需 `Box::new()`）
+      - `drive(on_event)`：rust-ref 回调 `Arc<dyn Fn>` → rust/ `fn(PipelineEvent)` 指针
+      - `AgentFactory` trait：rust-ref `: Send + Sync` bound → rust/ 无 bound
 
 ---
 
