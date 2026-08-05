@@ -113,14 +113,16 @@
 自引用 task state 字段解析失败（已用 `+` 拼接绕过）。修复后 EventSink handler 可真正外发到
 app 的 channel/SSE。
 
-### Phase 2 — 缺口 2 工具注册 → 📌 路线改走 spec-param + a2r call-site 修复（2026-08-06）
+### Phase 2 — 缺口 2 工具注册 → ✅ 完成（2026-08-06，spec-param + a2r call-site 修复）
 
 > 泛型语法否决（见"缺口 2"章节）。auto-lang **Plan 390 §11 (Phase E)** + **§12 (Phase F)** 承接。
 
 - [x] 2.1 ~~评估泛型方法可行性~~ → **已重评估**：spec-param 机制已够，真缺陷在 a2r call-site 自动装箱
-- [ ] 2.2 auto-lang worktree：a2r call-site spec 自动装箱修复（3 处 `trans/rust.rs`）→ Plan 390 **Phase E**
-- [ ] 2.3 回 auto-ai：`tool.at`/`agent.at` 加 `register(tool Tool)` / `register_tool(tool Tool)` → Plan 390 **Phase F**
-- [ ] 2.4 retranspile 0 错；auto-ai-cli `register_tool` call site 不再手包箱 → 勾选缺口 2 完成判定
+- [x] 2.2 auto-lang worktree：a2r call-site spec 自动装箱修复 → Plan 390 **Phase E**（已合并 master，commit `0126f846`）
+- [x] 2.3 回 auto-ai：`tool.at`/`agent.at` 加 `register(tool Tool)` / `register_tool(tool Tool)` → Plan 390 **Phase F**（本次）
+- [x] 2.4 retranspile 0 错（rust/ 独立 crate + workspace 双检）；`r.register(EchoTool())` →
+      `r.register(Box::new(EchoTool {}))` 自动装箱，CLI 无需手包箱；rust-ref 100 单测全绿 →
+      **缺口 2 完成判定勾选**
 
 ### Phase 3 — 缺口 1 完整路径（dyn-Fn，auto-lang，L 级，若 Phase 1 备选不可行）
 
@@ -213,7 +215,11 @@ task 状态默认值固定（`cb = noop`）、无"设状态"控制消息。需�
       **部分完成（Phase 1b）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)` 已可
       向 EventSink actor 外发全部事件。剩余：sink handler 无法把事件转发到 app（a2r 限制，
       见 KNOWN-DEBT）；driver 的 PipelineEvent.Delta/Tool 转发未接。
-- [ ] 缺口 2：ToolRegistry 有泛型/装箱的 register 入口（或明确记录语言前置）
+- [x] 缺口 2：ToolRegistry 有泛型/装箱的 register 入口（或明确记录语言前置）
+      **✅ 完成（Phase 2/E/F）**：`ToolRegistry.register(tool Tool)` + `Agent.register_tool(tool Tool)`
+      已落地（auto-ai），spec-param 路径 + a2r call-site 自动装箱（auto-lang Plan 390 Phase E）。
+      `r.register(MyTool{})` → `r.register(Box::new(MyTool{}))` 自动包装，无需 `Arc::new(Box::new(...))`。
+      泛型语法路线否决（spec-param 已够）。转正后 CLI `register_tool(ReadFile)` 可直接用。
 - [ ] 缺口 3：转译版的 role_config/loader 与 rust-ref 的 serde 行为对齐
 - [ ] 三个转译 crate 仍 0 错；rust-ref 主版本测试全绿
 - [ ] 打 tag `auto-complete-v0.1`（或 auto-mvp-v0.3）标记功能覆盖达成

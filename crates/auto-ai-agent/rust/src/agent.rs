@@ -264,6 +264,9 @@ impl Agent {
     pub fn register_shared(&mut self, tool: Arc<Box<dyn Tool>>) {
         self.tools.register_shared(tool);
     }
+    pub fn register_tool(&mut self, tool: Box<dyn Tool>) {
+        self.tools.register(tool);
+    }
     pub fn register_skill_tool(&mut self, tool: SkillTool) {
         self.skills_block = Some(tool.available_skills_block());
     }
@@ -440,6 +443,11 @@ impl Agent {
 /// Inject project context (e.g. the contents of .musk.md or CLAUDE.md) into
 /// the system prompt. Prepended before the role's soul.
 /// Register a tool the agent may call (takes a spec value).
+/// Register a tool from a concrete spec value (mirrors rust-ref's
+/// `register_tool<T: Tool + 'static>`). The caller passes a plain struct
+/// value (`agent.register_tool(MyTool{})`) and the registry Arc-wraps it
+/// internally. Call sites auto-box via a2r Plan 390 §11 Phase E
+/// (`register_tool(Box::new(my_tool))`); no manual `Arc::new(Box::new(...))`.
 /// Cache the available-skills block from a SkillTool so build_system_prompt
 /// injects the skill directory into the system prompt. The caller must also
 /// register the SkillTool via register_shared (Auto can't Arc-wrap a spec

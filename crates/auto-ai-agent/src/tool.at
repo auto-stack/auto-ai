@@ -89,6 +89,27 @@ ext ToolRegistry {
         self.tools.set(n, tool)
     }
 
+    /// Register a tool from a concrete spec value (overwrites an existing tool
+    /// with the same name). Mirrors rust-ref's `register<T: Tool + 'static>`:
+    /// the caller passes a plain struct value (`register(MyTool{})`) and we
+    /// Arc-wrap it internally. Auto's spec-param path renders `tool Tool` as
+    /// `Box<dyn Tool>`; `Arc(tool)` lifts it into the `Arc<Box<dyn Tool>>`
+    /// storage (the known double-wrap, Plan 019 — functionally correct via
+    /// Deref). Call sites auto-box via a2r Plan 390 §11 Phase E.
+    //
+    // NOTE: `let a = Arc(tool)` is let-bound (not inlined in `.set`) because
+    // a2r renders `Arc(x)` correctly in let-position (`Arc::new(x)`) but as a
+    // raw call-arg it emits `Arc(x)` verbatim (a known a2r arg-position defect
+    // for Arc/Box constructors, pre-existing — tracked separately).
+    pub mut fn register(tool Tool) void {
+        let n = tool.name()
+        let a = Arc(tool)
+        if self.tools.contains(n) == false {
+            self.names.push(n.to_string())
+        }
+        self.tools.set(n, a)
+    }
+
     /// Look up a tool by name.
     pub fn get(name str) ?Arc<Tool> {
         // self.tools.get(name) returns Option<&Arc<...>>; destructure + .clone()

@@ -75,6 +75,14 @@ impl ToolRegistry {
         }
         self.tools.insert(n, tool);
     }
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        let n = tool.name();
+        let a = Arc::new(tool);
+        if self.tools.contains_key(&n) == false {
+            self.names.push(n.to_string());
+        }
+        self.tools.insert(n, a);
+    }
     pub fn get(&self, name: &str) -> Option<Arc<Box<dyn Tool>>> {
 
 
