@@ -163,17 +163,25 @@ app 的 channel/SSE。
 - [x] 6.3 auto-lang worktree：修复 R3（f-string 自引用 task state 解析）
 - [x] 6.4 回归：a2r 22_actors 001-015（含新增 013/014/015）全绿 + auto-lang 全量测试零新增失败
 - [~] 6.5 回 auto-ai：重建 auto.exe → retranspile 0 错；EventSink handler 已升级 f-string（R3）；
-      **cb 转发模式待"外部设置回调"机制**（actor spawn 无参 + 无状态写入消息，见 §6.7）
-- [ ] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发（依赖 6.5 的 cb 设置机制）
+      **cb 转发模式待"外部设置回调"机制**（actor spawn 无参 + 无状态写入消息）→
+      📌 已立项 auto-lang **Plan 390**（见 §6.7）
+- [ ] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发
+      （依赖 auto-lang **Plan 390** 落地的 cb 注入机制；Plan 390 §10 给出衔接路径）
 
-### §6.7 遗留：EventSink cb 转发的外部设置机制
+### §6.7 遗留：EventSink cb 转发的外部设置机制 → 📌 已立项 auto-lang Plan 390
 
 R1/R2/R3 修复后 `(self.cb)(ev)` 语法可用，但 app 无法把回调注入 actor：`Task.spawn` 无初始化参数、
 task 状态默认值固定（`cb = noop`）、无"设状态"控制消息。需要 auto-lang 支持之一：
 - task spawn 初始化参数（`Task.spawn("Sink", 16, cb)`），或
 - 消息触发状态写入（`on { __set_cb(cb) -> { self.cb = cb } }` 的 fn 值消息），或
 - task 暴露只读访问器。
-**留作后续 auto-lang 计划**（非缺口 1 必需 —— agent 层事件已能进入 sink；转发是 app 消费层的增强）。
+
+> **📌 已立项**：auto-lang **Plan 390 `390-actor-state-injection.md`**（draft）承接此项。
+> 继承 Plan 389（scope 三修复）模式，推荐机制 M1（spawn 带初始化参数），备选 M2/M3。
+> Plan 390 §10 给出回 auto-ai 的衔接路径（合并 → 重建 auto.exe → agent.at EventSink 改带参 spawn →
+> driver.at 恢复 Delta/Tool 转发）。本计划 §6.6（driver 转发）依赖 Plan 390 落地。
+>
+> **非缺口 1 必需** —— agent 层事件已能进入 sink；转发是 app 消费层的增强。
 
 ---
 
