@@ -81,6 +81,28 @@
 > **Phase 1 否决后的路径**：缺口 1 的修复统一走 Phase 3（a2r 加 dyn-Fn 支持），
 > 或额外先给 a2r 加 TaskDef 转译（让 actor 方案对转译版也可行）。两者都是 auto-lang L 级工程。
 
+### Phase 1b — 缺口 1 agent 层流式落地（actor TaskRef）✅ 2026-08-05
+
+> **前置解除**：auto-lang Plan 387 §16/17 实现 a2r actor 转译（TaskDef/on/外部 enum 消息/
+> `TaskRef<StreamEvent>` 作函数参数 move），三个 P0 阻塞全部解决。1.3 的否决点不再成立，
+> Phase 1 按 §16 预期用法重启（用户选定 actor 方案）。
+
+- [x] 1b.1 agent.at 新增 `task EventSink`（on-block is-解构全部 7 个 StreamEvent 变体，
+      状态 `log` 累计文本；应用侧转发需 a2r 增强，见 KNOWN-DEBT）
+- [x] 1b.2 `run_stream` 签名改为 §16 规格：`(task_msg str, cancel Arc<AtomicBool>, sink TaskRef<StreamEvent>)`
+- [x] 1b.3 `run_inner(task_msg, cancel ?Arc, sink TaskRef)` 事件点全部改 `sink.send(ev)`（10 处），
+      移除局部 `events` 缓冲（run 路径由内部丢弃 sink 消费，对齐 rust-ref "on_event 恒为 sink"）
+- [x] 1b.4 `run` 内部 `Task.spawn("EventSink", 16)` 丢弃 sink（无 Arc 构造，避开 a2r `as_str` 误插缺陷）
+- [x] 1b.5 driver.at 改用 `run()`（转非流式，行为不变；PipelineEvent.Delta/Tool 转发留后续——
+      a2r 无闭包，agent 事件转发到 driver.on_event 需 actor 持 fn 状态，见 KNOWN-DEBT）
+- [x] 1b.6 验证：retranspile 重跑，rust/ 转译版 0 错误；独立 crate 端到端运行——spawn EventSink →
+      run/run_stream → sink 收到并解构事件（stdout 确认）；workspace 0 错误 + rust-ref 100 单测/5 集成全绿
+
+**遗留（auto-lang 侧，见 KNOWN-DEBT）**：a2r 缺陷——on-block 的 `ev` 绑定不能作表达式变量
+（handler 无法整包转发事件）、fn 指针不能作 task state 字段（生成 `/* unknown */`）、f-string
+自引用 task state 字段解析失败（已用 `+` 拼接绕过）。修复后 EventSink handler 可真正外发到
+app 的 channel/SSE。
+
 ### Phase 2 — 缺口 2 泛型工具注册（需 auto-lang 评估）
 
 - [ ] 2.1 评估 Auto 语言能否表达"接受任意 Tool 实现"的语义（泛型方法 / trait object 自动装箱 / 其他）
@@ -121,6 +143,38 @@
       - `drive(on_event)`：rust-ref 回调 `Arc<dyn Fn>` → rust/ `fn(PipelineEvent)` 指针
       - `AgentFactory` trait：rust-ref `: Send + Sync` bound → rust/ 无 bound
 
+### Phase 6 — EventSink 外发：a2r 三个限制修复（auto-lang worktree，缺口 1 收尾）
+
+> **2026-08-05 追加**。Phase 1b 落地后，agent 层事件已能进入 EventSink actor，但 handler
+> 无法把事件转发给 app。根因是 a2r 的三个限制（Phase 1b 调研实证，见 KNOWN-DEBT）：
+>
+> | # | 限制 | 症状 | 影响 |
+> |---|---|---|---|
+> | R1 | on-block 的 TypeBinding（`ev StreamEvent`）绑定不能作表达式变量 | E0201 "undefined variable ev"（`forward(ev)` / `(self.cb)(ev)` 都报错） | handler 无法整包转发事件 |
+> | R2 | fn 指针不能作 task state 字段 | `cb = noop_event` 生成 `cb: /* unknown */` | EventSink 无法持有"转发回调"状态（driver 的 Delta/Tool 转发同理被阻） |
+> | R3 | f-string 自引用 task state 字段解析失败 | `log = f"${log}D:${t};"` 报 E0007（Phase 1b 已用 `+` 拼接绕过） | 事件文本累计只能用 `+` 拼接 |
+>
+> **修复后预期**：EventSink handler 可写 `fn forward(ev StreamEvent)` 或持 `cb fn(StreamEvent)`
+> 状态做 app 转发；driver.at 可恢复 rust-ref 的 Delta/Tool → PipelineEvent 转发；f-string 恢复。
+> 实施由用户在 auto-lang worktree 推进（spec 见 auto-lang Plan 387 §18）。
+
+- [x] 6.1 auto-lang worktree（`plan-389/a2r-task-scope-fixes`）：修复 R1（on-block TypeBinding 入 name scope）
+- [x] 6.2 auto-lang worktree：修复 R2（task state 字段 fn 指针类型推导）
+- [x] 6.3 auto-lang worktree：修复 R3（f-string 自引用 task state 解析）
+- [x] 6.4 回归：a2r 22_actors 001-015（含新增 013/014/015）全绿 + auto-lang 全量测试零新增失败
+- [~] 6.5 回 auto-ai：重建 auto.exe → retranspile 0 错；EventSink handler 已升级 f-string（R3）；
+      **cb 转发模式待"外部设置回调"机制**（actor spawn 无参 + 无状态写入消息，见 §6.7）
+- [ ] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发（依赖 6.5 的 cb 设置机制）
+
+### §6.7 遗留：EventSink cb 转发的外部设置机制
+
+R1/R2/R3 修复后 `(self.cb)(ev)` 语法可用，但 app 无法把回调注入 actor：`Task.spawn` 无初始化参数、
+task 状态默认值固定（`cb = noop`）、无"设状态"控制消息。需要 auto-lang 支持之一：
+- task spawn 初始化参数（`Task.spawn("Sink", 16, cb)`），或
+- 消息触发状态写入（`on { __set_cb(cb) -> { self.cb = cb } }` 的 fn 值消息），或
+- task 暴露只读访问器。
+**留作后续 auto-lang 计划**（非缺口 1 必需 —— agent 层事件已能进入 sink；转发是 app 消费层的增强）。
+
 ---
 
 ## 风险与注意
@@ -128,14 +182,17 @@
 - **三个缺口全跨仓**：本计划的主体工作在 auto-lang（语言/a2r 扩展）。auto-ai 侧的消费验证
   依赖 auto-lang 合并 + 重建 auto.exe 后回 auto-ai 重跑 retranspile。
 - **只构建 debug**（用户既定要求）：全程 `cargo build`，不跑 release。
-- **Phase 1 是关键探路**：如果 Auto 的 channel 能力足以在 agent 层做事件队列，
-  缺口 1 可以不依赖 dyn-Fn（最重的 auto-lang 改动），大幅降低整体工作量。
+- **Phase 1 探路结论已兑现**：actor 路径（缺口 1）在 auto-lang Plan 387 落地后实施完毕
+  （Phase 1b）；缺口 1 不再依赖 dyn-Fn。剩余转发限制（EventSink 外发）记录于 KNOWN-DEBT。
 - **转正（4.6）仍是后续**：本计划消弭功能缺口；转正还需 orchestration 功能对齐审计 +
   serde 同步（Phase 4）+ 翻转 [lib] path，是 plan 021 之后的独立计划。
 
 ## 完成判定
 
 - [ ] 缺口 1：agent 层流式事件能外发（complete_stream 或 channel 方案）
+      **部分完成（Phase 1b）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)` 已可
+      向 EventSink actor 外发全部事件。剩余：sink handler 无法把事件转发到 app（a2r 限制，
+      见 KNOWN-DEBT）；driver 的 PipelineEvent.Delta/Tool 转发未接。
 - [ ] 缺口 2：ToolRegistry 有泛型/装箱的 register 入口（或明确记录语言前置）
 - [ ] 缺口 3：转译版的 role_config/loader 与 rust-ref 的 serde 行为对齐
 - [ ] 三个转译 crate 仍 0 错；rust-ref 主版本测试全绿

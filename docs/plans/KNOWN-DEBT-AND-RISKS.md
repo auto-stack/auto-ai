@@ -9,6 +9,7 @@
 | Plan | 类别 | 描述 | 参考 |
 |---|---|---|---|
 | 019 | 已知限制 | `load_builtin` 返回 `Option<Box<dyn Role>>`，rust-ref 用 `Option<Arc<dyn Role>>`。转译版 `resolve_role` 因此返回 `Option<Arc<Box<dyn Role>>>`（双层包装）。编译/功能可用（Deref 链），但精度有损。Box/Arc 差异留待转正对齐（需 a2r 对 spec 在返回位置生成 `Arc<dyn>` 而非 `Box<dyn>`）。 | `crates/auto-ai-agent/rust/src/builtin_roles.rs:23` |
+| 021 | 已修复 | ~~EventSink actor 的 handler 只能 is-解构单个变体字段，无法把整个 `StreamEvent` 转发给 app~~ — auto-lang Plan 389（R1/R2/R3）已修复：(a) on-block TypeBinding 绑定入 name scope（`forward(ev)` / `(self.cb)(ev)` 可用）；(b) fn 指针可作 task state 字段（`cb: fn(...)` 类型推导）；(c) f-string 自引用 task state 字段可解析。**剩余**：app 注入 cb 到 actor 的机制（spawn 无参 + 无状态写入消息，见 plan 021 §6.7）——留作后续 auto-lang 计划。 | `crates/auto-ai-agent/src/agent.at`（EventSink task） |
 | 019 | 已知限制 | Phase 2 的 4 类 sed workaround（clone 补全/ReadDir 去引用/path 借用/去多余 as_str）是 a2r 借用推理缺陷的临时绕过。每条 sed 精确锚定模式并注释标注缺陷类别；a2r 根因修复后自动变成 no-op。属 Plan 013/016 既定的 workaround 模式（同 SOUL const 修复）。 | `crates/auto-ai-agent/retranspile.sh` Plan 019 Phase 2 段 |
 
 ## 📋 未来增强
