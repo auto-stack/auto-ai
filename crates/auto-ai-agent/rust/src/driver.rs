@@ -267,16 +267,16 @@ impl PipelineDriver {
         h.summary = truncate_chars(content, 200);
         for tc in &result.tool_calls {
             if tc.tool == "write_file" {
-                let p = extract_path(tc.args);
+                let p = extract_path(tc.args.clone());
                 
 
 
-                let wp = WorkProduct { path: p, description: tc.tool, lines: None };
+                let wp = WorkProduct { path: p, description: tc.tool.clone(), lines: None };
                 h.work_product.push(wp.clone())
             } else {
                 if tc.tool == "edit_file" {
-                    let p = extract_path(tc.args);
-                    let wp = WorkProduct { path: p, description: tc.tool, lines: None };
+                    let p = extract_path(tc.args.clone());
+                    let wp = WorkProduct { path: p, description: tc.tool.clone(), lines: None };
                     h.work_product.push(wp.clone());
                 }            }
 

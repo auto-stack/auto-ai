@@ -73,7 +73,7 @@ impl SkillRegistry {
         let mut names: Vec<String> = vec![];
         match fs::read_dir(dir) {
             Ok(entries) => {
-                for entry in &entries {
+                for entry in entries {
                     
 
                     match entry {
@@ -188,7 +188,7 @@ fn parse_skill_file(path: PathBuf) -> Result<Skill, String> {
 
 
 
-    let raw = a2r_std::fs::read_to_string(path);
+    let raw = a2r_std::fs::read_to_string(&path);
     let parsed = parse_frontmatter(raw.as_str());
     if parsed.name.is_empty() {
         return Err("frontmatter is missing 'name:'".into());
@@ -224,7 +224,7 @@ fn parse_frontmatter(raw: &str) -> Frontmatter {
 
             return Frontmatter { name: "".to_string(), description: "".to_string(), content: stripped.to_string() };
         },
-        Some(after_open) => return parse_frontmatter_body(after_open.as_str()),
+        Some(after_open) => return parse_frontmatter_body(after_open),
     }
 }
 

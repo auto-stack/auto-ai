@@ -18,16 +18,23 @@
 
 ## 5 个 Harness 的现状盘点（决定 MVP 验证范围）
 
-| Harness | rust-ref | 转译版 rust/ | 缺口 | 修复工作量 |
-|---|---|---|---|---|
-| **plan（编排）** | ✅ | ✅ 完全对齐 | 无 | 0（可直接验证） |
-| **spec（动态分发）** | ✅ | 🟡 部分（设计如此） | Auto 限制：`complete_stream`/流式回调未移植；`StreamingAiClient` 已用 channel 部分恢复 | L（需 Auto 解析器改进，第四波） |
-| **tool use** | ✅ | ✅ 循环对齐 | `register_tool<T>` 泛型缺；CLI 8 处调用编译失败 | S（加值类型方法） |
-| **skill** | ✅ | 🟡 部分对齐 | `register_skill_tool` **未写在 .at**；skills_block 永远 None | S（加方法到 agent.at） |
-| **agent role** | ✅ | 🟡 部分对齐 | 14 个内置角色 soul 是占位符；resources/souls/*.md 只在 rust-ref 下 | M（运行时 fs 加载） |
+> **2026-08-05 更新**（基于 Plan 018 a2r 修复后的转译版核查）：盘点表已同步真实状态。
+> 注意：MVP 验证（第三波）在 **rust-ref 主版本**上完成并通过；**转译版 rust/** 至今仍因 a2r
+> 转译器机械错误（25 个）整体编译失败（cargo check 退出 101），详见下表"转译版编译阻塞"列。
 
-> 关键结论：3 个 harness（plan/spec 建模/tool 循环）基本就绪；skill/role 有源于 .at 的阻塞缺口，
-> 均 S-M 级。spec 的流式补齐是大工程（L），归入第四波，不阻塞 MVP（polling-style 循环功能正确）。
+| Harness | rust-ref | 转译版设计/逻辑 | 转译版编译阻塞 | 设计缺口（推迟） |
+|---|---|---|---|---|
+| **plan（编排）** | ✅ | ✅ 完全对齐 | 🟡 driver.rs 4 错（build_handoff 漏 `.clone()`，机械） | 无 |
+| **spec（动态分发）** | ✅ | 🟡 部分 | 否（agent.rs 1 错是无关的 `&Arc`） | `complete_stream`/流式回调未移植（Auto 解析器平台限制，第四波） |
+| **tool use** | ✅ | ✅ 循环对齐 | 否（tool.rs 自身 0 错） | `register_tool<T>` 泛型（2.3 明确推迟到转正） |
+| **skill** | ✅ | ✅ 已完成（2.2） | 🟡 skill.rs 3 错（`&ReadDir` 迭代 + read_to_string 签名 + as_str，机械） | 无（register_skill_tool 已在 .at，盘点表旧版"未写"已过期） |
+| **agent role** | ✅ | SOUL ✅ 真实（3.1 comptime）；但 **load_builtin ❌ 硬阻塞** | ❌ builtin_roles.rs 13 错（单点根因 `Option<impl Role>`，应为 `Option<Box<dyn Role>>`）+ roles.rs 2 处级联 | 无（SOUL 已是真实灵魂，盘点表旧版"占位符"已过期） |
+
+> **关键结论**（2026-08-05）：5 个 harness 的**设计/逻辑层面全部完成**（skill/SOUL 的旧缺口在
+> 第二/三波已修，盘点表此前未同步）。转译版无法编译的**唯一硬阻塞**是 `load_builtin` 的
+> `Option<impl Role>`（a2r 把 Auto 的 `?Role` 返回类型里的 spec 名渲染成 `impl Trait`，应为
+> `Box<dyn Role>`），这是 13 个错误的单点根因。其余 10 个错误全是 a2r 机械问题（漏 clone、
+> `&ReadDir` 迭代、read_to_string 签名、as_str unstable）。MVP（rust-ref）已验证通过并打 tag。
 
 ---
 

@@ -164,7 +164,7 @@ impl RoleRegistry {
             Some(dir) => {
                 match fs::read_dir(dir) {
                     Ok(entries) => {
-                        for entry in &entries {
+                        for entry in entries {
                             
 
                             match entry {
@@ -427,7 +427,7 @@ fn is_at_file(path: PathBuf) -> bool {
 fn load_user_at_file(path: PathBuf) -> Option<RoleDetail> {
 
 
-    let content = a2r_std::fs::read_to_string(path);
+    let content = a2r_std::fs::read_to_string(&path);
     if content.is_empty() {
         return None;
     }

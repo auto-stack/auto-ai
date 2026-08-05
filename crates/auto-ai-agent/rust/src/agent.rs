@@ -341,7 +341,7 @@ impl Agent {
         let visible = self.tools.filter(allowed);
         let mut tool_defs: Vec<ToolDefinition> = vec![];
         for t in &visible {
-            tool_defs.push(tool_to_definition(t));
+            tool_defs.push(tool_to_definition(t.clone()));
         }
 
 
