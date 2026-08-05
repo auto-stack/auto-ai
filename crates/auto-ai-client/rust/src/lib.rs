@@ -105,7 +105,7 @@ impl AiClient {
 
         let endpoint: String = format!("{}/v1/chat/completions", self.url);
         let body = serde_json::to_string(&sreq).unwrap_or_default();
-        let stream = a2r_std::http::post_stream_with_headers(endpoint.as_str(), body.as_str(), "Content-Type: application/json\nX-App-Name: auto-ai-client");
+        let mut stream = a2r_std::http::post_stream_with_headers(endpoint.as_str(), body.as_str(), "Content-Type: application/json\nX-App-Name: auto-ai-client");
 
         let mut sse = SseBuffer::new();
         let mut full: String = "".to_string();
@@ -152,7 +152,7 @@ impl AiClient {
             match a2r_std::json::parse_opt(data_line.as_str()) {
                 Some(value) => {
                     full = format!("{}{}", full, text_of(value.clone()));
-                    match value.get("type").and_then(|v| v.as_str()).unwrap_or_default().as_str() {
+                    match value.get("type").and_then(|v| v.as_str()).unwrap_or_default() {
                         "error" => error_msg = Some(value.get("message").and_then(|v| v.as_str()).unwrap_or_default().to_string()),
                         "done" => {
                             tool_calls = parse_tool_calls(value.clone());
@@ -208,7 +208,7 @@ impl SseBuffer {
         self.buf = format!("{}{}", self.buf, chunk);
         let mut out: Vec<String> = vec![];
         loop {
-            let idx = a2r_std::str_find(self.buf, "\n\n");
+            let idx = a2r_std::str_find(&self.buf, "\n\n");
             if idx < 0 {
                 break;
             }
@@ -272,11 +272,11 @@ fn opt_str_field(value: JsonValue, key: &str) -> Option<String> {
 /// Parse `tool_calls` array from a done event into typed ToolCall list.
 fn parse_tool_calls(value: JsonValue) -> Vec<ToolCall> {
     let mut out: Vec<ToolCall> = vec![];
-    let arr = a2r_std::json::get(&value, "tool_calls").as_array();
+    let arr = a2r_std::json::get(&value, "tool_calls").as_array().cloned().unwrap_or_default();
     for tc in &arr {
-        let id = a2r_std::json::get_str(&tc, "id");
-        let name = a2r_std::json::get_str(&tc, "name");
-        let input = a2r_std::json::get(&tc, "input");
+        let id = a2r_std::json::get_str(tc, "id");
+        let name = a2r_std::json::get_str(tc, "name");
+        let input = a2r_std::json::get(tc, "input");
         out.push(ToolCall { id: id, name: name, input: input });
     }
     return out;
@@ -288,7 +288,7 @@ fn parse_usage(value: JsonValue) -> Option<Usage> {
     if u.is_null() {
         return None;
     }
-    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")), output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) });
+    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32 });
 }
 
 /// Decode a response body byte array to a string (UTF-8, lossy).

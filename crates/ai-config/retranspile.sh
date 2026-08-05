@@ -75,6 +75,13 @@ if [ -f "$RUST/wire.rs" ]; then
     echo "  [wire] injected JsonValue alias"
 fi
 
+# Plan 020: a2r borrow-reasoning workaround (Plan 019 B-class sibling).
+# `for m in &models` borrows the loop var but the call sites `return Some(m.id)`
+# and `best = Some(m)` need owned values — a2r omits the .clone().
+if [ -f "$RUST/tier.rs" ]; then
+    sed -i 's#return Some(m\.id);#return Some(m.id.clone());#g; s#best = Some(m);#best = Some(m.clone());#g' "$RUST/tier.rs"
+fi
+
 # Assemble lib.rs: transpiled crate-root + pub mod decls (no extern shims).
 if [ -f "$SRC/lib.a2r.rs" ]; then
     awk -v pubmods="$(read_pub_mods)" '

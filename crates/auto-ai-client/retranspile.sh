@@ -91,6 +91,28 @@ else
 fi
 
 find "$SRC" -name "*.a2r.rs" -delete
+
+# Plan 020: a2r borrow/type-inference workarounds. Mechanical post-fixes for
+# 5 classes of a2r defects, each targeting a specific pattern in lib.rs. They
+# become no-ops once the a2r root causes are fixed.
+if [ -f "$RUST/lib.rs" ]; then
+    # E0658: redundant .as_str() on a value already typed &str (Plan 019 E-class).
+    sed -i 's#\.unwrap_or_default()\.as_str() {#.unwrap_or_default() {#g' "$RUST/lib.rs"
+    # E0596: `let stream` needs `mut` — HTTPStream::next takes &mut self (a2r mut inference).
+    sed -i 's#let stream = a2r_std::http::post_stream_with_headers#let mut stream = a2r_std::http::post_stream_with_headers#g' "$RUST/lib.rs"
+    # E0308: `&tc` is a spurious extra borrow — tc is already &Value from `for tc in &arr`
+    #         (a2r borrow + element-type inference defect, Plan 019 C/B-class variant).
+    #         Also fix `get(...).as_array()`: a2r emits a method call (serde_json's
+    #         Value::as_array -> Option<&Vec>) instead of the a2r_std free function
+    #         (as_array(&Value) -> Vec<Value>), so unwrap the Option to get Vec<Value>.
+    sed -i 's#get_str(&tc,#get_str(tc,#g; s#get(&tc,#get(tc,#g' "$RUST/lib.rs"
+    sed -i 's#\.as_array();#.as_array().cloned().unwrap_or_default();#g' "$RUST/lib.rs"
+    # E0308: as_int returns i64 but Usage fields are u32 (a2r narrowing-conversion gap).
+    sed -i 's#as_int(&a2r_std::json::get(&u, "input_tokens"))#as_int(\&a2r_std::json::get(\&u, "input_tokens")) as u32#g; s#as_int(&a2r_std::json::get(&u, "output_tokens"))#as_int(\&a2r_std::json::get(\&u, "output_tokens")) as u32#g' "$RUST/lib.rs"
+    # E0507: str_find(self.buf, ...) moves the owned field — borrow instead (Plan 019 D-class).
+    sed -i 's#a2r_std::str_find(self\.buf,#a2r_std::str_find(\&self.buf,#g' "$RUST/lib.rs"
+fi
+
 echo "[retranspile] assembly complete."
 
 if [ "${1:-}" = "check" ]; then

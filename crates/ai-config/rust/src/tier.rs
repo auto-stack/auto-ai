@@ -139,7 +139,7 @@ pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Opt
     for m in &models {
         
         if m.tier.order() == desired_order {
-            return Some(m.id);
+            return Some(m.id.clone());
         }
         
         let m_order = m.tier.order();
@@ -151,7 +151,7 @@ pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Opt
             1000 + 0 - gap
         };
         if first || key < best_key {
-            best = Some(m);
+            best = Some(m.clone());
             best_key = key;
             first = false
         }
