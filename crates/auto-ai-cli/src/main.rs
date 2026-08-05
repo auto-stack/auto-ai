@@ -710,15 +710,18 @@ async fn run_pipeline_flow(mode: &str, task: &str, client: &Arc<dyn Client>) -> 
 }
 
 /// Open the AutoOS settings UI (auto-os-config) in the browser.
-/// Uses aaid's service registry to ensure ALL required services are running:
-/// os-config (:17700) + musk (:8080, provides Roles/Skills/Agents config pages)
-/// + aaid itself (:17654, provides AI Daemon config page).
+///
+/// All config pages (AI Daemon, Auto Musk, Roles, Skills, Modes, …) now live
+/// in auto-os-config (:17700) — since Plan 002/003 the per-app config pages
+/// were retired. aaid's service registry is used to ensure the supporting
+/// services are up before opening the browser.
 async fn open_config(_client: &Arc<dyn Client>) {
     let daemon_url = std::env::var("AAID_URL").unwrap_or_else(|_| "http://127.0.0.1:17654".into());
     let http = reqwest::Client::new();
     println!("\n  Starting AutoOS Settings…");
 
-    // Ensure musk backend (provides Roles/Skills/Agents/Auto Musk config pages).
+    // Best-effort: make sure the musk app is up (it consumes the config the
+    // settings UI manages; not required to *view* the pages themselves).
     match http.post(format!("{}/v1/services/musk-web/ensure", daemon_url))
         .timeout(std::time::Duration::from_secs(20)).send().await
     {
@@ -726,15 +729,14 @@ async fn open_config(_client: &Arc<dyn Client>) {
             println!("  ✓ Musk web ready");
         }
         _ => {
-            println!("  ⚠ Musk backend not reachable — Roles/Skills pages won't load.");
+            println!("  ⚠ Musk backend not reachable — the musk app won't be available.");
             println!("    Start it: cd auto-musk/backend && cargo run -p musk -- serve");
         }
     }
 
     // Note: musk-web (:3333) is the frontend SPA, not the backend (:8080).
-    // The config pages are served by musk serve (:8080). We need to ensure
-    // the backend is running. aaid's registry has musk-web (:3333) but not
-    // the backend (:8080) — so we check :8080 directly.
+    // aaid's registry has musk-web (:3333) but not the backend (:8080) — so we
+    // check :8080 directly.
     match http.get("http://127.0.0.1:8080/api/health")
         .timeout(std::time::Duration::from_secs(3)).send().await
     {
@@ -742,7 +744,7 @@ async fn open_config(_client: &Arc<dyn Client>) {
             println!("  ✓ Musk backend (:8080) ready");
         }
         _ => {
-            println!("  ⚠ Musk backend (:8080) not running — config pages won't load.");
+            println!("  ⚠ Musk backend (:8080) not running — the musk app won't be available.");
             println!("    Start it: cd auto-musk/backend && cargo run -p musk -- serve");
         }
     }
