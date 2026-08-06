@@ -9,11 +9,42 @@ dep auto_atom
 use.rust auto_atom
 dep auto_val
 use.rust auto_val
+use.rust serde::Deserialize
 
 use error: AgentError
 use role_def: Role
 use builtin_roles: load_builtin
 use ai_config: ModelTier
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RoleDecl — serde deserialization view (Plan 021 缺口 3 / Plan 381)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Deserialization view for `role { … }` blocks. Field names map 1:1 to `.at`
+/// props; `#[serde(default)]` makes every field optional. `temperature` /
+/// `tools` / `tools_append` / `allowed_tiers` / `skills` use `deserialize_with`
+/// helpers from auto-val (lenient parsing). Tier-typed fields are deserialized
+/// as raw strings and run through `parse_tier_field` after (ModelTier is
+/// ai-config domain logic, not a serde helper). Mirrors rust-ref RoleDecl.
+#[derive(Debug, Deserialize)]
+type RoleDecl {
+    #[serde(default)] name ?str
+    #[serde(default)] description ?str
+    #[serde(default)] model ?str
+    #[serde(default)] model_tier ?str
+    #[serde(default, deserialize_with = "auto_val::lenient_f64_opt")] temperature ?float
+    #[serde(default)] max_turns ?uint
+    #[serde(default)] memory_limit ?uint
+    #[serde(default)] system_prompt ?str
+    #[serde(default)] system_prompt_append ?str
+    #[serde(default)] inherit ?str
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] tools ?List<str>
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] tools_append ?List<str>
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] allowed_tiers ?List<str>
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] skills ?List<str>
+    #[serde(default)] token_budget ?uint
+    #[serde(default)] soul_file ?str
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RoleConfig
@@ -276,36 +307,59 @@ ext ConfigRole {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Parse a single `role { … }` block from `.at` source.
+/// Plan 021 缺口 3 / Plan 381: deserialize via RoleDecl (serde derive) instead
+/// of hand-written opt_* helpers. Tier-typed fields (model_tier, allowed_tiers)
+/// are deserialized as raw strings then run through parse_tier_field.
 pub fn parse_at_role(content str) Result<RoleConfig, AgentError> {
     is auto_atom.AtomParser.parse(content) {
         Ok(atom) -> {
             is atom {
                 auto_atom.Atom.Node(node) -> {
-                    var n = node.clone()
-                    var cfg = RoleConfig.empty()
-                    cfg.name = opt_str(n, "name")
-                    cfg.description = opt_str(n, "description")
-                    cfg.model = opt_str(n, "model")
-                    let tier_str = opt_str(n, "model_tier")
-                    is tier_str {
-                        Some(s) -> {
-                            is parse_tier_field(s) {
-                                Some(t) -> cfg.model_tier = Some(t),
+                    // Deserialize the node into RoleDecl via auto-val's serde
+                    // Deserializer (Plan 381). Hard-error on malformed scalars
+                    // (aligns with rust-ref behavior). NOTE: retranspile.sh sed-
+                    // injects the turbofish `::<RoleDecl>` onto node.deserialize()
+                    // because Auto has no turbofish syntax and a2r can't infer
+                    // the deserialize target type from the Ok-arm pattern alone.
+                    is node.deserialize() {
+                        Ok(d) -> {
+                            // d is RoleDecl; map to RoleConfig with tier post-processing.
+                            var cfg = RoleConfig.empty()
+                            cfg.name = d.name
+                            cfg.description = d.description
+                            cfg.model = d.model
+                            is d.model_tier {
+                                Some(s) -> cfg.model_tier = parse_tier_field(s),
                                 None -> {}
                             }
+                            cfg.temperature = d.temperature
+                            cfg.max_turns = d.max_turns
+                            cfg.memory_limit = d.memory_limit
+                            cfg.system_prompt = d.system_prompt
+                            cfg.system_prompt_append = d.system_prompt_append
+                            cfg.tools = d.tools
+                            cfg.tools_append = d.tools_append
+                            cfg.inherit = d.inherit
+                            cfg.soul_file = d.soul_file
+                            cfg.token_budget = d.token_budget
+                            cfg.skills = d.skills
+                            is d.allowed_tiers {
+                                Some(names) -> {
+                                    var tiers List<ModelTier> = []
+                                    for nm in names {
+                                        is parse_tier_field(nm) {
+                                            Some(t) -> tiers.push(t),
+                                            None -> {}
+                                        }
+                                    }
+                                    cfg.allowed_tiers = Some(tiers)
+                                },
+                                None -> {}
+                            }
+                            return Ok(cfg)
                         },
-                        None -> {}
+                        Err(e) -> return Err(AgentError.Config(f"failed to deserialize role block: ${e}"))
                     }
-                    cfg.temperature = opt_float(n, "temperature")
-                    cfg.max_turns = opt_uint(n, "max_turns")
-                    cfg.memory_limit = opt_uint(n, "memory_limit")
-                    cfg.system_prompt = opt_str(n, "system_prompt")
-                    cfg.system_prompt_append = opt_str(n, "system_prompt_append")
-                    cfg.tools = opt_str_list(n, "tools")
-                    cfg.tools_append = opt_str_list(n, "tools_append")
-                    cfg.inherit = opt_str(n, "inherit")
-                    cfg.soul_file = opt_str(n, "soul_file")
-                    return Ok(cfg)
                 },
                 else -> return Err(AgentError.Config("expected a 'role' node"))
             }
@@ -385,58 +439,6 @@ pub fn serialize_at_role(cfg RoleConfig) str {
 }
 
 // ─── bridge helpers (same pattern as loader.at) ────────────────────────────
-
-fn opt_str(node auto_val.Node, key str) ?str {
-    let val = node.get_prop_of(key)
-    is val {
-        Value.Str(s) -> return Some(s.to_string()),
-        Value.String(s) -> return Some(s.to_string()),
-        Value.Nil -> return None,
-        else -> return Some(val.to_astr().to_string())
-    }
-}
-
-fn opt_float(node auto_val.Node, key str) ?float {
-    let val = node.get_prop_of(key)
-    is val {
-        auto_val.Value.Float(f) -> return Some(f),
-        auto_val.Value.Double(d) -> return Some(d),
-        auto_val.Value.Int(i) -> return Some(i.to_float()),
-        else -> return None
-    }
-}
-
-fn opt_uint(node auto_val.Node, key str) ?uint {
-    let val = node.get_prop_of(key)
-    is val {
-        auto_val.Value.Uint(u) -> return Some(u),
-        auto_val.Value.Int(i) -> {
-            if i >= 0 {
-                return Some(i)
-            }
-            return None
-        },
-        else -> return None
-    }
-}
-
-fn opt_str_list(node auto_val.Node, key str) ?List<str> {
-    let val = node.get_prop_of(key)
-    is val {
-        auto_val.Value.Array(arr) -> {
-            var out List<str> = []
-            for el in arr.values {
-                is el {
-                    auto_val.Value.Str(s) -> out.push(s.to_string()),
-                    else -> {}
-                }
-            }
-            return Some(out)
-        },
-        else -> return None
-    }
-}
-
-fn parse_tier(s str) ?ModelTier {
-    return ModelTier.parse_name(s)
-}
+// Plan 021 缺口 3: opt_str/opt_float/opt_uint/opt_str_list removed — parse_at_role
+// now uses node.deserialize::<RoleDecl>() (serde derive). parse_tier_field stays
+// (tier post-processing).

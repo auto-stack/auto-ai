@@ -189,6 +189,15 @@ if [ -f "$RUST/pipeline.rs" ]; then
             s#correct_handoff_target(\&mut self.clone(), \&mut h.clone(),#correct_handoff_target(self.clone(), h.clone(),#g' "$RUST/pipeline.rs"
 fi
 
+# Plan 021 缺口 3: inject turbofish onto node.deserialize() in role_config.rs.
+# Auto has no turbofish syntax and a2r can't infer the deserialize target type
+# from the Ok-arm pattern alone (E0282). This sed adds ::<RoleDecl> so serde
+# knows which struct to deserialize into. When a2r gains turbofish support this
+# becomes a no-op.
+if [ -f "$RUST/role_config.rs" ]; then
+    sed -i 's#node\.deserialize()#node.deserialize::<RoleDecl>()#g' "$RUST/role_config.rs"
+fi
+
 # Clean up .a2r.rs intermediates
 find "$SRC" -name "*.a2r.rs" -delete
 

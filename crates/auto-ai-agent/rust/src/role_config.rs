@@ -2,6 +2,7 @@
 
 use auto_atom::*;
 use auto_val::*;
+use serde::Deserialize;
 use crate::error::{AgentError};
 use crate::role_def::{Role};
 use crate::builtin_roles::{load_builtin};
@@ -12,6 +13,48 @@ use crate::ai_config::{ModelTier};
 /// 
 /// BRIDGE NOTE (plan 013): like loader.at, this bridges auto_atom/auto_val.
 /// a2r-first — AutoVM can't resolve the bridged types; runs under cargo.
+/// Deserialization view for `role { … }` blocks. Field names map 1:1 to `.at`
+/// props; `#[serde(default)]` makes every field optional. `temperature` /
+/// `tools` / `tools_append` / `allowed_tiers` / `skills` use `deserialize_with`
+/// helpers from auto-val (lenient parsing). Tier-typed fields are deserialized
+/// as raw strings and run through `parse_tier_field` after (ModelTier is
+/// ai-config domain logic, not a serde helper). Mirrors rust-ref RoleDecl.
+#[derive(Debug, Deserialize)]
+struct RoleDecl {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub model_tier: Option<String>,
+    #[serde(default, deserialize_with = "auto_val::lenient_f64_opt")]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+    #[serde(default)]
+    pub memory_limit: Option<u32>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub system_prompt_append: Option<String>,
+    #[serde(default)]
+    pub inherit: Option<String>,
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    pub tools: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    pub tools_append: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    pub allowed_tiers: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    pub skills: Option<Vec<String>>,
+    #[serde(default)]
+    pub token_budget: Option<u32>,
+    #[serde(default)]
+    pub soul_file: Option<String>,
+}
+
 /// The parsed representation of a `role { … }` block. Every field is optional
 /// so an `inherit`-based config only overrides what it sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -222,31 +265,53 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
         Ok(atom) => {
             match atom {
                 Atom::Node(node) => {
-                    let mut n = node.clone();
-                    let mut cfg = RoleConfig::empty();
-                    cfg.name = opt_str(n.clone(), "name");
-                    cfg.description = opt_str(n.clone(), "description");
-                    cfg.model = opt_str(n.clone(), "model");
-                    let tier_str = opt_str(n.clone(), "model_tier");
-                    match tier_str {
-                        Some(s) => {
-                            match parse_tier_field(s.as_str()) {
-                                Some(t) => cfg.model_tier = Some(t),
+                    
+
+
+
+
+
+
+                    match node.deserialize::<RoleDecl>() {
+                        Ok(d) => {
+                            
+
+                            let mut cfg = RoleConfig::empty();
+                            cfg.name = d.name;
+                            cfg.description = d.description;
+                            cfg.model = d.model;
+                            match d.model_tier {
+                                Some(s) => cfg.model_tier = parse_tier_field(s.as_str()),
                                 None => {},
                             };
+                            cfg.temperature = d.temperature;
+                            cfg.max_turns = d.max_turns;
+                            cfg.memory_limit = d.memory_limit;
+                            cfg.system_prompt = d.system_prompt;
+                            cfg.system_prompt_append = d.system_prompt_append;
+                            cfg.tools = d.tools;
+                            cfg.tools_append = d.tools_append;
+                            cfg.inherit = d.inherit;
+                            cfg.soul_file = d.soul_file;
+                            cfg.token_budget = d.token_budget;
+                            cfg.skills = d.skills;
+                            match d.allowed_tiers {
+                                Some(names) => {
+                                    let mut tiers: Vec<ModelTier> = vec![];
+                                    for nm in &names {
+                                        match parse_tier_field(nm.as_str()) {
+                                            Some(t) => tiers.push(t.clone()),
+                                            None => {},
+                                        };
+                                    }
+                                    cfg.allowed_tiers = Some(tiers);
+                                },
+                                None => {},
+                            };
+                            return Ok(cfg);
                         },
-                        None => {},
+                        Err(e) => return Err(AgentError::Config(format!("failed to deserialize role block: {}", e))),
                     };
-                    cfg.temperature = opt_float(n.clone(), "temperature");
-                    cfg.max_turns = opt_uint(n.clone(), "max_turns");
-                    cfg.memory_limit = opt_uint(n.clone(), "memory_limit");
-                    cfg.system_prompt = opt_str(n.clone(), "system_prompt");
-                    cfg.system_prompt_append = opt_str(n.clone(), "system_prompt_append");
-                    cfg.tools = opt_str_list(n.clone(), "tools");
-                    cfg.tools_append = opt_str_list(n.clone(), "tools_append");
-                    cfg.inherit = opt_str(n.clone(), "inherit");
-                    cfg.soul_file = opt_str(n.clone(), "soul_file");
-                    return Ok(cfg);
                 },
                 _ => return Err(AgentError::Config("expected a 'role' node".to_string())),
             };
@@ -329,65 +394,4 @@ pub fn serialize_at_role(cfg: RoleConfig) -> String {
     };
     lines.push("}".to_string());
     return lines.join("\n");
-}
-
-/// Factory: create a ConfigRole from a parsed config.
-/// Factory: create a ConfigRole with an inherited base Role.
-/// Parse a single `role { … }` block from `.at` source.
-/// Load a Role (as ConfigRole) from `.at` source, resolving `inherit` chains.
-/// Parse a tier field string → ModelTier. Returns None for unrecognized.
-/// Serialize a RoleConfig back to `.at` format.
-fn opt_str(node: auto_val::Node, key: &str) -> Option<String> {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Str(s) => return Some(s.to_string()),
-        Value::String(s) => return Some(s.to_string()),
-        Value::Nil => return None,
-        _ => return Some(val.to_astr().to_string()),
-    }
-}
-
-fn opt_float(node: auto_val::Node, key: &str) -> Option<f64> {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Float(f) => return Some(f),
-        Value::Double(d) => return Some(d),
-        Value::Int(i) => return (Some(i as f64)),
-        _ => return None,
-    }
-}
-
-fn opt_uint(node: auto_val::Node, key: &str) -> Option<u32> {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Uint(u) => return Some(u as u32),
-        Value::Int(i) => {
-            if i >= 0 {
-                return Some(i as u32);
-            }
-            return None;
-        },
-        _ => return None,
-    }
-}
-
-fn opt_str_list(node: auto_val::Node, key: &str) -> Option<Vec<String>> {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Array(arr) => {
-            let mut out: Vec<String> = vec![];
-            for el in &arr.values {
-                match el {
-                    Value::Str(s) => out.push(s.to_string()),
-                    _ => {},
-                };
-            }
-            return Some(out);
-        },
-        _ => return None,
-    }
-}
-
-fn parse_tier(s: &str) -> Option<ModelTier> {
-    return ModelTier::parse_name(s);
 }
