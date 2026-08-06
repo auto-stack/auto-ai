@@ -234,6 +234,11 @@ impl PipelineDriver {
 
 
 
+
+
+
+
+
         let agent_result = agent_inst.run(input.as_str()).await?;
 
 
@@ -380,6 +385,21 @@ fn emit_budget_warning(engine: PipelineEngine, role_for_budget: &str, on_event: 
     let action = engine.budget_tracker.check(role_for_budget);
     match action {
         BudgetAction::Warning(remaining) => on_event(PipelineEvent::BudgetWarning(remaining)),
+        _ => {},
+    };
+}
+
+/// Forward agent streaming events to the pipeline's on_event callback.
+/// Maps StreamEvent → PipelineEvent (Delta→Delta, Tool→Tool; others dropped),
+/// mirroring rust-ref's stream_cb (Plan 021 Phase 6.6). A free fn (not a closure)
+/// so drive_step can pass `on_event` explicitly — Auto closures capture by
+/// reference which would dangle once the EventSink actor outlives drive_step.
+/// The EventSink cb is `(ev) => forward_stream_event(ev, on_event_local)` where
+/// on_event_local is a cloned fn pointer (Copy, safe to move into the actor).
+fn forward_stream_event(ev: StreamEvent, on_event: fn(PipelineEvent) -> ()) {
+    match ev {
+        StreamEvent::Delta(text) => on_event(PipelineEvent::Delta(text)),
+        StreamEvent::Tool(tool, _args, result) => on_event(PipelineEvent::Tool(tool, result)),
         _ => {},
     };
 }

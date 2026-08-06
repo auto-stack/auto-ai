@@ -191,12 +191,14 @@ app 的 channel/SSE。
       spawn 带参）。a2r spawn helper 修为 `_with` 双函数（Rust 不支持参数默认值，
       auto-lang commit `ad73cb06`）。rust/ 独立 crate + workspace 0 错；rust-ref 100 单测全绿。
 - [ ] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发
-      **📌 重新定性（2026-08-07 实证）**：原判"架构阻塞（Auto 闭包不能捕获外部变量）"
-      已推翻——捕获从来不是问题（`(ev) => fwd(ev, outer_cb)` 正常捕获）。真因是
-      `fn(params){}` 解析路径（`parser.rs:3043-3069`）**不 bind 闭包参数**（另两条路径都 bind）。
-      **修复是 ~6 行 parser 改动**（auto-lang Plan 390 §15 Phase H），非语言级工程。
-      Phase H 落地后，driver 可用 `(ev) => forward(ev, self.on_event)` 形式的闭包注入 EventSink cb，
-      实现 Delta/Tool 转发。**driver 的非流式事件已正常工作**，仅流式 Delta/Tool 待 Phase H 解锁。
+      **⏸ 语言级阻塞（2026-08-07 实证，Phase H 后发现）**：Phase H（`fn(params){}` 参数绑定）
+      已修，但真正的阻塞是 **Auto/a2r 缺少闭包类型**（`Box<dyn Fn>`/`impl Fn`/`Arc<dyn Fn>`）。
+      EventSink 的 cb 字段是裸 `fn(StreamEvent)` 指针——能持有不捕获的 fn（如 noop_event），
+      但**不能持有捕获了 `on_event` 的闭包**。任何 `(ev) => forward(ev, on_event)` 是闭包（捕获
+      on_event），Rust 不把它 coerce 成 `fn` 指针。rust-ref 用 `Arc<dyn Fn>`（trait object），
+      Auto/a2r 无法表达。`forward_stream_event` 自由函数已写好（driver.at ~436），待 Auto 支持闭包类型
+      后即可接通。**driver 非流式事件（StepStarted/Completed/Failed 等）已正常工作**，
+      仅流式 Delta/Tool 受阻——需 Auto 语言增加闭包类型表达（`dyn Fn`/`impl Fn`）。
 
 ### §6.7 EventSink cb 转发的外部设置机制 → ✅ 已落地（Plan 390 Phase B + Phase 6.5）
 

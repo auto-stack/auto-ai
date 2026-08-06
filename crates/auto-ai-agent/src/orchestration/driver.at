@@ -296,10 +296,15 @@ ext PipelineDriver {
         // Construct the input: original task for step 0, else the handoff render.
         let input = build_step_input(task_msg, last_handoff)
 
-        // Pipelines run to completion — run() is non-cancellable and consumes
-        // the agent's events in a throwaway EventSink (Plan 021: run_stream now
-        // requires a TaskRef<StreamEvent> sink; the pipeline consumer has no
-        // agent-event forwarding path yet — the handoff uses AgentResult below).
+        // Plan 021 Phase 6.6: driver streaming (Delta/Tool → PipelineEvent) is
+        // blocked on Auto lacking a closure-TYPE (Box<dyn Fn>/impl Fn). EventSink's
+        // cb field is a bare `fn(StreamEvent)` pointer — it can hold a non-capturing
+        // fn (like noop_event) but NOT a closure that captures `on_event`. Any
+        // `(ev) => forward(ev, on_event)` is a closure (captures on_event), which
+        // Rust won't coerce to a `fn` pointer. rust-ref uses Arc<dyn Fn> (a trait
+        // object) which Auto/a2r cannot express. Until Auto gains a closure type,
+        // steps run non-streaming and events are consumed (not forwarded). The
+        // non-streaming PipelineEvents (StepStarted/Completed/Failed/etc.) work.
         let agent_result = agent_inst.run(input.as_str()).await.?
 
         // Build the handoff from the result + the agent's text output.
@@ -427,6 +432,21 @@ fn emit_budget_warning(engine PipelineEngine, role_for_budget str, on_event fn(P
     let action = engine.budget_tracker.check(role_for_budget)
     is action {
         BudgetAction.Warning(remaining) -> on_event(PipelineEvent.BudgetWarning(remaining)),
+        _ -> {}
+    }
+}
+
+/// Forward agent streaming events to the pipeline's on_event callback.
+/// Maps StreamEvent → PipelineEvent (Delta→Delta, Tool→Tool; others dropped),
+/// mirroring rust-ref's stream_cb (Plan 021 Phase 6.6). A free fn (not a closure)
+/// so drive_step can pass `on_event` explicitly — Auto closures capture by
+/// reference which would dangle once the EventSink actor outlives drive_step.
+/// The EventSink cb is `(ev) => forward_stream_event(ev, on_event_local)` where
+/// on_event_local is a cloned fn pointer (Copy, safe to move into the actor).
+fn forward_stream_event(ev StreamEvent, on_event fn(PipelineEvent)) void {
+    is ev {
+        StreamEvent.Delta(text) -> on_event(PipelineEvent.Delta(text)),
+        StreamEvent.Tool(tool, _args, result) -> on_event(PipelineEvent.Tool(tool, result)),
         _ -> {}
     }
 }
