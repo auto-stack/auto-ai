@@ -260,9 +260,11 @@ ext RoleRegistry {
                             Ok(_cfg) -> {
                                 // load_role re-parses the serialized .at to validate it;
                                 // build a live ConfigRole from the original config and
-                                // wrap it in an Arc (ConfigRole has Role).
+                                // wrap it in an Arc<dyn Role> (ConfigRole has Role; §15.11
+                                // single-wrap — the old Arc(Box(role)) double-wrap was the
+                                // pre-§15.11 type match, no longer needed).
                                 let role = config_role_new(detail.config.clone())
-                                return Some(Arc(Box(role)))
+                                return Some(Arc(role))
                             },
                             Err(_e) -> {
                                 // Parse failure: warn and fall through to built-in.

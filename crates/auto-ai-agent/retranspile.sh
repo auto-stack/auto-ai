@@ -189,20 +189,13 @@ if [ -f "$RUST/pipeline.rs" ]; then
             s#correct_handoff_target(\&mut self.clone(), \&mut h.clone(),#correct_handoff_target(self.clone(), h.clone(),#g' "$RUST/pipeline.rs"
 fi
 
-# Plan 390 §15.11 L2 转正 follow-up: a2r's single-wrap rendering (`Arc<Tool>` →
-# `Arc<dyn Tool>`) only fires for specs DECLARED in the same module. A CROSS-
-# MODULE spec (here `use tool: Tool` in agent.at) still renders the old double-
-# wrap `Arc<Box<dyn Tool>>` for the `register_shared(tool Arc<Tool>)` param,
-# which mismatches tool.rs's now-single-wrap storage (`Arc<dyn Tool>`) → E0277.
-# Force the param type single-wrap to match the registry storage. When a2r
-# extends §15.11 to imported specs this sed becomes a no-op.
-# (auto-lang gap — see docs/plans/KNOWN-DEBT-AND-RISKS.md Plan 021 row.)
-if [ -f "$RUST/agent.rs" ]; then
-    sed -i 's#register_shared(&mut self, tool: Arc<Box<dyn Tool>>)#register_shared(\&mut self, tool: Arc<dyn Tool>)#g' "$RUST/agent.rs"
-fi
-
 # Plan 021 缺口 3 (post-Plan 395): turbofish is now native Auto syntax
 # (`node.deserialize<RoleDecl>()`), so no sed injection is needed.
+
+# Plan 390 §15.11-followup (cross-module spec, 2026-08-06): a2r now single-wraps
+# Arc<Spec> / Box<Spec> even for specs IMPORTED via `use mod: Spec` (was only
+# same-module before). The previous sed (forcing register_shared param single-
+# wrap) is removed — a2r renders `Arc<dyn Tool>` natively now.
 
 # Clean up .a2r.rs intermediates
 find "$SRC" -name "*.a2r.rs" -delete

@@ -7,31 +7,35 @@
 > 消除三个已知功能缺口，为最终"转正"（翻转 [lib] path，删 rust-ref）扫清障碍。
 > **对应 016 路线图**：4.3（spec 流式）+ 4.5（第二轮 Auto 化）的功能覆盖维度。
 >
-> **2026-08-05 分工调整**：三个缺口（complete_stream / register_tool<T> / serde 同步）
-> 全部依赖 auto-lang 的语言/a2r 能力扩展。**a2r 侧工作（dyn-Fn 支持、TaskDef 转译、
-> 泛型方法语法、serde derive 注解）由用户在 auto-lang 仓库单独推进**。本 agent 负责
-> auto-ai 侧不依赖 auto-lang 的工作：转正前置（orchestration 功能对齐审计等）。
+> **2026-08-05 分工调整（已兑现）**：三个缺口（complete_stream / register_tool<T> / serde 同步）
+> 原全部依赖 auto-lang 的语言/a2r 能力扩展。**a2r 侧工作（dyn-Fn 支持、TaskDef 转译、
+> 泛型方法语法、serde derive 注解）由用户在 auto-lang 仓库推进，现已全部交付**：
+> actor 转译（Plan 387）、`Box<dyn Fn>` 闭包类型（Plan 390 §15.10）、Arc<dyn Tool> 单层化
+> （§15.11）、call-site 自动装箱（§11）、turbofish 调用泛型实参（Plan 395）。
+> 详见各 Phase 的 ✅ 标记。
 
 ---
 
 ## 三大功能缺口（auto-mvp-v0.2 基线）
 
-经核查，Auto 版与 Rust 原生版有三个功能缺口。**三者都依赖 auto-lang 的语言/a2r 能力扩展**，
-无法纯 auto-ai 内解决：
+经核查，Auto 版与 Rust 原生版有三个功能缺口。~~**三者都依赖 auto-lang 的语言/a2r 能力扩展**~~
+→ **三者已全部解决**（auto-lang Plan 387/390/395 交付 + auto-ai 侧消费落地）：
 
-### 缺口 1：`complete_stream` 流式（最重，L 级）
+### 缺口 1：`complete_stream` 流式（最重，L 级）→ ✅ 已解决（走路径 B actor sink + §15.10 闭包，绕开 dyn-Fn）
 
 - **现状**：rust-ref 的 `Client` spec 有 `complete_stream(req, on_event: Arc<dyn Fn(Value)>)`，
   agent 的 ReAct 循环用它做实时流式输出。Auto 版的 `agent.at` 只有 `complete`（非流式），
   `run_stream` 退化为 polling-style（事件进本地 list 不外发）。
-- **阻塞**：Auto 解析器 + a2r 双双不支持 `dyn Fn(...)` / `impl Fn(...)` 类型（Plan 018 调研确认）。
-  `dyn Trait`（具名 trait）已支持，但 Fn-trait object 无对应语法分支。
-- **当前 workaround**：rust/src/client_impl.rs 的手写 `StreamingAiClient` + std::sync::mpsc channel
-  绕过 spec，恢复 client 层 token 流（但 agent 层 ReAct 事件不外发）。
-- **修复路径**：
-  - **A（完整，L）**：auto-lang 给解析器加 `dyn Fn(...)` 语法 + a2r 输出分支。
-  - **B（备选，M）**：用 Auto actor/channel 机制（agent.at:42 注释已埋伏笔）在 spec 层做事件队列，
-    绕开 dyn-Fn。不依赖解析器改动。
+- ~~**阻塞**：Auto 解析器 + a2r 双双不支持 `dyn Fn(...)` / `impl Fn(...)` 类型（Plan 018 调研确认）~~
+  → **已绕开**：路径 B（actor sink）+ Plan 390 §15.10（`Box<dyn Fn>` 闭包类型）联合解决，
+  无需 dyn-Fn 语法分支（详见 Phase 1b + Phase 6.6）。
+- **当前 workaround（保留，功能正常）**：rust/src/client_impl.rs 的手写 `StreamingAiClient` +
+  std::sync::mpsc channel 恢复 client 层 token 流。**agent 层 ReAct 事件流式已通过 EventSink actor
+  解决**（Phase 6.6：driver drive_step 用 `Box<dyn Fn>` 闭包捕获 on_event 转发 Delta/Tool）。
+- ~~**修复路径**~~ → **已选定路径 B（actor sink + 闭包字段），路径 A（dyn-Fn 语法）否决**：
+  - ~~**A（完整，L）**：auto-lang 给解析器加 `dyn Fn(...)` 语法 + a2r 输出分支。~~ → **否决**（Phase 3）
+  - **B（备选 → 已采用，M）✅**：用 Auto actor 机制（EventSink task）+ `Box<dyn Fn>` 闭包字段
+    （§15.10）在 agent 层做事件外发，绕开 dyn-Fn。已落地（Phase 1b + 6.5 + 6.6）。
 
 ### 缺口 2：`register_tool` 泛型 → 📌 重新定性（2026-08-06 实证），路线改走 spec-param + a2r call-site 修复
 
@@ -92,7 +96,8 @@
 
 ## 实施路线（按可控性排序）
 
-> 三个缺口都跨仓依赖 auto-lang。本计划从**最可能独立推进**的角度切入，同时记录 auto-lang 前置。
+> ~~三个缺口都跨仓依赖 auto-lang。本计划从**最可能独立推进**的角度切入，同时记录 auto-lang 前置。~~
+> → **auto-lang 前置已全部交付**（Plan 387/390/395），三个缺口均已解决，详见各 Phase。
 
 ### Phase 1 — 缺口 1 备选路径评估（agent 事件队列，auto-ai 内）
 
@@ -150,12 +155,25 @@ app 的 channel/SSE。
       `r.register(Box::new(EchoTool {}))` 自动装箱，CLI 无需手包箱；rust-ref 100 单测全绿 →
       **缺口 2 完成判定勾选**
 
-### Phase 3 — 缺口 1 完整路径（dyn-Fn，auto-lang，L 级，若 Phase 1 备选不可行）
+### Phase 3 — 缺口 1 完整路径（dyn-Fn，auto-lang，L 级，若 Phase 1 备选不可行）— ❌ 否决（2026-08-06）
 
-- [ ] 3.1 auto-lang worktree：解析器加 `dyn Fn(...)` / `impl Fn(...)` 类型语法分支
-- [ ] 3.2 a2r 加 Fn-trait object 的 Rust 输出（`dyn Fn(Value) + Send + Sync`）
-- [ ] 3.3 回 auto-ai：agent.at 的 `Client` spec 加 `complete_stream`，run_inner 用回调 emit
-- [ ] 3.4 删除 client_impl.rs 的 StreamingAiClient workaround（回归 spec 路径）
+> **结论：Phase 1b actor 方案成功 + §15.10 交付 Box<dyn Fn>，dyn-Fn 语法路径不再需要。**
+>
+> Phase 3 是"若 Phase 1 备选（actor）不可行"的兜底路径。但：
+> - Phase 1b **已成功**（auto-lang Plan 387 §16/17 实现 a2r actor 转译，EventSink actor sink 落地）；
+> - Plan 390 §15.10 **已交付 `Box<dyn Fn>` 类型机制**（`spec Fn` + `Box<Fn>` → `Box<dyn Fn + Send + Sync>`），
+>   a2r 现已能表达闭包类型——EventSink cb 闭包字段捕获 `on_event` 转发 Delta/Tool 全部接通（Phase 6.6）。
+>
+> 两条原"阻塞"（解析器不支持 dyn-Fn 语法 + a2r 无 Fn-trait 输出）均被绕开：缺口 1 走 actor sink
+> + 闭包字段路线，**不依赖 `dyn Fn(...)` 语法分支**。Phase 3 的 auto-ai 侧工作（Client spec 加
+> `complete_stream`、删 `StreamingAiClient` workaround）也无需做——`client_impl.rs` 的
+> `StreamingAiClient` 是 client 层 SSE token 流的 workaround（与 agent 层 ReAct 事件流式是两回事），
+> 功能正常，回归 spec 路径属可选清理，非阻塞。
+
+- [x] ~~3.1 auto-lang worktree：解析器加 `dyn Fn(...)` / `impl Fn(...)` 类型语法分支~~ → **否决**（actor + §15.10 绕开）
+- [x] ~~3.2 a2r 加 Fn-trait object 的 Rust 输出（`dyn Fn(Value) + Send + Sync`）~~ → **否决**（§15.10 的 `Box<dyn Fn>` 已够，无需 `dyn Fn` 语法）
+- [x] ~~3.3 回 auto-ai：agent.at 的 `Client` spec 加 `complete_stream`，run_inner 用回调 emit~~ → **否决**（EventSink actor sink 已替代）
+- [x] ~~3.4 删除 client_impl.rs 的 StreamingAiClient workaround（回归 spec 路径）~~ → **否决**（workaround 功能正常，非阻塞；回归属可选清理）
 
 ### Phase 4 — 缺口 3 serde 同步（转正前置）→ 📌 重新定性：纯 auto-ai 侧工作
 

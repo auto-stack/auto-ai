@@ -205,7 +205,7 @@ impl RoleRegistry {
 
         return RoleRegistry { roles: roles, names: names };
     }
-    pub fn resolve_role(&self, name: &str) -> Option<Arc<Box<dyn Role>>> {
+    pub fn resolve_role(&self, name: &str) -> Option<Arc<dyn Role>> {
 
 
 
@@ -224,8 +224,10 @@ impl RoleRegistry {
 
 
 
+
+
                                 let role = config_role_new(detail.config.clone());
-                                return Some(Arc::new(Box::new(role)));
+                                return Some(Arc::new(role));
                             },
                             Err(_e) => {
                                 
