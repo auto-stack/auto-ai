@@ -292,7 +292,15 @@ impl Agent {
         self.tools.register(tool);
     }
     pub fn register_skill_tool(&mut self, tool: SkillTool) {
-        self.skills_block = Some(tool.available_skills_block());
+        let block = tool.available_skills_block();
+        match (block.len() as i32) == 0 {
+            true => self.skills_block = None,
+            false => self.skills_block = Some(block),
+        };
+
+
+
+        self.register_tool(Box::new(tool));
     }
     pub fn memory_messages(&self) -> Vec<Message> {
         return self.memory.messages();
@@ -453,7 +461,7 @@ impl Agent {
 
         let system_prompt = build_system_prompt(self.context_block.clone(), self.role.system_prompt().as_str(), self.skills_block.clone());
 
-        return CompletionRequest { model: model, messages: self.memory.to_messages(), max_tokens: None, temperature: Some(self.role.temperature()), system_prompt: Some(system_prompt), tools: tool_defs, stream: false, preferred_provider: None };
+        return CompletionRequest { model: model, messages: self.memory.to_messages(), max_tokens: None, temperature: Some(self.role.temperature()), system_prompt: Some(system_prompt), tools: tool_defs, stream: false, preferred_provider: self.role.preferred_provider() };
     }
 }
 
@@ -473,11 +481,12 @@ impl Agent {
 /// value (`agent.register_tool(MyTool{})`) and the registry Arc-wraps it
 /// internally. Call sites auto-box via a2r Plan 390 §11 Phase E
 /// (`register_tool(Box::new(my_tool))`); no manual `Arc::new(Box::new(...))`.
-/// Cache the available-skills block from a SkillTool so build_system_prompt
-/// injects the skill directory into the system prompt. The caller must also
-/// register the SkillTool via register_shared (Auto can't Arc-wrap a spec
-/// value in one call; rust-ref's register_skill_tool does both, but a2r
-/// needs the Arc construction split). (Plan 016 2.2.)
+/// Register a SkillTool AND cache its available-skills block so
+/// build_system_prompt injects the skill directory into the system prompt.
+/// Mirrors rust-ref's register_skill_tool (both register + cache); the
+/// SkillTool also implements Tool, so register_tool handles Arc-wrapping.
+/// (Plan 016 2.2 + Plan 022 Phase 3.1 — previously only cached the block,
+/// leaving skill(...) tool calls as "tool not found".)
 /// Snapshot of the current conversation memory (for session persistence).
 /// Current conversation memory.
 /// Run the ReAct loop against `task`, returning the agent's final answer.
