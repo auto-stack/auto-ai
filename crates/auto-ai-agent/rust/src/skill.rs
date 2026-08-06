@@ -295,7 +295,7 @@ fn body_offset(after_open: &str, close_idx: u32) -> u32 {
         if i <= close_idx {
             
 
-            acc = acc + ((line.len() as i32) as u32) + 1
+            acc = acc + ((line.len() as i32) as u32) + 1;
         }
         i = i + 1;
     }
@@ -308,7 +308,7 @@ fn slice_and_trim(s: &str, start: u32) -> String {
     let end: u32 = ((s.len() as u32) as u32);
     let mut lo: u32 = start;
     if lo > end {
-        lo = end
+        lo = end;
     }
     let slice = &s[lo as usize..end as usize];
     return slice.trim_start().to_string();

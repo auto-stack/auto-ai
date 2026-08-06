@@ -102,15 +102,15 @@ fn profession_to_config(prof: Box<dyn Role>) -> RoleConfig {
     let s = prof.skills();
     let mut tools: Option<Vec<String>> = None;
     if t.is_empty() == false {
-        tools = Some(t)
+        tools = Some(t);
     }
     let mut tiers: Option<Vec<ModelTier>> = None;
     if at.is_empty() == false {
-        tiers = Some(at)
+        tiers = Some(at);
     }
     let mut skills: Option<Vec<String>> = None;
     if s.is_empty() == false {
-        skills = Some(s)
+        skills = Some(s);
     }
     return RoleConfig { name: Some(prof.name()), description: None, model: Some(prof.model()), model_tier: Some(prof.model_tier()), temperature: Some(prof.temperature()), max_turns: Some(prof.max_turns()), system_prompt: Some(prof.system_prompt()), system_prompt_append: None, tools: tools, tools_append: None, inherit: None, memory_limit: prof.memory_limit(), allowed_tiers: tiers, skills: skills, token_budget: prof.token_budget(), soul_file: None };
 }
@@ -253,9 +253,9 @@ impl RoleRegistry {
             match self.roles.get(name.as_str()) {
                 Some(d) => {
                     if d.summary.is_builtin {
-                        builtin_list.push(d.summary.clone())
+                        builtin_list.push(d.summary.clone());
                     } else {
-                        user_list.push(d.summary.clone())
+                        user_list.push(d.summary.clone());
                     }
 
                 },

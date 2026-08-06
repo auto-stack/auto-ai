@@ -141,19 +141,32 @@ pub enum StreamEvent {
 
 /// A sink actor that consumes `StreamEvent`s sent by `Agent.run_stream`.
 ///
-/// Callers spawn it and pass the handle to `run_stream`:
-///   let sink = Task.spawn("EventSink", 64)
+/// Callers spawn it with a forwarding callback and pass the handle to `run_stream`:
+///   let sink = Task.spawn("EventSink", 64, my_callback)
 ///   let result = agent.run_stream(task, cancel, sink).await.?
+/// The callback (a `fn(StreamEvent)`) is injected at spawn via Plan 390 Phase B
+/// (spawn-with-init-args); `run` (non-streaming) spawns with the no-op default
+/// so events are consumed but not forwarded.
 ///
-/// The handler destructures every event variant and accumulates a compact text
-/// log in its state (f-string state interpolation restored by auto-lang Plan 389
-/// R3 — previously a `+`-concat workaround). App-specific forwarding via a
-/// `cb fn(StreamEvent)` task-state callback is now expressible (Plan 389 R1/R2)
-/// but needs a way to set the callback from outside the actor — follow-up.
+/// The handler destructures every event variant, accumulates a compact text log
+/// in its state, AND forwards the whole event to `cb` (Plan 390 §6.7 — the cb
+/// injection mechanism, unblocking sink→app forwarding). The default cb is
+/// `noop_event` (a named fn so a2r infers the fn-pointer type — closure literals
+/// as state-field defaults hit an a2r inference gap, see KNOWN-DEBT).
+fn noop_event(e StreamEvent) void {
+    // non-streaming run: events are consumed (logged) but not forwarded
+}
+
 task EventSink {
     log = f""
+    cb = noop_event
     on {
         ev StreamEvent -> {
+            // Forward a clone to cb first (the cb owns its copy), then destructure
+            // + log from the original ev. clone() is available (StreamEvent derives
+            // Clone); without it, `(self.cb)(ev)` would move ev and the is-match
+            // below couldn't borrow it.
+            (self.cb)(ev.clone())
             is ev {
                 StreamEvent.Delta(text) -> {
                     log = f"${log}D:${text};"
@@ -323,7 +336,7 @@ ext Agent {
     /// and a throwaway EventSink that consumes the events — nothing observable).
     /// `mut fn`: the loop mutates self.memory/tools.
     pub mut fn run(task_msg str) ~Result<AgentResult, AgentError> {
-        let discard = Task.spawn("EventSink", 16)
+        let discard = Task.spawn("EventSink", 16, f"", noop_event)
         return self.run_inner(task_msg, None, discard).await
     }
 
@@ -331,7 +344,9 @@ ext Agent {
     /// streams every ReAct event to `sink` (Plan 021 缺口 1). The Rust original
     /// takes an `Arc<dyn Fn(StreamEvent)>` callback; Auto can't express `dyn Fn`,
     /// so the port takes a `TaskRef<StreamEvent>` actor handle instead (auto-lang
-    /// Plan 387 §16/17 — the EventSink task is defined above).
+    /// Plan 387 §16/17 — the EventSink task is defined above). The caller spawns
+    /// the sink with a forwarding callback: `Task.spawn("EventSink", 16, my_cb)`
+    /// (Plan 390 Phase B spawn-with-init-args injects cb into the actor's state).
     /// `mut fn`: run_inner mutates self.memory/tools.
     pub mut fn run_stream(task_msg str, cancel Arc<AtomicBool>, sink TaskRef<StreamEvent>) ~Result<AgentResult, AgentError> {
         return self.run_inner(task_msg, Some(cancel), sink).await

@@ -273,7 +273,7 @@ impl PipelineDriver {
 
 
                 let wp = WorkProduct { path: p, description: tc.tool.clone(), lines: None };
-                h.work_product.push(wp.clone())
+                h.work_product.push(wp.clone());
             } else {
                 if tc.tool == "edit_file" {
                     let p = extract_path(tc.args.clone());

@@ -323,7 +323,7 @@ impl PipelineEngine {
         }
         if self.current_step < (self.flow.steps.len() as u32) {
             let step = self.flow.steps[(self.current_step) as usize].clone();
-            self.resumed_step_id = Some(step.id)
+            self.resumed_step_id = Some(step.id);
         }
         self.status = PipelineStatus::Idle;
         return Some(self.advance());
@@ -500,7 +500,7 @@ fn correct_handoff_target(mut eng: PipelineEngine, mut h: HandoffDocument, step_
         Some(expected) => {
             let cur = h.target.clone();
             if cur.is_empty() {
-                h.target = expected
+                h.target = expected;
             } else {
                 if cur != expected {
                     
@@ -508,7 +508,7 @@ fn correct_handoff_target(mut eng: PipelineEngine, mut h: HandoffDocument, step_
 
                     let note: String = format!("[AUTO-CORRECTION] target '{}' corrected to '{}'.", cur, expected);
                     eng.push_gate_feedback(step_id, note.as_str());
-                    h.target = expected
+                    h.target = expected;
                 }            }
 
         },

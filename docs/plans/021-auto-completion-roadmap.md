@@ -176,26 +176,33 @@ app 的 channel/SSE。
 - [x] 6.2 auto-lang worktree：修复 R2（task state 字段 fn 指针类型推导）
 - [x] 6.3 auto-lang worktree：修复 R3（f-string 自引用 task state 解析）
 - [x] 6.4 回归：a2r 22_actors 001-015（含新增 013/014/015）全绿 + auto-lang 全量测试零新增失败
-- [~] 6.5 回 auto-ai：重建 auto.exe → retranspile 0 错；EventSink handler 已升级 f-string（R3）；
-      **cb 转发模式待"外部设置回调"机制**（actor spawn 无参 + 无状态写入消息）→
-      📌 已立项 auto-lang **Plan 390**（见 §6.7）
+- [x] 6.5 回 auto-ai：重建 auto.exe（含 Plan 390 master）→ retranspile 0 错；
+      EventSink 加 `cb = noop_event` state 字段 + `(self.cb)(ev.clone())` 转发；
+      `run` 用 `Task.spawn("EventSink", 16, f"", noop_event)` 注入默认 cb（Plan 390 Phase B
+      spawn 带参）。a2r spawn helper 修为 `_with` 双函数（Rust 不支持参数默认值，
+      auto-lang commit `ad73cb06`）。rust/ 独立 crate + workspace 0 错；rust-ref 100 单测全绿。
 - [ ] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发
-      （依赖 auto-lang **Plan 390** 落地的 cb 注入机制；Plan 390 §10 给出衔接路径）
+      **⏸ 架构阻塞**（2026-08-07 调研）：driver 的 `on_event` 回调需注入 EventSink 的
+      `cb fn(StreamEvent)`，但 cb 只能接收单参数（事件），无法捕获 `on_event`。
+      Auto 闭包不能捕获外部变量（`fn(ev) { forward(ev, outer_cb) }` 报 "Variable ev
+      not defined"），EventSink actor 又无法持有 `on_event` 引用。rust-ref 用 `Arc<dyn Fn>`
+      闭包捕获 `on_event`，Auto 无等价。需以下之一：(a) Auto 支持 `Arc<dyn Fn>` 闭包捕获
+      （语言级），(b) 非 actor 的流式架构，(c) EventSink 能持额外上下文。非 15 行接线，
+      属更深架构工作。**driver 的 StepStarted/Completed/Failed 等非流式事件已正常工作**，
+      仅 Delta/Tool（流式内容）转发受阻。
 
-### §6.7 遗留：EventSink cb 转发的外部设置机制 → 📌 已立项 auto-lang Plan 390
+### §6.7 EventSink cb 转发的外部设置机制 → ✅ 已落地（Plan 390 Phase B + Phase 6.5）
 
-R1/R2/R3 修复后 `(self.cb)(ev)` 语法可用，但 app 无法把回调注入 actor：`Task.spawn` 无初始化参数、
-task 状态默认值固定（`cb = noop`）、无"设状态"控制消息。需要 auto-lang 支持之一：
-- task spawn 初始化参数（`Task.spawn("Sink", 16, cb)`），或
-- 消息触发状态写入（`on { __set_cb(cb) -> { self.cb = cb } }` 的 fn 值消息），或
-- task 暴露只读访问器。
+R1/R2/R3 修复后 `(self.cb)(ev)` 语法可用；Plan 390 Phase B（a2r spawn 带初始化参数）+
+Phase 6.5（auto-ai EventSink 改 `cb = noop_event` + spawn 带参注入）已**完整解决 cb 注入**：
+`Task.spawn("EventSink", 16, f"", cb)` 注入回调，EventSink `(self.cb)(ev.clone())` 转发。
 
-> **📌 已立项**：auto-lang **Plan 390 `390-actor-state-injection.md`**（draft）承接此项。
-> 继承 Plan 389（scope 三修复）模式，推荐机制 M1（spawn 带初始化参数），备选 M2/M3。
-> Plan 390 §10 给出回 auto-ai 的衔接路径（合并 → 重建 auto.exe → agent.at EventSink 改带参 spawn →
-> driver.at 恢复 Delta/Tool 转发）。本计划 §6.6（driver 转发）依赖 Plan 390 落地。
->
-> **非缺口 1 必需** —— agent 层事件已能进入 sink；转发是 app 消费层的增强。
+> **✅ 已落地**：auto-lang Plan 390 Phase B（M1 spawn 带参，机制 A 自描述栈）+ Phase A（VM 侧）。
+> 回 auto-ai 衔接（Phase 6.5）完成：rust/ 独立 crate + workspace 0 错，rust-ref 100 单测全绿。
+
+**遗留（Phase 6.6，架构阻塞）**：driver 的 Delta/Tool → PipelineEvent 转发需 EventSink cb
+捕获 `on_event`，但 Auto 闭包不能捕获外部变量，EventSink 无法持额外上下文 → 见 Phase 6.6
+"架构阻塞"说明。需 Auto 支持 `Arc<dyn Fn>` 闭包捕获或非 actor 流式架构。
 
 ---
 
@@ -211,10 +218,12 @@ task 状态默认值固定（`cb = noop`）、无"设状态"控制消息。需�
 
 ## 完成判定
 
-- [ ] 缺口 1：agent 层流式事件能外发（complete_stream 或 channel 方案）
-      **部分完成（Phase 1b）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)` 已可
-      向 EventSink actor 外发全部事件。剩余：sink handler 无法把事件转发到 app（a2r 限制，
-      见 KNOWN-DEBT）；driver 的 PipelineEvent.Delta/Tool 转发未接。
+- [~] 缺口 1：agent 层流式事件能外发（complete_stream 或 channel 方案）
+      **大部分完成（Phase 1b + 6.5）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)`
+      已可向 EventSink actor 外发全部事件；EventSink 的 `cb fn(StreamEvent)` 已可经
+      spawn 带参注入（Plan 390 Phase B），`(self.cb)(ev.clone())` 转发到注入的回调。
+      **剩余**：driver 的 Delta/Tool → PipelineEvent 转发受阻于 Auto 闭包捕获限制
+      （Phase 6.6，见上）——非流式事件（StepStarted/Completed/Failed 等）已正常工作。
 - [x] 缺口 2：ToolRegistry 有泛型/装箱的 register 入口（或明确记录语言前置）
       **✅ 完成（Phase 2/E/F）**：`ToolRegistry.register(tool Tool)` + `Agent.register_tool(tool Tool)`
       已落地（auto-ai），spec-param 路径 + a2r call-site 自动装箱（auto-lang Plan 390 Phase E）。

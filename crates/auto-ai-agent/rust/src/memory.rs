@@ -28,12 +28,12 @@ impl Memory {
 
 
         if role == "assistant" {
-            self.add_message(Message::assistant(content))
+            self.add_message(Message::assistant(content));
         } else {
             if role == "system" {
-                self.add_message(Message::system(content))
+                self.add_message(Message::system(content));
             } else {
-                self.add_message(Message::user(content))
+                self.add_message(Message::user(content));
             }
         }
 
@@ -64,7 +64,7 @@ impl Memory {
         let mut count: u32 = 0 as u32;
         for m in self.messages.clone() {
             if m.role.to_string() != "system" {
-                count = count + 1
+                count = count + 1;
             }
         }
         return count;
@@ -133,7 +133,7 @@ impl Memory {
             
 
             if i < from {
-                out.push(m.clone())
+                out.push(m.clone());
             } else {
                 if i >= up_to {
                     out.push(m.clone());

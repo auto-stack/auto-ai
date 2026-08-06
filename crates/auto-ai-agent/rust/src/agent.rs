@@ -133,15 +133,35 @@ pub enum StreamEvent {
 }
 
 
+/// A sink actor that consumes `StreamEvent`s sent by `Agent.run_stream`.
+/// 
+/// Callers spawn it with a forwarding callback and pass the handle to `run_stream`:
+/// let sink = Task.spawn("EventSink", 64, my_callback)
+/// let result = agent.run_stream(task, cancel, sink).await.?
+/// The callback (a `fn(StreamEvent)`) is injected at spawn via Plan 390 Phase B
+/// (spawn-with-init-args); `run` (non-streaming) spawns with the no-op default
+/// so events are consumed but not forwarded.
+/// 
+/// The handler destructures every event variant, accumulates a compact text log
+/// in its state, AND forwards the whole event to `cb` (Plan 390 §6.7 — the cb
+/// injection mechanism, unblocking sink→app forwarding). The default cb is
+/// `noop_event` (a named fn so a2r infers the fn-pointer type — closure literals
+/// as state-field defaults hit an a2r inference gap, see KNOWN-DEBT).
+fn noop_event(e: StreamEvent) {
+
+}
+
 #[derive(Clone, Debug)]
 struct EventSink {
     log: String,
+    cb: fn(StreamEvent) -> (),
 }
 
 impl EventSink {
     pub fn new() -> Self {
         Self {
             log: format!(""),
+            cb: noop_event,
         }
     }
 
@@ -156,6 +176,12 @@ impl EventSink {
     pub async fn handle_msg(&mut self, msg: StreamEvent, reply_tx: a2r_std::task::NopReply) -> Result<(), Box<dyn std::error::Error>> {
         match msg {
             ev => {
+                
+
+
+
+
+                (self.cb)(ev.clone());
                 match ev {
                     StreamEvent::Delta(text) => self.log = format!("{}D:{};", self.log, text),
                     StreamEvent::ToolStart(tool, _args) => self.log = format!("{}TS:{};", self.log, tool),
@@ -174,6 +200,21 @@ impl EventSink {
     }
 }
 
+pub fn spawn_event_sink_with(log: String, cb: fn(StreamEvent) -> ()) -> a2r_std::task::TaskRef<StreamEvent> {
+    let (taskref, mut rx) = a2r_std::task::channel::<StreamEvent>();
+    let join = tokio::spawn(async move {
+        let mut actor = EventSink { log: log, cb: cb };
+        let _ = actor.start().await;
+        while let Some(msg) = rx.recv().await {
+            let reply_tx = a2r_std::task::NopReply;
+            let _ = actor.handle_msg(msg, reply_tx).await;
+            rx.mark_processed();
+        }
+    });
+    a2r_std::task::track_join(join);
+    taskref
+}
+
 pub fn spawn_event_sink() -> a2r_std::task::TaskRef<StreamEvent> {
     let (taskref, mut rx) = a2r_std::task::channel::<StreamEvent>();
     let join = tokio::spawn(async move {
@@ -190,17 +231,6 @@ pub fn spawn_event_sink() -> a2r_std::task::TaskRef<StreamEvent> {
 }
 
 
-/// A sink actor that consumes `StreamEvent`s sent by `Agent.run_stream`.
-/// 
-/// Callers spawn it and pass the handle to `run_stream`:
-/// let sink = Task.spawn("EventSink", 64)
-/// let result = agent.run_stream(task, cancel, sink).await.?
-/// 
-/// The handler destructures every event variant and accumulates a compact text
-/// log in its state (f-string state interpolation restored by auto-lang Plan 389
-/// R3 — previously a `+`-concat workaround). App-specific forwarding via a
-/// `cb fn(StreamEvent)` task-state callback is now expressible (Plan 389 R1/R2)
-/// but needs a way to set the callback from outside the actor — follow-up.
 /// A record of one tool call made during a run (for diagnostics/results).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCallRecord {
@@ -258,7 +288,7 @@ impl Agent {
     pub fn with_context(&mut self, context: &str) {
         let ctx = context.trim().to_string();
         if ctx.is_empty() == false {
-            self.context_block = Some(context.to_string())
+            self.context_block = Some(context.to_string());
         }
     }
     pub fn register_shared(&mut self, tool: Arc<Box<dyn Tool>>) {
@@ -277,7 +307,7 @@ impl Agent {
         return self.memory.messages();
     }
     pub async fn run(&mut self, task_msg: &str) -> Result<AgentResult, AgentError> {
-        let discard = spawn_event_sink();
+        let discard = spawn_event_sink_with(format!(""), noop_event);
         return self.run_inner(task_msg, None, discard).await;
     }
     pub async fn run_stream(&mut self, task_msg: &str, cancel: Arc<AtomicBool>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
@@ -463,7 +493,9 @@ impl Agent {
 /// streams every ReAct event to `sink` (Plan 021 缺口 1). The Rust original
 /// takes an `Arc<dyn Fn(StreamEvent)>` callback; Auto can't express `dyn Fn`,
 /// so the port takes a `TaskRef<StreamEvent>` actor handle instead (auto-lang
-/// Plan 387 §16/17 — the EventSink task is defined above).
+/// Plan 387 §16/17 — the EventSink task is defined above). The caller spawns
+/// the sink with a forwarding callback: `Task.spawn("EventSink", 16, my_cb)`
+/// (Plan 390 Phase B spawn-with-init-args injects cb into the actor's state).
 /// `mut fn`: run_inner mutates self.memory/tools.
 /// Unified ReAct loop backing run + run_stream.
 /// 
@@ -543,7 +575,7 @@ fn build_system_prompt(context_block: Option<String>, soul: &str, skills_block: 
     match context_block {
         Some(ctx) => {
             if ctx.trim().to_string().is_empty() == false {
-                prompt = format!("{}{}", ctx, "\n\n---\n\n")
+                prompt = format!("{}{}", ctx, "\n\n---\n\n");
             }
         },
         None => {},
