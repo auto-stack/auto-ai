@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use auto_ai_client::{
     AiClient, ClientError, CompletionRequest, CompletionResponse, ContentBlock, Message,
 };
@@ -85,7 +86,7 @@ impl Client for AiClient {
 }
 
 /// Events emitted by [`Agent::run_stream`] as the ReAct loop progresses.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StreamEvent {
     /// A chunk of the model's text output.
     Delta { text: String },
@@ -123,7 +124,7 @@ pub enum StreamEvent {
 }
 
 /// A record of one tool call made during a run (for diagnostics/results).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub tool: String,
     pub args: serde_json::Value,
@@ -131,7 +132,7 @@ pub struct ToolCallRecord {
 }
 
 /// The outcome of [`Agent::run`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AgentResult {
     /// The agent's final textual answer.
     pub output: String,

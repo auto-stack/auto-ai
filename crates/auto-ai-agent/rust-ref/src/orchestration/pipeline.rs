@@ -37,7 +37,7 @@ impl Default for PipelineMode {
 }
 
 /// Result of advancing the pipeline — tells the caller what to do next.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AdvanceResult {
     /// Run the agent for this step, then call `submit_handoff()`.
     ExecuteStep { step_id: String, role_id: String },
