@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use auto_atom::*;
 use auto_val::*;
+use serde::Deserialize;
 use crate::provider::{ProviderConfig};
 use crate::tier::{ModelDefinition, ModelTier};
 /// `.at` configuration loading for client and daemon, via the shared
@@ -45,6 +46,16 @@ use crate::tier::{ModelDefinition, ModelTier};
 /// `ai-daemon.at` — same, rooted in `daemon { … }`, plus daemon-only fields
 /// (`listen_addr`, `idle_timeout_min`, `log_level`, and `max_concurrency`
 /// inside each provider block).
+/// 
+/// Plan 021 缺口 3 / Plan 381: scalar props are deserialized via the serde view
+/// structs below (ClientScalars/DaemonScalars/ProviderScalars) instead of the
+/// hand-written opt_* helpers. Complex structures (providers keyed by
+/// child-node name, tier_routing nested block, models' 3 shapes) stay
+/// hand-written. A provider whose scalars fail to deserialize is a **config
+/// error**, not a silent skip (rust-ref Plan 381). `idle_timeout_min` keeps the
+/// DaemonConfig default (10) when absent — deliberately NOT rust-ref's
+/// `unwrap_or(0)` (rust-ref's `default()` says 10; its parse path's 0 is an
+/// inconsistency we don't replicate — decision: 10).
 /// Configuration error.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConfigError {
@@ -149,24 +160,75 @@ impl TierRouting {
     }
 }
 
+/// Ordered candidates for a tier, or None if the tier isn't routed.
+#[derive(Debug, Deserialize)]
+struct ClientScalars {
+    #[serde(default)]
+    pub default_provider: String,
+    #[serde(default)]
+    pub default_model: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DaemonScalars {
+    #[serde(default)]
+    pub listen_addr: Option<String>,
+    #[serde(default)]
+    pub idle_timeout_min: Option<u32>,
+    #[serde(default)]
+    pub log_level: Option<String>,
+    #[serde(default)]
+    pub default_provider: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProviderScalars {
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub key_env: Option<String>,
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
+    #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")]
+    pub auth_required: Option<bool>,
+}
+
 pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
     match root_node(content, "client") {
-        Ok(node) => {
-            let default_provider = opt_str(node.clone(), "default_provider");
-            let default_model = opt_str(node.clone(), "default_model");
-            let providers = parse_provider_blocks(node.clone());
-            let names = provider_keys(node.clone());
+        Ok(client_node) => {
             
 
-            if (names.len() as i32) == 0 {
-                return Err(ConfigError::Parse("no providers configured in client { } block".to_string()));
-            }
-            let dp = if default_provider.is_empty() {
-                names[0].clone()
-            } else {
-                default_provider
+
+
+
+            match client_node.deserialize::<ClientScalars>() {
+                Ok(s) => {
+                    match parse_provider_blocks(client_node.clone()) {
+                        Ok(providers) => {
+                            let names = provider_keys(client_node.clone());
+                            
+
+                            if (names.len() as i32) == 0 {
+                                return Err(ConfigError::Parse("no providers configured in client { } block".to_string()));
+                            }
+                            let dp = if s.default_provider.is_empty() {
+                                names[0].clone()
+                            } else {
+                                s.default_provider
+                            };
+                            return Ok(ClientConfig { providers: providers, provider_names: names, default_provider: dp.to_string(), default_model: s.default_model.to_string() });
+                        },
+                        Err(e) => return Err(e),
+                    };
+                },
+                Err(e) => return Err(ConfigError::Parse(format!("client.at: {}", e))),
             };
-            return Ok(ClientConfig { providers: providers, provider_names: names, default_provider: dp.to_string(), default_model: default_model.to_string() });
         },
         Err(e) => return Err(e),
     }
@@ -174,51 +236,72 @@ pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
 
 pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
     match root_node(content, "daemon") {
-        Ok(node) => {
-            let mut cfg = DaemonConfig::default();
-            let la = opt_str(node.clone(), "listen_addr");
-            if la.is_empty() == false {
-                cfg.listen_addr = la
-            }
-            let itm = opt_uint(node.clone(), "idle_timeout_min");
-            match itm {
-                Some(n) => cfg.idle_timeout_min = n,
-                None => {},
-            };
-            let ll = opt_str(node.clone(), "log_level");
-            if ll.is_empty() == false {
-                cfg.log_level = ll
-            }
-            cfg.default_provider = opt_str(node.clone(), "default_provider");
-            cfg.default_model = opt_str(node.clone(), "default_model");
-            cfg.providers = parse_provider_blocks(node.clone());
-            cfg.provider_names = provider_keys(node.clone());
-            cfg.tier_routing = parse_tier_routing(node.clone());
+        Ok(daemon_node) => {
             
 
-            if cfg.default_provider.is_empty() && (cfg.provider_names.len() as i32) > 0 {
-                cfg.default_provider = cfg.provider_names[0].clone()
-            }
-            if cfg.default_model.is_empty() {
-                if cfg.providers.contains_key(&cfg.default_provider) {
-                    
 
-                    match cfg.providers.get(&cfg.default_provider) {
-                        Some(p) => {
-                            if (p.models.len() as i32) > 0 {
-                                cfg.default_model = p.models[0].clone().id.to_string()
-                            }
-                        },
+
+            match daemon_node.deserialize::<DaemonScalars>() {
+                Ok(s) => {
+                    let mut cfg = DaemonConfig::default();
+                    match s.listen_addr {
+                        Some(v) => cfg.listen_addr = v,
                         None => {},
                     };
-                }            }
-            return Ok(cfg);
+                    
+
+
+
+                    match s.idle_timeout_min {
+                        Some(n) => cfg.idle_timeout_min = n,
+                        None => {},
+                    };
+                    match s.log_level {
+                        Some(v) => cfg.log_level = v,
+                        None => {},
+                    };
+                    match s.default_provider {
+                        Some(v) => cfg.default_provider = v,
+                        None => {},
+                    };
+                    match s.default_model {
+                        Some(v) => cfg.default_model = v,
+                        None => {},
+                    };
+                    match parse_provider_blocks(daemon_node.clone()) {
+                        Ok(providers) => cfg.providers = providers,
+                        Err(e) => return Err(e),
+                    };
+                    cfg.provider_names = provider_keys(daemon_node.clone());
+                    cfg.tier_routing = parse_tier_routing(daemon_node.clone());
+                    
+
+                    if cfg.default_provider.is_empty() && (cfg.provider_names.len() as i32) > 0 {
+                        cfg.default_provider = cfg.provider_names[0].clone();
+                    }
+                    if cfg.default_model.is_empty() {
+                        if cfg.providers.contains_key(&cfg.default_provider) {
+                            
+
+                            match cfg.providers.get(&cfg.default_provider) {
+                                Some(p) => {
+                                    if (p.models.len() as i32) > 0 {
+                                        cfg.default_model = p.models[0].clone().id.to_string();
+                                    }
+                                },
+                                None => {},
+                            };
+                        }                    }
+                    return Ok(cfg);
+                },
+                Err(e) => return Err(ConfigError::Parse(format!("daemon.at: {}", e))),
+            };
         },
         Err(e) => return Err(e),
     }
 }
 
-/// Ordered candidates for a tier, or None if the tier isn't routed.
+/// auth_required accepts bool / 0,1 / "yes","on",… (old opt_bool).
 /// Parse `ai-client.at` content (root must be `client { … }`).
 /// Parse `daemon { … }` content (root must be `daemon { … }`).
 /// Parse the single root node and assert its name is `expected`.
@@ -239,14 +322,29 @@ fn root_node(content: &str, expected: &str) -> Result<Node, ConfigError> {
     }
 }
 
+/// True when a `kind` prop value marks a non-provider child block: missing
+/// (Nil/Null/Void) or an empty string. Mirrors rust-ref's kind check
+/// (`matches!(kind_prop, Value::Nil | Value::Null | Value::Void)`) plus the old
+/// opt_str "" behavior, so `provider_keys` and `parse_provider_blocks` agree on
+/// what counts as a provider.
+fn kind_prop_is_empty(v: Value) -> bool {
+    match v {
+        Value::Nil => return true,
+        Value::Null => return true,
+        Value::Void => return true,
+        Value::Str(s) => return s.to_string().is_empty(),
+        Value::String(s) => return s.to_string().is_empty(),
+        _ => return false,
+    }
+}
+
 /// Collect the names of each `name { … }` child block of `node` (in order).
 fn provider_keys(node: Node) -> Vec<String> {
     let mut names: Vec<String> = vec![];
     for (_key, kid) in node.kids_iter() {
         match kid {
             Kid::Node(child) => {
-                let pc_kind = opt_str(*(*child).clone(), "kind");
-                if pc_kind.is_empty() == false {
+                if kind_prop_is_empty(child.get_prop_of("kind")) == false {
                     names.push(child.name.to_string());
                 }
             },
@@ -257,28 +355,39 @@ fn provider_keys(node: Node) -> Vec<String> {
 }
 
 /// Walk a node's children, turning each `name { … }` block into a
-/// ProviderConfig. Returns a Map keyed by block name.
-fn parse_provider_blocks(node: Node) -> std::collections::HashMap<String, ProviderConfig> {
+/// ProviderConfig. Returns a Map keyed by block name, or a config error.
+/// 
+/// A child node is a provider iff it declares a `kind` prop (same convention as
+/// the daemon's `enum_self_providers`). Other child nodes — e.g. the daemon's
+/// `tier_routing { … }` block — are skipped without being deserialized. A
+/// provider whose scalars fail to deserialize (a garbage-typed value such as
+/// `auth_required : "maybe"`) is a **config error**, not a silent skip: a
+/// provider must never quietly vanish from the registry (Plan 381).
+fn parse_provider_blocks(node: Node) -> Result<std::collections::HashMap<String, ProviderConfig>, ConfigError> {
     let mut providers: std::collections::HashMap<String, ProviderConfig> = std::collections::HashMap::new();
     for (_key, kid) in node.kids_iter() {
         match kid {
-            Kid::Node(child) => {
-                let kind = opt_str(*(*child).clone(), "kind");
-                if kind.is_empty() == false {
+            Kid::Node(provider_node) => {
+                
+
+                if kind_prop_is_empty(provider_node.get_prop_of("kind")) == false {
                     
 
-
-
-
-                    let auth = match opt_bool(*(*child).clone(), "auth_required") { Some(b) => b, None => true, };
-                    let pc = ProviderConfig { kind: kind, base_url: opt_str(*(*child).clone(), "base_url"), api_key: opt_str_opt(*(*child).clone(), "api_key"), key_env: opt_str_opt(*(*child).clone(), "key_env"), models: opt_models(*(*child).clone(), "models"), max_concurrency: opt_uint_opt(*(*child).clone(), "max_concurrency"), auth_required: auth };
-                    providers.insert(child.name.to_string(), pc);
+                    match provider_node.deserialize::<ProviderScalars>() {
+                        Ok(s) => {
+                            let pc = ProviderConfig { kind: match s.kind { Some(v) => v, None => "".to_string(), }, base_url: match s.base_url { Some(v) => v, None => "".to_string(), }, api_key: s.api_key, key_env: s.key_env, models: opt_models(*(*provider_node).clone(), "models"), max_concurrency: s.max_concurrency, auth_required: match s.auth_required { Some(b) => b, None => true, } };
+                            if pc.kind.is_empty() == false {
+                                providers.insert(provider_node.name.to_string(), pc);
+                            }
+                        },
+                        Err(e) => return Err(ConfigError::Parse(format!("provider '{}': {}", provider_node.name, e))),
+                    };
                 }
             },
             _ => {},
         };
     }
-    return providers;
+    return Ok(providers);
 }
 
 /// Parse the `tier_routing { … }` child block from a daemon config.
@@ -339,77 +448,6 @@ fn parse_candidates(val: Value) -> Vec<TierRouteCandidate> {
         _ => {},
     };
     return out;
-}
-
-/// Read a string prop; "" when missing or nil.
-fn opt_str(node: Node, key: &str) -> String {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Str(s) => return s.to_string(),
-        Value::String(s) => return s.to_string(),
-        _ => return val.to_astr().to_string(),
-    }
-}
-
-/// Read an optional string prop: None when missing/nil.
-fn opt_str_opt(node: Node, key: &str) -> Option<String> {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Str(s) => return Some(s.to_string()),
-        Value::String(s) => return Some(s.to_string()),
-        _ => {
-            let s = val.to_astr().to_string();
-            if s.is_empty() {
-                return None;
-            }
-            return Some(s);
-        },
-    }
-}
-
-/// Read a non-negative integer prop; None when missing.
-fn opt_uint_opt(node: Node, key: &str) -> Option<u32> {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Uint(u) => return Some(u as u32),
-        Value::Int(i) => {
-            if i >= 0 {
-                return Some(i as u32);
-            }
-            return None;
-        },
-        _ => return None,
-    }
-}
-
-/// Read an optional uint prop (kept for parity with opt_uint in the original).
-fn opt_uint(node: Node, key: &str) -> Option<u32> {
-    return opt_uint_opt(node.clone(), key);
-}
-
-/// Read a boolean prop: true/false/1/0/yes/no. None if absent/unrecognized.
-fn opt_bool(node: Node, key: &str) -> Option<bool> {
-    let val = node.get_prop_of(key);
-    match val {
-        Value::Bool(b) => return Some(b),
-        Value::Uint(u) => return Some(u != 0),
-        Value::Int(i) => return Some(i != 0),
-        Value::Str(s) => {
-            let lower = s.to_ascii_lowercase();
-            match lower.as_str() {
-                "true" => return Some(true),
-                "yes" => return Some(true),
-                "1" => return Some(true),
-                "on" => return Some(true),
-                "false" => return Some(false),
-                "no" => return Some(false),
-                "0" => return Some(false),
-                "off" => return Some(false),
-                _ => return None,
-            };
-        },
-        _ => return None,
-    }
 }
 
 /// Read the `models` field as a list of [ModelDefinition]s (id + tier).

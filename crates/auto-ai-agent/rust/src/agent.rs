@@ -39,17 +39,15 @@ use crate::wire::{ContentBlock, JsonValue, ToolDefinition};
 /// 
 /// ARCHITECTURE ADAPTATION (Auto side; see 013-handoff §D): the Rust original
 /// drives events via an `Arc<dyn Fn(StreamEvent)>` callback (true streaming, fed
-/// by the client's SSE deltas). Auto's parser rejects `dyn Fn` parameters +
-/// closures-inside-function-bodies, so this port drives events through an **Auto
-/// actor sink** instead (auto-lang Plan 387 §16/17): `run_stream` takes a
-/// `TaskRef<StreamEvent>` handle (spawned from `EventSink`, defined below) and
-/// every event point does `sink.send(...)`. `run` spawns a throwaway sink so the
-/// loop body is sink-only (no Option branching — mirrors rust-ref's "on_event is
-/// always a sink", review-003 M4). Events reach the actor mailbox asynchronously
-/// (TaskRef.send is non-blocking); the sink handler in this library only
-/// destructures + accumulates a text log (a2r currently can't hold a forwarding
-/// fn-pointer in task state, nor use the on-pattern binding as an expression —
-/// app-specific forwarding is an auto-lang follow-up, see plan 021 KNOWN-DEBT).
+/// by the client's SSE deltas). Auto's parser rejects `dyn Fn` parameters, so
+/// this port drives events through an **Auto actor sink** instead (auto-lang
+/// Plan 387 §16/17): `run_stream` takes a `TaskRef<StreamEvent>` handle (spawned
+/// from `EventSink`, defined below) and every event point does `sink.send(...)`.
+/// `run` spawns a throwaway sink so the loop body is sink-only (no Option
+/// branching — mirrors rust-ref's "on_event is always a sink", review-003 M4).
+/// Events reach the actor mailbox asynchronously (TaskRef.send is non-blocking);
+/// the sink handler forwards each event to `cb` — a `Box<dyn Fn(StreamEvent)>`
+/// closure (Plan 390 §15.10) injected at spawn, so apps can receive the stream.
 /// Tool execution stays async (`execute ~Result<str,ToolError>`).
 /// 
 /// Other Auto-side adaptations (none affect behavior):
@@ -133,35 +131,16 @@ pub enum StreamEvent {
 }
 
 
-/// A sink actor that consumes `StreamEvent`s sent by `Agent.run_stream`.
-/// 
-/// Callers spawn it with a forwarding callback and pass the handle to `run_stream`:
-/// let sink = Task.spawn("EventSink", 64, my_callback)
-/// let result = agent.run_stream(task, cancel, sink).await.?
-/// The callback (a `fn(StreamEvent)`) is injected at spawn via Plan 390 Phase B
-/// (spawn-with-init-args); `run` (non-streaming) spawns with the no-op default
-/// so events are consumed but not forwarded.
-/// 
-/// The handler destructures every event variant, accumulates a compact text log
-/// in its state, AND forwards the whole event to `cb` (Plan 390 §6.7 — the cb
-/// injection mechanism, unblocking sink→app forwarding). The default cb is
-/// `noop_event` (a named fn so a2r infers the fn-pointer type — closure literals
-/// as state-field defaults hit an a2r inference gap, see KNOWN-DEBT).
-fn noop_event(e: StreamEvent) {
-
-}
-
-#[derive(Clone, Debug)]
 struct EventSink {
     log: String,
-    cb: fn(StreamEvent) -> (),
+    cb: Box<dyn Fn(StreamEvent) + Send + Sync>,
 }
 
 impl EventSink {
     pub fn new() -> Self {
         Self {
             log: format!(""),
-            cb: noop_event,
+            cb: Box::new(move |e: StreamEvent| { }),
         }
     }
 
@@ -200,7 +179,7 @@ impl EventSink {
     }
 }
 
-pub fn spawn_event_sink_with(log: String, cb: fn(StreamEvent) -> ()) -> a2r_std::task::TaskRef<StreamEvent> {
+pub fn spawn_event_sink_with(log: String, cb: Box<dyn Fn(StreamEvent) + Send + Sync>) -> a2r_std::task::TaskRef<StreamEvent> {
     let (taskref, mut rx) = a2r_std::task::channel::<StreamEvent>();
     let join = tokio::spawn(async move {
         let mut actor = EventSink { log: log, cb: cb };
@@ -231,6 +210,21 @@ pub fn spawn_event_sink() -> a2r_std::task::TaskRef<StreamEvent> {
 }
 
 
+/// A sink actor that consumes `StreamEvent`s sent by `Agent.run_stream`.
+/// 
+/// Callers spawn it with a forwarding callback and pass the handle to `run_stream`:
+/// let sink = Task.spawn("EventSink", 64, Box((ev) => forward(ev)))
+/// let result = agent.run_stream(task, cancel, sink).await.?
+/// The callback (a `Box<dyn Fn(StreamEvent)>` — Plan 390 §15.10) is injected at
+/// spawn via the `_with` init arg (a closure capturing the app's event handler);
+/// `run` (non-streaming) spawns with all-default args so the no-op closure
+/// default consumes events without forwarding.
+/// 
+/// The handler destructures every event variant, accumulates a compact text log
+/// in its state, AND forwards the whole event to `cb` (Plan 390 §6.7 — the cb
+/// injection mechanism, unblocking sink→app forwarding). The default cb is an
+/// empty closure literal (Plan 390 §15.10 transpiles it to
+/// `Box::new(move |..| { .. })` — a `Box<dyn Fn>` field).
 /// A record of one tool call made during a run (for diagnostics/results).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCallRecord {
@@ -291,7 +285,7 @@ impl Agent {
             self.context_block = Some(context.to_string());
         }
     }
-    pub fn register_shared(&mut self, tool: Arc<Box<dyn Tool>>) {
+    pub fn register_shared(&mut self, tool: Arc<dyn Tool>) {
         self.tools.register_shared(tool);
     }
     pub fn register_tool(&mut self, tool: Box<dyn Tool>) {
@@ -307,7 +301,8 @@ impl Agent {
         return self.memory.messages();
     }
     pub async fn run(&mut self, task_msg: &str) -> Result<AgentResult, AgentError> {
-        let discard = spawn_event_sink_with(format!(""), noop_event);
+
+        let discard = spawn_event_sink();
         return self.run_inner(task_msg, None, discard).await;
     }
     pub async fn run_stream(&mut self, task_msg: &str, cancel: Arc<AtomicBool>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
@@ -491,11 +486,11 @@ impl Agent {
 /// `mut fn`: the loop mutates self.memory/tools.
 /// Like run, but honors a cancellation flag at the turn boundaries AND
 /// streams every ReAct event to `sink` (Plan 021 缺口 1). The Rust original
-/// takes an `Arc<dyn Fn(StreamEvent)>` callback; Auto can't express `dyn Fn`,
-/// so the port takes a `TaskRef<StreamEvent>` actor handle instead (auto-lang
-/// Plan 387 §16/17 — the EventSink task is defined above). The caller spawns
-/// the sink with a forwarding callback: `Task.spawn("EventSink", 16, my_cb)`
-/// (Plan 390 Phase B spawn-with-init-args injects cb into the actor's state).
+/// takes an `Arc<dyn Fn(StreamEvent)>` callback; the Auto port takes a
+/// `TaskRef<StreamEvent>` actor handle instead (auto-lang Plan 387 §16/17 —
+/// the EventSink task is defined above). The caller spawns the sink with a
+/// forwarding closure (Plan 390 §15.10 Box<dyn Fn>):
+/// `Task.spawn("EventSink", 16, f"", Box((ev) => forward(ev, on_event)))`.
 /// `mut fn`: run_inner mutates self.memory/tools.
 /// Unified ReAct loop backing run + run_stream.
 /// 

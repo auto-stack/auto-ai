@@ -153,7 +153,7 @@ pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Opt
         if first || key < best_key {
             best = Some(m.clone());
             best_key = key;
-            first = false
+            first = false;
         }
     }
     match best {

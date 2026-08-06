@@ -82,6 +82,17 @@ if [ -f "$RUST/tier.rs" ]; then
     sed -i 's#return Some(m\.id);#return Some(m.id.clone());#g; s#best = Some(m);#best = Some(m.clone());#g' "$RUST/tier.rs"
 fi
 
+# Plan 021 缺口 3 (post-Plan 395): turbofish is now native Auto syntax
+# (`node.deserialize<ClientScalars>()`), so no sed injection is needed.
+# Remaining a2r quirk (Plan 395 调查发现，尚未在 a2r 修复): unit-variant
+# patterns on a qualified enum path render as `auto_val::Value.Nil` (invalid
+# Rust) instead of `Value::Nil`. The tuple-variant arms (Str/String) render
+# fine, so only the three unit arms of kind_prop_is_empty need fixing.
+if [ -f "$RUST/loader.rs" ]; then
+    sed -i 's#auto_val::Value\.Nil#Value::Nil#g; s#auto_val::Value\.Null#Value::Null#g; s#auto_val::Value\.Void#Value::Void#g' "$RUST/loader.rs"
+    echo "  [loader] unit-variant path fix (a2r quirk)"
+fi
+
 # Assemble lib.rs: transpiled crate-root + pub mod decls (no extern shims).
 if [ -f "$SRC/lib.a2r.rs" ]; then
     awk -v pubmods="$(read_pub_mods)" '

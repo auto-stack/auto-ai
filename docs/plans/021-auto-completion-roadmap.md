@@ -68,6 +68,25 @@
 - ~~**修复路径**：需 a2r 扩展 serde derive 注解支持~~ → **新修复路径**（纯 auto-ai 侧）：
   重写 `.at` 源码用 `#[derive(Deserialize)] type RoleDecl` + `#[serde(...)]` 字段注解 +
   `node.deserialize::<RoleDecl>()`（镜像 rust-ref），retranspile 验证。无需 auto-lang 改动。
+- **✅ 已完成（2026-08-06 role_config.at + 2026-08-06 loader.at）**：
+  - role_config.at 迁移（commit `ccf7a6a`）走通完整模式；loader.at 迁移本次完成。
+  - loader.at：三个 serde view struct（ClientScalars/DaemonScalars/ProviderScalars，镜像 rust-ref）
+    + provider 错误硬传播（Plan 381：`parse_provider_blocks` 返回 Result，垃圾 scalar 硬报错
+    命名 provider）+ `idle_timeout_min` 缺省决策 **= 10**（保持 `DaemonConfig.default()` 语义，
+    刻意不复刻 rust-ref `unwrap_or(0)`——其 default() 为 10、parse 路径却归 0，属内部不一致）。
+  - retranspile.sh 两处 workaround：3 条 turbofish sed（`client_node/daemon_node/provider_node`
+    变量名锚定，Auto 无 turbofish 语法 → E0282）+ a2r unit-variant quirk 修复
+    （`auto_val.Value.Nil` 限定 unit variant pattern 渲染成非法的 `auto_val::Value.Nil`）。
+  - 验证：ai-config/rust + auto-ai-agent/rust + auto-ai-client/rust 三转译 crate 0 错；
+    workspace 0 错；独立 harness 24 项行为断言全 PASS（examples + 缺省 idle=10 + 垃圾 scalar
+    硬报错含 provider 名 + tier_routing 跳过 + 错根拒绝）；workspace 全测试绿（100/37/36…）。
+  - **📌 turbofish 消费迁移（2026-08-06，auto-lang Plan 395 落地后）**：
+    loader.at / role_config.at 改用原生语法 `node.deserialize<ClientScalars>()` 等（4 处），
+    **删除**两个 retranspile.sh 的 4 条 turbofish sed（`::<T>` 由 a2r 原生输出；
+    unit-variant quirk sed 保留——该 a2r bug 未修）。用 auto-lang-395 worktree 的 auto.exe
+    重跑 retranspile：三转译 crate 0 错、workspace 0 错、workspace 测试全绿。
+    残留：`json.decode[CompletionResponse](text)`（auto-ai-client/lib.at:107）仍走 Index hack——
+    迁移需 a2r rust.rs:3569 特判改读 `generic_args`（可选，另开 follow-up）。
 
 ---
 
@@ -143,11 +162,11 @@ app 的 channel/SSE。
 > ~~由用户在 auto-lang 单独推进~~ → **实证（2026-08-07）**：a2r 已支持 serde 注解透传，无需 auto-lang 改动。
 
 - [x] 4.1 评估 a2r 对 `#[derive(Deserialize)]` 注解的支持现状 → **已支持**（透传，实证）
-- [ ] 4.2 ~~auto-lang worktree：a2r 扩展 serde derive 注解转译~~ → **不需要**
-- [ ] 4.3 回 auto-ai：role_config.at / loader.at 用 `#[derive(Deserialize)]` + `#[serde(...)]` +
+- [x] 4.2 ~~auto-lang worktree：a2r 扩展 serde derive 注解转译~~ → **不需要**
+- [x] 4.3 回 auto-ai：role_config.at / loader.at 用 `#[derive(Deserialize)]` + `#[serde(...)]` +
       `node.deserialize::<RoleDecl>()` 重写，对齐 rust-ref
-- [ ] 4.4 同步 Plan 381 的 provider 错误硬传播行为
-- [ ] 4.5 retranspile 验证；勾选缺口 3 完成判定
+- [x] 4.4 同步 Plan 381 的 provider 错误硬传播行为
+- [x] 4.5 retranspile 验证；勾选缺口 3 完成判定
 
 ### Phase 5 — orchestration 功能对齐审计（auto-ai 内，转正前置）
 
@@ -190,15 +209,30 @@ app 的 channel/SSE。
       `run` 用 `Task.spawn("EventSink", 16, f"", noop_event)` 注入默认 cb（Plan 390 Phase B
       spawn 带参）。a2r spawn helper 修为 `_with` 双函数（Rust 不支持参数默认值，
       auto-lang commit `ad73cb06`）。rust/ 独立 crate + workspace 0 错；rust-ref 100 单测全绿。
-- [ ] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发
-      **⏸ 语言级阻塞（2026-08-07 实证，Phase H 后发现）**：Phase H（`fn(params){}` 参数绑定）
-      已修，但真正的阻塞是 **Auto/a2r 缺少闭包类型**（`Box<dyn Fn>`/`impl Fn`/`Arc<dyn Fn>`）。
-      EventSink 的 cb 字段是裸 `fn(StreamEvent)` 指针——能持有不捕获的 fn（如 noop_event），
-      但**不能持有捕获了 `on_event` 的闭包**。任何 `(ev) => forward(ev, on_event)` 是闭包（捕获
-      on_event），Rust 不把它 coerce 成 `fn` 指针。rust-ref 用 `Arc<dyn Fn>`（trait object），
-      Auto/a2r 无法表达。`forward_stream_event` 自由函数已写好（driver.at ~436），待 Auto 支持闭包类型
-      后即可接通。**driver 非流式事件（StepStarted/Completed/Failed 等）已正常工作**，
-      仅流式 Delta/Tool 受阻——需 Auto 语言增加闭包类型表达（`dyn Fn`/`impl Fn`）。
+- [x] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发
+      **✅ 已完成（2026-08-06，Plan 390 §15.10 Box<dyn Fn> 落地后）**：
+      - agent.at：EventSink cb 改闭包字段 `cb = fn(e StreamEvent) { }`（→ `Box<dyn Fn(StreamEvent) + Send + Sync>`，
+        默认 no-op 闭包）；`run()` 改全默认 spawn（`Task.spawn("EventSink", 16)`）。
+      - driver.at drive_step：`let on_event_local = self.on_event` + `Arc(AtomicBool.new(false))` never-cancel +
+        `Task.spawn("EventSink", 16, f"", Box(move (e) => forward_stream_event(e, on_event_local)))` +
+        `agent_inst.run_stream(input, no_cancel, sink)`——`move` 闭包按值捕获 fn 指针（'static），
+        `Box(...)` 显式装箱（a2r 不会自动 Box `_with` 闭包实参）。
+      - **a2r 三处 follow-up 修复**（Plan 390 §15.10 的 task 集成缺口，golden 只比对文本未编译）：
+        ① Box<dyn Fn> 加 `+ Send + Sync`（tokio::spawn future 需 Send，rust-ref parity）；
+        ② task struct 含闭包字段时不 derive Clone/Debug（`dyn Fn` 两者皆无）；
+        ③ `(self.cb)(ev)` 括号修复（parser 丢源括号 → `self.cb(ev)` 被判为方法调用 E0599，
+        对 task state 字段重新加括号）。在 auto-lang build2 worktree（plan-390 l2 + plan-395 合并）验证
+        a2r golden 333/0。
+      - **遗留阻塞（§15.11 Phase D，非 Phase 6.6）→ ✅ 已解除（2026-08-06，auto-ai 侧 sed 补全）**：
+        a2r §15.11 的单层化（`Arc<Tool>` → `Arc<dyn Tool>`）**只对同模块声明的 spec 生效**——
+        `tool.at` 里 `pub spec Tool` 的存储渲染单层，但 `agent.at` 里 `use tool: Tool` 跨模块 import
+        的 `register_shared(tool Arc<Tool>)` 参数仍渲染双层 `Arc<Box<dyn Tool>>`，与 tool.rs 单层存储
+        不匹配（E0277，独立转译 crate 编译失败）。补全（Plan 019/021 既定 sed 模式）：
+        retranspile.sh 加一条 sed 把 agent.rs `register_shared(... Arc<Box<dyn Tool>>)` → `Arc<dyn Tool>`；
+        main.rs 手写胶水 `Arc::new(Box::new(EchoTool))` → `Arc::new(EchoTool)`。a2r 跨模块 spec 单层化
+        缺口记入 KNOWN-DEBT（待 auto-lang 修，届时 sed 变 no-op）。验证：三转译 crate 独立 0 错 +
+        workspace 0 错；rust-ref 100 单测全绿；端到端 smoke（`Arc::new(PingTool)` 直注 + EventSink
+        `Box<dyn Fn>` 闭包捕获 `Arc<Mutex<Vec>>` 转发 Delta "hello world"）PASS。
 
 ### §6.7 EventSink cb 转发的外部设置机制 → ✅ 已落地（Plan 390 Phase B + Phase 6.5）
 
@@ -228,16 +262,22 @@ Phase 6.5（auto-ai EventSink 改 `cb = noop_event` + spawn 带参注入）已**
 ## 完成判定
 
 - [~] 缺口 1：agent 层流式事件能外发（complete_stream 或 channel 方案）
-      **大部分完成（Phase 1b + 6.5）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)`
-      已可向 EventSink actor 外发全部事件；EventSink 的 `cb fn(StreamEvent)` 已可经
-      spawn 带参注入（Plan 390 Phase B），`(self.cb)(ev.clone())` 转发到注入的回调。
-      **剩余**：driver 的 Delta/Tool → PipelineEvent 转发受阻于 Auto 闭包捕获限制
-      （Phase 6.6，见上）——非流式事件（StepStarted/Completed/Failed 等）已正常工作。
+      **大部分完成（Phase 1b + 6.5 + 6.6）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)`
+      已可向 EventSink actor 外发全部事件；EventSink 的 `cb Box<dyn Fn(StreamEvent)>` 已可经
+      spawn 带参注入（Plan 390 Phase B + §15.10），`(self.cb)(ev.clone())` 转发到注入的回调。
+      **Phase 6.6 已完成**：driver 的 Delta/Tool → PipelineEvent 转发已接通（move 闭包捕获
+      on_event，见 §6.6）。非流式事件（StepStarted/Completed/Failed 等）与流式 Delta/Tool
+      均已正常工作。**独立转译 crate 端到端 smoke**：`Arc::new(PingTool)` 单层直注 register_shared
+      + EventSink `Box<dyn Fn>` 闭包捕获 `Arc<Mutex<Vec>>` 转发 Delta "hello world" PASS。
+      剩余 `[~]`（非全 `[x]`）：仅因转正（翻 `[lib] path`）未做——功能与编译均已达成。
 - [x] 缺口 2：ToolRegistry 有泛型/装箱的 register 入口（或明确记录语言前置）
       **✅ 完成（Phase 2/E/F）**：`ToolRegistry.register(tool Tool)` + `Agent.register_tool(tool Tool)`
       已落地（auto-ai），spec-param 路径 + a2r call-site 自动装箱（auto-lang Plan 390 Phase E）。
       `r.register(MyTool{})` → `r.register(Box::new(MyTool{}))` 自动包装，无需 `Arc::new(Box::new(...))`。
       泛型语法路线否决（spec-param 已够）。转正后 CLI `register_tool(ReadFile)` 可直接用。
-- [ ] 缺口 3：转译版的 role_config/loader 与 rust-ref 的 serde 行为对齐
-- [ ] 三个转译 crate 仍 0 错；rust-ref 主版本测试全绿
+- [x] 缺口 3：转译版的 role_config/loader 与 rust-ref 的 serde 行为对齐
+      **✅ 完成（Phase 4，2026-08-06）**：role_config.at + loader.at 均已迁移到 serde derive
+      风格；provider 反序列化错误硬传播对齐 Plan 381；`idle_timeout_min` 缺省 = 10（决策）。
+      唯一刻意分歧：rust-ref parse 路径 `unwrap_or(0)` 的 quirk 不复刻（见缺口 3 章节）。
+- [x] 三个转译 crate 仍 0 错；rust-ref 主版本测试全绿
 - [ ] 打 tag `auto-complete-v0.1`（或 auto-mvp-v0.3）标记功能覆盖达成

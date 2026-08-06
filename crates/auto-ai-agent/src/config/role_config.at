@@ -317,11 +317,9 @@ pub fn parse_at_role(content str) Result<RoleConfig, AgentError> {
                 auto_atom.Atom.Node(node) -> {
                     // Deserialize the node into RoleDecl via auto-val's serde
                     // Deserializer (Plan 381). Hard-error on malformed scalars
-                    // (aligns with rust-ref behavior). NOTE: retranspile.sh sed-
-                    // injects the turbofish `::<RoleDecl>` onto node.deserialize()
-                    // because Auto has no turbofish syntax and a2r can't infer
-                    // the deserialize target type from the Ok-arm pattern alone.
-                    is node.deserialize() {
+                    // (aligns with rust-ref behavior). `<RoleDecl>` is Plan 395
+                    // turbofish syntax — a2r emits `node.deserialize::<RoleDecl>()`.
+                    is node.deserialize<RoleDecl>() {
                         Ok(d) -> {
                             // d is RoleDecl; map to RoleConfig with tier post-processing.
                             var cfg = RoleConfig.empty()

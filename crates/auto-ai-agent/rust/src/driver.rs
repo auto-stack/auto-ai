@@ -6,11 +6,13 @@ use a2r_std;
 use a2r_std::*;
 
 use a2r_std::time;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use crate::flow::{FlowSpec};
 use crate::handoff::{HandoffDocument, WorkProduct};
 use crate::pipeline::{AdvanceResult, GateDecision, PipelineEngine};
 use crate::budget::{BudgetAction};
-use crate::agent::{Agent, AgentResult, StreamEvent};
+use crate::agent::{Agent, AgentResult, StreamEvent, spawn_event_sink_with};
 use crate::error::{AgentError};
 use crate::wire::{JsonValue};
 /// Pipeline Driver — the orchestration loop that bridges PipelineEngine and
@@ -239,7 +241,12 @@ impl PipelineDriver {
 
 
 
-        let agent_result = agent_inst.run(input.as_str()).await?;
+        let on_event_local: fn(PipelineEvent) -> () = self.on_event.clone();
+        let no_cancel = Arc::new(AtomicBool::new(false));
+
+
+        let sink = spawn_event_sink_with(format!(""), Box::new(move |e| forward_stream_event(e.clone(), on_event_local)));
+        let agent_result = agent_inst.run_stream(input.as_str(), no_cancel, sink).await?;
 
 
         let content = agent_result.content();
@@ -391,11 +398,10 @@ fn emit_budget_warning(engine: PipelineEngine, role_for_budget: &str, on_event: 
 
 /// Forward agent streaming events to the pipeline's on_event callback.
 /// Maps StreamEvent → PipelineEvent (Delta→Delta, Tool→Tool; others dropped),
-/// mirroring rust-ref's stream_cb (Plan 021 Phase 6.6). A free fn (not a closure)
-/// so drive_step can pass `on_event` explicitly — Auto closures capture by
-/// reference which would dangle once the EventSink actor outlives drive_step.
-/// The EventSink cb is `(ev) => forward_stream_event(ev, on_event_local)` where
-/// on_event_local is a cloned fn pointer (Copy, safe to move into the actor).
+/// mirroring rust-ref's stream_cb (Plan 021 Phase 6.6). A free fn so the
+/// EventSink cb closure stays thin: `(ev) => forward_stream_event(ev, on_event_local)`
+/// where on_event_local is a cloned fn pointer (Copy, safe to move into the
+/// actor's Box<dyn Fn> closure — Plan 390 §15.10).
 fn forward_stream_event(ev: StreamEvent, on_event: fn(PipelineEvent) -> ()) {
     match ev {
         StreamEvent::Delta(text) => on_event(PipelineEvent::Delta(text)),

@@ -189,14 +189,20 @@ if [ -f "$RUST/pipeline.rs" ]; then
             s#correct_handoff_target(\&mut self.clone(), \&mut h.clone(),#correct_handoff_target(self.clone(), h.clone(),#g' "$RUST/pipeline.rs"
 fi
 
-# Plan 021 缺口 3: inject turbofish onto node.deserialize() in role_config.rs.
-# Auto has no turbofish syntax and a2r can't infer the deserialize target type
-# from the Ok-arm pattern alone (E0282). This sed adds ::<RoleDecl> so serde
-# knows which struct to deserialize into. When a2r gains turbofish support this
-# becomes a no-op.
-if [ -f "$RUST/role_config.rs" ]; then
-    sed -i 's#node\.deserialize()#node.deserialize::<RoleDecl>()#g' "$RUST/role_config.rs"
+# Plan 390 §15.11 L2 转正 follow-up: a2r's single-wrap rendering (`Arc<Tool>` →
+# `Arc<dyn Tool>`) only fires for specs DECLARED in the same module. A CROSS-
+# MODULE spec (here `use tool: Tool` in agent.at) still renders the old double-
+# wrap `Arc<Box<dyn Tool>>` for the `register_shared(tool Arc<Tool>)` param,
+# which mismatches tool.rs's now-single-wrap storage (`Arc<dyn Tool>`) → E0277.
+# Force the param type single-wrap to match the registry storage. When a2r
+# extends §15.11 to imported specs this sed becomes a no-op.
+# (auto-lang gap — see docs/plans/KNOWN-DEBT-AND-RISKS.md Plan 021 row.)
+if [ -f "$RUST/agent.rs" ]; then
+    sed -i 's#register_shared(&mut self, tool: Arc<Box<dyn Tool>>)#register_shared(\&mut self, tool: Arc<dyn Tool>)#g' "$RUST/agent.rs"
 fi
+
+# Plan 021 缺口 3 (post-Plan 395): turbofish is now native Auto syntax
+# (`node.deserialize<RoleDecl>()`), so no sed injection is needed.
 
 # Clean up .a2r.rs intermediates
 find "$SRC" -name "*.a2r.rs" -delete

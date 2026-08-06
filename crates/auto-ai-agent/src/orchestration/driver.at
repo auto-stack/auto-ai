@@ -36,12 +36,18 @@
 // Plan 380 (A15): `time.now_sec()` needs the a2r_std::time module bridged in
 // (E0425 `time` otherwise).
 use.rust a2r_std::time
+// Plan 021 Phase 6.6: the driver spawns a never-cancel Arc<AtomicBool> dummy.
+use.rust std::sync::atomic::AtomicBool
+use.rust std::sync::Arc
 
 use flow: FlowSpec
 use handoff: HandoffDocument, WorkProduct
 use pipeline: AdvanceResult, GateDecision, PipelineEngine
 use budget: BudgetAction
-use agent: Agent, AgentResult, StreamEvent
+// spawn_event_sink_with: the generated EventSink spawn helper (agent.at). a2r
+// rewrites `Task.spawn("EventSink", ...)` to this bare name — imported here so
+// driver.rs resolves it across modules.
+use agent: Agent, AgentResult, StreamEvent, spawn_event_sink_with
 use error: AgentError
 // Plan 380: `extract_path(args JsonValue)` needs the bridged JsonValue type
 // (E0425 otherwise).
@@ -296,16 +302,21 @@ ext PipelineDriver {
         // Construct the input: original task for step 0, else the handoff render.
         let input = build_step_input(task_msg, last_handoff)
 
-        // Plan 021 Phase 6.6: driver streaming (Delta/Tool → PipelineEvent) is
-        // blocked on Auto lacking a closure-TYPE (Box<dyn Fn>/impl Fn). EventSink's
-        // cb field is a bare `fn(StreamEvent)` pointer — it can hold a non-capturing
-        // fn (like noop_event) but NOT a closure that captures `on_event`. Any
-        // `(ev) => forward(ev, on_event)` is a closure (captures on_event), which
-        // Rust won't coerce to a `fn` pointer. rust-ref uses Arc<dyn Fn> (a trait
-        // object) which Auto/a2r cannot express. Until Auto gains a closure type,
-        // steps run non-streaming and events are consumed (not forwarded). The
-        // non-streaming PipelineEvents (StepStarted/Completed/Failed/etc.) work.
-        let agent_result = agent_inst.run(input.as_str()).await.?
+        // Plan 021 Phase 6.6: driver streaming (Delta/Tool → PipelineEvent).
+        // The agent runs STREAMING through an EventSink whose cb is a closure
+        // (Box<dyn Fn(StreamEvent)> — Plan 390 §15.10) that captures `on_event`
+        // and forwards Delta/Tool via forward_stream_event. `Box(...)` wraps the
+        // closure (a2r doesn't auto-box `_with` closure args — the Rust target
+        // param is Box<dyn Fn>, and bare closures don't coerce to it). Pipelines
+        // run to completion — a never-cancel Arc<AtomicBool> dummy (rust-ref
+        // parity). Non-streaming PipelineEvents (StepStarted/Completed/Failed)
+        // continue through self.on_event as before.
+        let on_event_local = self.on_event
+        let no_cancel = Arc(AtomicBool.new(false))
+        // `move` closure: captures on_event_local by value (fn pointer, Copy) so
+        // the Box<dyn Fn + Send + Sync> is 'static (no dangling ref into drive_step).
+        let sink = Task.spawn("EventSink", 16, f"", Box(move (e) => forward_stream_event(e, on_event_local)))
+        let agent_result = agent_inst.run_stream(input.as_str(), no_cancel, sink).await.?
 
         // Build the handoff from the result + the agent's text output.
         let content = agent_result.content()
@@ -438,11 +449,10 @@ fn emit_budget_warning(engine PipelineEngine, role_for_budget str, on_event fn(P
 
 /// Forward agent streaming events to the pipeline's on_event callback.
 /// Maps StreamEvent → PipelineEvent (Delta→Delta, Tool→Tool; others dropped),
-/// mirroring rust-ref's stream_cb (Plan 021 Phase 6.6). A free fn (not a closure)
-/// so drive_step can pass `on_event` explicitly — Auto closures capture by
-/// reference which would dangle once the EventSink actor outlives drive_step.
-/// The EventSink cb is `(ev) => forward_stream_event(ev, on_event_local)` where
-/// on_event_local is a cloned fn pointer (Copy, safe to move into the actor).
+/// mirroring rust-ref's stream_cb (Plan 021 Phase 6.6). A free fn so the
+/// EventSink cb closure stays thin: `(ev) => forward_stream_event(ev, on_event_local)`
+/// where on_event_local is a cloned fn pointer (Copy, safe to move into the
+/// actor's Box<dyn Fn> closure — Plan 390 §15.10).
 fn forward_stream_event(ev StreamEvent, on_event fn(PipelineEvent)) void {
     is ev {
         StreamEvent.Delta(text) -> on_event(PipelineEvent.Delta(text)),

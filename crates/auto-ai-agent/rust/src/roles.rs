@@ -239,7 +239,7 @@ impl RoleRegistry {
         }
 
         match load_builtin(name) {
-            Some(b) => return Some(Arc::new(b)),
+            Some(b) => return Some(Arc::from(b)),
             None => return None,
         }
     }

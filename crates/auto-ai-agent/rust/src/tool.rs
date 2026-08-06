@@ -24,7 +24,7 @@ pub trait Tool {
 }
 
 
-pub fn tool_to_definition(tool: Arc<Box<dyn Tool>>) -> ToolDefinition {
+pub fn tool_to_definition(tool: Arc<dyn Tool>) -> ToolDefinition {
     return ToolDefinition::new(tool.name(), tool.description(), tool.parameters());
 }
 
@@ -58,9 +58,9 @@ pub fn tool_to_definition(tool: Arc<Box<dyn Tool>>) -> ToolDefinition {
 /// The Arc matches the Rust original's `Arc<dyn Tool>` for shared ownership
 /// across agents / workflow steps. Carries a parallel `names List<str>` for
 /// iteration (Auto VM Map has no keys()/entries()).
-#[allow(dead_code)]
+#[derive(Clone)]
 pub struct ToolRegistry {
-    pub tools: std::collections::HashMap<String, Arc<Box<dyn Tool>>>,
+    pub tools: std::collections::HashMap<String, Arc<dyn Tool>>,
     pub names: Vec<String>,
 }
 
@@ -68,7 +68,7 @@ impl ToolRegistry {
     pub fn new() -> ToolRegistry {
         return ToolRegistry { tools: std::collections::HashMap::new(), names: vec![] };
     }
-    pub fn register_shared(&mut self, tool: Arc<Box<dyn Tool>>) {
+    pub fn register_shared(&mut self, tool: Arc<dyn Tool>) {
         let n = tool.name();
         if self.tools.contains_key(&n) == false {
             self.names.push(n.to_string());
@@ -82,9 +82,9 @@ impl ToolRegistry {
         }
 
 
-        self.tools.insert(n, Arc::new(tool));
+        self.tools.insert(n, Arc::from(tool));
     }
-    pub fn get(&self, name: &str) -> Option<Arc<Box<dyn Tool>>> {
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
 
 
 
@@ -102,8 +102,8 @@ impl ToolRegistry {
     pub fn is_empty(&self) -> bool {
         return (self.names.len() as i32) == 0;
     }
-    pub fn filter(&self, filter: Vec<String>) -> Vec<Arc<Box<dyn Tool>>> {
-        let mut out: Vec<Arc<Box<dyn Tool>>> = vec![];
+    pub fn filter(&self, filter: Vec<String>) -> Vec<Arc<dyn Tool>> {
+        let mut out: Vec<Arc<dyn Tool>> = vec![];
         if (filter.len() as i32) == 0 {
             for n in self.names.clone() {
                 match self.tools.get(n.as_str()) {

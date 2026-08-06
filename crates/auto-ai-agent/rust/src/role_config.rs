@@ -270,8 +270,6 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
 
 
 
-
-
                     match node.deserialize::<RoleDecl>() {
                         Ok(d) => {
                             

@@ -47,7 +47,10 @@ async fn main() {
     let mut agent = Agent::new_shared(Box::new(role), Box::new(client));
 
     // Register the echo tool so the model can invoke it.
-    agent.register_shared(Arc::new(Box::new(EchoTool {})));
+    // Single-wrap (Plan 390 §15.11): ToolRegistry now stores Arc<dyn Tool>, so
+    // register_shared takes Arc<dyn Tool> — Arc::new(EchoTool) coerces directly
+    // (no inner Box needed; the old Arc::new(Box::new(...)) was the double-wrap).
+    agent.register_shared(Arc::new(EchoTool {}));
 
     eprintln!("[react] ready (streaming).  Type a question (or /exit).");
     let stdin = io::stdin();
