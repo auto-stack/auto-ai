@@ -20,7 +20,17 @@ use crate::role_def::Role;
 use crate::builtin_roles::{builtin_names, load_builtin};
 
 /// Directory holding user roles: `~/.config/autoos/roles/`.
+///
+/// Plan auto-musk-021: honors the `AUTOOS_HOME` env var when set, so tests (and
+/// eventual AppState-injected config roots) can redirect role I/O away from the
+/// real user config. Precedence: `AUTOOS_HOME` env > `~/.config/autoos`. Default
+/// behavior (no env) is unchanged.
 fn roles_dir() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("AUTOOS_HOME") {
+        if !custom.is_empty() {
+            return Some(PathBuf::from(custom).join("roles"));
+        }
+    }
     dirs::home_dir().map(|h| h.join(".config/autoos/roles"))
 }
 
