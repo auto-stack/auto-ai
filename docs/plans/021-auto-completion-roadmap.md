@@ -52,15 +52,22 @@
   - **Phase F（auto-ai）**：`tool.at`/`agent.at` 加 `register(tool Tool)` / `register_tool(tool Tool)` → auto-lang Plan 390 §12
   - 存储类型仍 `Arc<Box<dyn Tool>>`（双层包装，Plan 019 已知限制，功能可用）
 
-### 缺口 3：Plan 381 serde 同步到 .at 源（中，M 级）
+### 缺口 3：Plan 381 serde 同步到 .at 源（中，M 级）→ 📌 重新定性（2026-08-07 实证）
 
 - **现状**：rust-ref 的 `role_config.rs` 用 `#[derive(Deserialize)] struct RoleDecl` +
   `node.deserialize()` + `auto_val::lenient_f64_opt` / `string_or_list_opt`。转译版 `rust/src/role_config.rs`
   是旧 `opt_str`/`opt_float`/`opt_uint` 手写风格。ai-config 的 loader.rs 同样分叉。
-- **阻塞**：a2r 不支持 `#[derive(Deserialize)]` 和 `#[serde(deserialize_with = "...")]` 注解的转译。
+- ~~**阻塞**：a2r 不支持 `#[derive(Deserialize)]` 和 `#[serde(deserialize_with = "...")]` 注解的转译~~
+  → **实证推翻**：a2r **已完全支持** serde 注解透传（`#[derive(Deserialize)]` + `#[serde(deserialize_with)]`
+  + `#[serde(default)]` verbatim 输出，实证见 `trans/rust.rs:11530-11598` + 测试 `14_modules/008_derive_attr`
+  + `16_interop/003_field_attrs`）。**缺口不在 auto-lang**。
+- **真因**：auto-ai 的 `.at` 源码（`role_config.at` / `loader.at`）从未迁移到 derive 风格——
+  仍用旧 `opt_*` 手写。转译版忠实转译了旧 `.at`。
 - **影响**：转译版功能正确（opt_* 风格可用），但与 rust-ref 不一致；转正（翻 path）前需同步。
   另：rust-ref 的 provider 反序列化错误硬传播行为（Plan 381），转译版是静默跳过——行为分叉。
-- **修复路径**：需 a2r 扩展 serde derive 注解支持（或 retranspile.sh 注入）。
+- ~~**修复路径**：需 a2r 扩展 serde derive 注解支持~~ → **新修复路径**（纯 auto-ai 侧）：
+  重写 `.at` 源码用 `#[derive(Deserialize)] type RoleDecl` + `#[serde(...)]` 字段注解 +
+  `node.deserialize::<RoleDecl>()`（镜像 rust-ref），retranspile 验证。无需 auto-lang 改动。
 
 ---
 
@@ -131,14 +138,16 @@ app 的 channel/SSE。
 - [ ] 3.3 回 auto-ai：agent.at 的 `Client` spec 加 `complete_stream`，run_inner 用回调 emit
 - [ ] 3.4 删除 client_impl.rs 的 StreamingAiClient workaround（回归 spec 路径）
 
-### Phase 4 — 缺口 3 serde 同步（转正前置）
+### Phase 4 — 缺口 3 serde 同步（转正前置）→ 📌 重新定性：纯 auto-ai 侧工作
 
-> **由用户在 auto-lang 单独推进**（a2r 加 serde derive 注解转译）。
+> ~~由用户在 auto-lang 单独推进~~ → **实证（2026-08-07）**：a2r 已支持 serde 注解透传，无需 auto-lang 改动。
 
-- [ ] 4.1 评估 a2r 对 `#[derive(Deserialize)]` 注解的支持现状
-- [ ] 4.2 auto-lang worktree：a2r 扩展 serde derive 注解转译（或 retranspile.sh 注入绕过）
-- [ ] 4.3 回 auto-ai：role_config.at / loader.at 用 serde 重写，对齐 rust-ref
+- [x] 4.1 评估 a2r 对 `#[derive(Deserialize)]` 注解的支持现状 → **已支持**（透传，实证）
+- [ ] 4.2 ~~auto-lang worktree：a2r 扩展 serde derive 注解转译~~ → **不需要**
+- [ ] 4.3 回 auto-ai：role_config.at / loader.at 用 `#[derive(Deserialize)]` + `#[serde(...)]` +
+      `node.deserialize::<RoleDecl>()` 重写，对齐 rust-ref
 - [ ] 4.4 同步 Plan 381 的 provider 错误硬传播行为
+- [ ] 4.5 retranspile 验证；勾选缺口 3 完成判定
 
 ### Phase 5 — orchestration 功能对齐审计（auto-ai 内，转正前置）
 
@@ -182,14 +191,12 @@ app 的 channel/SSE。
       spawn 带参）。a2r spawn helper 修为 `_with` 双函数（Rust 不支持参数默认值，
       auto-lang commit `ad73cb06`）。rust/ 独立 crate + workspace 0 错；rust-ref 100 单测全绿。
 - [ ] 6.6 driver.at 恢复 rust-ref 等价：Delta/Tool → PipelineEvent 转发
-      **⏸ 架构阻塞**（2026-08-07 调研）：driver 的 `on_event` 回调需注入 EventSink 的
-      `cb fn(StreamEvent)`，但 cb 只能接收单参数（事件），无法捕获 `on_event`。
-      Auto 闭包不能捕获外部变量（`fn(ev) { forward(ev, outer_cb) }` 报 "Variable ev
-      not defined"），EventSink actor 又无法持有 `on_event` 引用。rust-ref 用 `Arc<dyn Fn>`
-      闭包捕获 `on_event`，Auto 无等价。需以下之一：(a) Auto 支持 `Arc<dyn Fn>` 闭包捕获
-      （语言级），(b) 非 actor 的流式架构，(c) EventSink 能持额外上下文。非 15 行接线，
-      属更深架构工作。**driver 的 StepStarted/Completed/Failed 等非流式事件已正常工作**，
-      仅 Delta/Tool（流式内容）转发受阻。
+      **📌 重新定性（2026-08-07 实证）**：原判"架构阻塞（Auto 闭包不能捕获外部变量）"
+      已推翻——捕获从来不是问题（`(ev) => fwd(ev, outer_cb)` 正常捕获）。真因是
+      `fn(params){}` 解析路径（`parser.rs:3043-3069`）**不 bind 闭包参数**（另两条路径都 bind）。
+      **修复是 ~6 行 parser 改动**（auto-lang Plan 390 §15 Phase H），非语言级工程。
+      Phase H 落地后，driver 可用 `(ev) => forward(ev, self.on_event)` 形式的闭包注入 EventSink cb，
+      实现 Delta/Tool 转发。**driver 的非流式事件已正常工作**，仅流式 Delta/Tool 待 Phase H 解锁。
 
 ### §6.7 EventSink cb 转发的外部设置机制 → ✅ 已落地（Plan 390 Phase B + Phase 6.5）
 
@@ -200,9 +207,9 @@ Phase 6.5（auto-ai EventSink 改 `cb = noop_event` + spawn 带参注入）已**
 > **✅ 已落地**：auto-lang Plan 390 Phase B（M1 spawn 带参，机制 A 自描述栈）+ Phase A（VM 侧）。
 > 回 auto-ai 衔接（Phase 6.5）完成：rust/ 独立 crate + workspace 0 错，rust-ref 100 单测全绿。
 
-**遗留（Phase 6.6，架构阻塞）**：driver 的 Delta/Tool → PipelineEvent 转发需 EventSink cb
-捕获 `on_event`，但 Auto 闭包不能捕获外部变量，EventSink 无法持额外上下文 → 见 Phase 6.6
-"架构阻塞"说明。需 Auto 支持 `Arc<dyn Fn>` 闭包捕获或非 actor 流式架构。
+**遗留（Phase 6.6）**：driver 的 Delta/Tool → PipelineEvent 转发待 auto-lang Plan 390
+§15 Phase H（`fn(params){}` parser 参数绑定修复，~6 行）解锁。捕获机制本身正常（`=>` 形式已工作），
+仅 `fn(params){}` 解析路径漏 bind 参数。Phase H 落地后即可接 Phase 6.6。
 
 ---
 
