@@ -1,6 +1,6 @@
 # Plan 021: Auto 版完善化 — 覆盖 Rust 原生版 100% 能力
 
-> **状态**：🟡 实施中（2026-08-05 制定）
+> **状态**：✅ 完成（2026-08-06 归档）— 三大功能缺口全部解决，功能覆盖达成
 > **仓库**：auto-ai（主）+ auto-lang（a2r/语言能力扩展，跨仓）
 > **基线**：tag `auto-mvp-v0.2`（三个转译 crate 全 0 错，rust-ref 181 测试全绿）
 > **目标**：让 Auto 版（.at + rust/ 转译树）覆盖 Rust 原生版（rust-ref）的全部能力，
@@ -279,15 +279,15 @@ Phase 6.5（auto-ai EventSink 改 `cb = noop_event` + spawn 带参注入）已**
 
 ## 完成判定
 
-- [~] 缺口 1：agent 层流式事件能外发（complete_stream 或 channel 方案）
-      **大部分完成（Phase 1b + 6.5 + 6.6）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)`
+- [x] 缺口 1：agent 层流式事件能外发（complete_stream 或 channel 方案）
+      **✅ 完成（Phase 1b + 6.5 + 6.6）**：`Agent.run_stream(task, cancel, sink TaskRef<StreamEvent>)`
       已可向 EventSink actor 外发全部事件；EventSink 的 `cb Box<dyn Fn(StreamEvent)>` 已可经
       spawn 带参注入（Plan 390 Phase B + §15.10），`(self.cb)(ev.clone())` 转发到注入的回调。
       **Phase 6.6 已完成**：driver 的 Delta/Tool → PipelineEvent 转发已接通（move 闭包捕获
       on_event，见 §6.6）。非流式事件（StepStarted/Completed/Failed 等）与流式 Delta/Tool
       均已正常工作。**独立转译 crate 端到端 smoke**：`Arc::new(PingTool)` 单层直注 register_shared
       + EventSink `Box<dyn Fn>` 闭包捕获 `Arc<Mutex<Vec>>` 转发 Delta "hello world" PASS。
-      剩余 `[~]`（非全 `[x]`）：仅因转正（翻 `[lib] path`）未做——功能与编译均已达成。
+      （转正——翻 `[lib] path`——是 021 之后的独立计划，不阻塞本计划的功能覆盖判定。）
 - [x] 缺口 2：ToolRegistry 有泛型/装箱的 register 入口（或明确记录语言前置）
       **✅ 完成（Phase 2/E/F）**：`ToolRegistry.register(tool Tool)` + `Agent.register_tool(tool Tool)`
       已落地（auto-ai），spec-param 路径 + a2r call-site 自动装箱（auto-lang Plan 390 Phase E）。
@@ -298,4 +298,15 @@ Phase 6.5（auto-ai EventSink 改 `cb = noop_event` + spawn 带参注入）已**
       风格；provider 反序列化错误硬传播对齐 Plan 381；`idle_timeout_min` 缺省 = 10（决策）。
       唯一刻意分歧：rust-ref parse 路径 `unwrap_or(0)` 的 quirk 不复刻（见缺口 3 章节）。
 - [x] 三个转译 crate 仍 0 错；rust-ref 主版本测试全绿
-- [ ] 打 tag `auto-complete-v0.1`（或 auto-mvp-v0.3）标记功能覆盖达成
+- [x] 打 tag `auto-complete-v0.1` 标记功能覆盖达成（2026-08-06）
+
+---
+
+## 后续（不在本计划范围）
+
+- **转正（翻 `[lib] path` 删 rust-ref）**：独立计划。本计划已扫清功能缺口，转正还需
+  orchestration 功能对齐审计（Phase 5 已完成）+ 翻转 `[lib] path` + 下游适配。
+- **a2r 借用推理 4 类缺陷（B/C/D/E）+ ai-config unit-variant quirk**：根因在 auto-lang a2r 侧，
+  auto-ai 靠 `retranspile.sh` sed 兜底（功能不受影响）。已转至 **auto-lang Plan 396**
+  （`a2r-auto-ai-related-improvements`，滚动聚合计划）逐个修根因。详见 auto-ai
+  `KNOWN-DEBT-AND-RISKS.md` Plan 019 行。
