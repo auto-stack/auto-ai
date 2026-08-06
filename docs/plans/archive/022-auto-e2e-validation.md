@@ -231,8 +231,116 @@ auto-ai-react 二进制（转译版）
 ## 后续（不在本计划范围）
 
 - **转正（翻 `[lib] path` 删 rust-ref）**：独立计划。本计划产出 parity matrix + KNOWN-DEBT 为其提供就绪度评估。
-- **dyn-Fn / 侧信道正式化**（第 5 项架构性限制）：auto-lang 工程。
 - **转译版 client/config 死代码清理或转正**：当前不在运行链路，转正时一并处理。
+
+---
+
+## Phase 6 — 架构性限制的 auto-lang 根因修复（2026-08-07 追加）
+
+> **背景**：Phase 5 把两个架构性限制（限制一 per-token 流式 / 限制二 trait API 分叉）记为
+> "架构性，待 auto-lang"。本 Phase 对这两者做 auto-lang 侧的**根因调研**，并据调研结果
+> 重新定性、划定 worktree 工作范围。调研结论显著改变了原判断——见 6.1/6.2。
+
+### 6.1 限制一（per-token 流式 / `complete_stream`）— 🔁 重新定性：非 auto-lang 语言缺陷
+
+**原判断（Phase 5）**："Auto 不能表达 `Arc<dyn Fn(serde_json::Value)>` 回调参数，是架构性限制。"
+
+**调研结论（auto-lang 侧实证）**：**此判断已过时**。auto-lang Plan 390 §15.10（2026-08-07 落地）
+**已交付** `Box<Fn(...)>` / `Arc<dyn Fn(...)>` 类型机制，覆盖**所有位置**：
+
+| 位置 | golden 验证 | 证据 |
+|---|---|---|
+| 结构体字段 | `12_specs/007_box_fn` | ✅ |
+| free-fn 参数 | `12_specs/007_box_fn` `set_cb(cb Box<Fn(int)>)` | ✅ |
+| free-fn 返回 | `12_specs/007_box_fn` | ✅ |
+| actor task state 字段（闭包字面量默认值） | `22_actors/022_closure_cb` | ✅ |
+| **spec 方法参数** | ❌ **无 golden**（codegen 路径与 free-fn 参数共享） | 待确认 |
+
+- **parser 路径已通**：`parser.rs:9719` `Fn`+`(` → `parse_fn_signature` → `Type::Fn(params, ret)`，
+  包在 `Arc<...>` 里得 `Type::GenericInstance{Arc, [Type::Fn(...)]}`。
+- **codegen 路径已通**：`trans/rust.rs:1272-1320` 的 `Box|Arc` + `Type::Fn` 分支输出
+  `Arc<dyn Fn(...) + Send + Sync>`；spec 方法参数经 `rust_param_type_name`（rust.rs:1629）→ 同一渲染器。
+- **auto-ai 侧注释过时**：`agent.at:102-107, 19-34` 仍写 "Auto can't express"——这是 §15.10 之前的判断。
+
+**真缺口（仅 2 项，都很小）**：
+1. **golden 未覆盖 spec 方法参数位置**：`Arc<Fn(...)>` 作 `pub spec` 方法参数 + `#[async_trait]` 的
+   组合未被任何 golden 测试验证。需补一个 golden（`12_specs/009_arc_fn_param`）锁定。
+2. **auto-ai 未消费**：`agent.at` 的 `spec Client` 未加 `complete_stream` 方法；`client_impl.rs` 的
+   `StreamingAiClient` 侧信道是 §15.10 之前的 workaround，可回归 spec 路径（可选清理）。
+
+**worktree 工作范围（auto-lang，小）**：仅补 golden 确认 spec-param + async_trait 组合。
+若组合渲染异常（codegen 路径共享，预期不会），才需改 `trans/rust.rs`。**无 parser/AST 改动。**
+
+### 6.2 限制二（trait API 分叉）— 🔁 重新定性：6 子项中 3 项非缺口
+
+**原判断（Phase 5）**："固有 API 分叉（owned/String/u32/Box dyn/无 Send+Sync）是 Auto 语言限制。"
+
+**调研结论（6 子项逐一实证分类）**：
+
+| 子项 | 原判断 | 真实分类 | 证据 |
+|---|---|---|---|
+| ① 无 `Send+Sync` supertrait | 架构性 | **✅ 真 auto-lang 缺口**（AST 无 supertrait 概念） | `ast/spec.rs:17-22` SpecDecl 无 bounds 字段；`parser.rs:8494` spec_decl_stmt `:` 后是硬解析错误 |
+| ② `String` 而非 `&str` 返回 | 架构性 | **🟡 故意 codegen 选择**（可 opt-in 改） | `rust.rs:1455` 返回位 `str`→`String`（"owned, safe default"）；参数位 `str`→`&str`（rust.rs:1629），非对称是故意的 |
+| ③ owned 而非引用 | 架构性 | **❌ 非缺口**（`@T` 语法已支持） | `parser.rs:10246` `@T`→`Type::Reference`；auto-ai 源码只是没用 `@` |
+| ④ `u32` 而非 `usize`/`u64` | 架构性 | **❌ 非缺口**（`usize`/`u64`/`i64` 关键字已有） | `parser.rs:962`；auto-ai 源码用 `uint`→`u32`，改写 `usize` 即可 |
+| ⑤ `Box<dyn>` 而非 `Arc<dyn>` | 架构性 | **🟡 codegen 默认 + 源码可控** | 裸 `Type::Spec`→`Box<dyn>`（rust.rs:1226）是默认；源码写 `Arc<T>`→`Arc<dyn T>`（§15.11，已工作） |
+| ⑥ 无泛型方法（spec 内） | 架构性 | **✅ 真 auto-lang 缺口**（SpecMethod 无 type_params） | `ast/spec.rs:53-59`；`parser.rs:8559` spec_method 无 `<...>`/`#[with]`；inherent impl 方法已有泛型（`ast/fun.rs:30`） |
+
+**结论**：6 子项中
+- **① 是唯一值得在 worktree 修的真语言缺口**（Send+Sync supertrait）
+- ③④ 是 auto-ai 源码层面可改的（非 auto-lang 工作，归入转正计划）
+- ②⑤ 是可记录的 codegen 选择（⑥ + `'static` bound 是大工程，workaround 可接受）
+- ⑥ 留作文档化限制（`*_shared` workaround 功能可用）
+
+#### 6.2.1 子项①（Send+Sync supertrait）修复方案
+
+**目标**：让 `.at` 能写 `pub spec Tool: Send + Sync { ... }`，a2r 输出 `pub trait Tool: Send + Sync { ... }`。
+
+**最小改动集**（auto-lang，中等工作量，contained）：
+1. **AST**（`ast/spec.rs`）：`SpecDecl` 加 `bounds: Vec<String>`（或 `Vec<Type>`）字段。`Send`/`Sync`
+   当作不透明标识符处理——无需引入 Auto 侧 marker trait 概念。
+2. **Parser**（`parser.rs:8494-8557` `spec_decl_stmt`）：名字后、`<...>` 后、`{` 前允许可选 `: Bound1 + Bound2`。
+   用单 token 前瞻判断有无 `:`。bounds 列表用 `+` 分隔的标识符序列。
+3. **Codegen**（`trans/rust.rs:13349-13487` `spec_decl`）：第 13380 行 `trait Name` 后、generics 后、
+   `{` 前（13411）插入 `: <bounds verbatim>`（若有）。
+4. **golden**：`12_specs/010_spec_supertrait`（`spec Foo: Send + Sync { }` → `trait Foo: Send + Sync { }`）。
+5. **回归**：既有 spec 全部无 `:`，bounds 为空 Vec，行为不变（无回归风险）。
+
+#### 6.2.2 子项⑥（spec 内泛型方法）— 记录为后续，不在本次 worktree
+
+SpecMethod 加 `type_params` + parser 支持 `<...>`/`#[with]` + codegen（镜像 inherent 方法 rust.rs:10173）。
+另需 `'static` lifetime bound 语法（目前完全不可表达）。**工作量大，`*_shared` workaround 功能可用，
+ROI 低**。留作文档化限制，不在本次 worktree（除非转正时成为硬阻塞）。
+
+### 6.3 auto-lang worktree 工作范围（最终划定）
+
+**worktree 名**：`auto-ai-022`（前缀 `auto-ai` + 计划 id `022`，按用户约定）
+**位置**：`D:/autostack/auto-lang/.worktree/auto-ai-022`
+**新 plan id**：397（`397-send-sync-supertrait-and-arc-fn-spec-param.md`）
+
+**两项实施**：
+1. **子项① Send+Sync supertrait**（主工作，中量）：AST + parser + codegen + golden（§6.2.1 改动集）
+2. **限制一 golden 确认**（小）：`12_specs/009_arc_fn_param`——`pub spec` 方法取 `Arc<Fn(T)>` + async，
+   锁定 spec-param + async_trait + Send+Sync 组合。若渲染异常才改 codegen。
+
+**不在本次 worktree**（记录为 KNOWN-DEBT 后续）：
+- 子项②（&str 返回 opt-in）、⑤（Arc 默认）——codegen 选择，转正时再议
+- 子项⑥（spec 泛型方法 + `'static`）——大工程，workaround 可用
+- auto-ai 侧消费（agent.at 加 complete_stream、删侧信道 workaround）——auto-lang 合并 + 重建 auto.exe 后，
+  回 auto-ai 作为 Plan 022 的 follow-up（非本 Phase 范围，因依赖 auto-lang 合并）
+
+### 6.4 回 auto-ai 验证（2026-08-07，用 worktree auto.exe）✅
+
+- [x] worktree auto.exe 构建（含 Plan 397，`auto-lang/.worktree/auto-ai-022/target/debug/auto.exe`）
+- [x] **集成验证**：`AUTO=<worktree auto.exe> crates/auto-ai-agent/retranspile.sh check` → **0 错**，
+      且转译产物**无任何变化**（git status 空）——新 auto.exe 对既有 auto-ai 代码完全向后兼容
+      （supertrait 语法可选，既有 spec 无 `:` 不受影响）
+- [x] KNOWN-DEBT 的 022 行更新：限制一/二 标记"已解除（auto-lang 侧）"，剩余 auto-ai 消费工作标注为 follow-up
+- [ ] **auto-ai 侧消费（未做，依赖 Plan 397 合并 master）**：
+      - `agent.at` 的 `spec Tool`/`spec Role` 加 `: Send + Sync`（可选，转正时必需）
+      - `agent.at` 的 `spec Client` 加 `complete_stream(req, on_event Arc<Fn(JsonValue)>)` + run_inner 改用流式 + 删侧信道 workaround
+      - 删 `agent.at:102-107,19-34` 过时注释（"Auto can't express" 已不成立）
+      - 这些是独立 follow-up，不阻塞 Plan 022 完成（本 Phase 只做 auto-lang 根因修复 + 验证）
 
 ---
 
