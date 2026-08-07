@@ -44,12 +44,23 @@ trap cleanup EXIT
 echo "[e2e] === Plan 022 转译版端到端验证 ==="
 
 # ── 1. 前置检查 ──────────────────────────────────────────────────────────────
+# API key 来源：环境变量 OR daemon 配置文件（~/.config/autoos/ai-daemon.at 内联 key）。
+# daemon 两者都支持（env 优先，否则读配置文件）；这里只要任一可用即可。
 echo "[e2e] 检查 API key..."
-if [ -z "${ZHIPU_API_KEY:-${OPENAI_API_KEY:-${ANTHROPIC_API_KEY:-}}}" ]; then
-    echo "❌ 缺少 API key（设置 ZHIPU_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY）" >&2
+DAEMON_CFG="${HOME}/.config/autoos/ai-daemon.at"
+has_env_key=0
+has_cfg_key=0
+[ -n "${ZHIPU_API_KEY:-${OPENAI_API_KEY:-${ANTHROPIC_API_KEY:-}}}" ] && has_env_key=1
+if [ -f "$DAEMON_CFG" ] && grep -q 'api_key : "[^"]' "$DAEMON_CFG" 2>/dev/null \
+   && ! grep -q 'api_key : "your-' "$DAEMON_CFG" 2>/dev/null; then
+    has_cfg_key=1
+fi
+if [ "$has_env_key" = "0" ] && [ "$has_cfg_key" = "0" ]; then
+    echo "❌ 缺少 API key（设 ZHIPU_API_KEY/OPENAI_API_KEY/ANTHROPIC_API_KEY 环境变量，" >&2
+    echo "   或在 ~/.config/autoos/ai-daemon.at 内联 api_key）" >&2
     exit 1
 fi
-echo "[e2e] API key 检测通过"
+echo "[e2e] API key 检测通过（env=$has_env_key, config_file=$has_cfg_key）"
 
 # ── 2. 构建二进制 ────────────────────────────────────────────────────────────
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
