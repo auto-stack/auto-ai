@@ -1,6 +1,6 @@
 # Plan 022: Auto 版 e2e 验证与行为补全 — 让转译版 agent 与 Rust 原生版行为等价
 
-> **状态**：✅ 完成（2026-08-07 归档）— 转译版 agent 行为等价验证达成 + 2 缺陷修复
+> **状态**：✅ 完成（2026-08-07 归档；follow-up 2026-08-07 完成）— 转译版 agent 行为等价验证 + 2 缺陷修复 + 2 架构性限制根因修复并消费
 > **仓库**：auto-ai（主）—— 纯 auto-ai 侧工作，**不依赖 auto-lang**
 > **前置**：Plan 021（已归档，三大功能缺口已解决，tag `auto-complete-v0.1`）
 > **目标**：让 Auto 版（转译版 `rust/`）的 agent 后端能 e2e 完整运行，并通过系统化的 mock 套件 +
@@ -208,13 +208,14 @@ auto-ai-react 二进制（转译版）
 
 ## 完成判定
 
-- [ ] **Phase 1**：`crates/auto-ai-agent/rust/tests/transpiled_harness.rs` 14+ 测试全绿（`cargo test` 离线跑通）
-- [ ] **Phase 2**：`scripts/e2e-transpiled.sh` 本地成功（需 API key）；`rust/tests/live_run.rs`（`#[ignore]`）可手动触发；转译版 vs 原生版输出结构对照一致（记入 review 004）
-- [ ] **Phase 3**：`register_skill_tool` + `preferred_provider` 两 bug 修复（.at 源码 + retranspile）；T9/T14 验证通过；workspace 回归 0 错
-- [ ] **Phase 4**：`docs/reviews/005-transpiled-parity-matrix.md` 产出，所有功能点有明确状态标注，无 🔴 遗漏（架构性 ⚫️ 除外）
-- [ ] **Phase 5**：KNOWN-DEBT 更新，架构性限制与后续工作记录完整
-- [ ] workspace `cargo check` + `cargo test`（rust-ref）全绿，无回归
-- [ ] 打 tag `auto-e2e-v0.1` 标记 e2e 验证达成
+- [x] **Phase 1**：`crates/auto-ai-agent/rust/tests/transpiled_harness.rs` 15 测试全绿（`cargo test` 离线跑通，含 follow-up T15）
+- [x] **Phase 2**：`scripts/e2e-transpiled.sh` + `rust/tests/live_run.rs`（`#[ignore]`）设施就绪；本环境无 API key 未实跑（review 004 记录，用户具备时运行）
+- [x] **Phase 3**：`register_skill_tool` + `preferred_provider` 两 bug 修复（.at 源码 + retranspile）；T9/T14 验证通过；workspace 回归 0 错
+- [x] **Phase 4**：`docs/reviews/005-transpiled-parity-matrix.md` 产出，所有功能点有明确状态标注，无 🔴 遗漏（架构性 ⚫️ 除外）
+- [x] **Phase 5**：KNOWN-DEBT 更新完整
+- [x] **Phase 6**：两个架构性限制经 auto-lang Plan 397 根因修复（spec supertrait + Arc<Fn> spec-param golden），并在 follow-up 由 auto-ai 侧消费（complete_stream 流式 + Send+Sync）
+- [x] workspace `cargo check` + `cargo test`（rust-ref）全绿，无回归
+- [x] 打 tag `auto-e2e-v0.1` 标记 e2e 验证达成
 
 ---
 
@@ -401,3 +402,22 @@ preferred_provider（已修复）+ 1 条待验证（live e2e）。
 - [x] Phase 5：KNOWN-DEBT 更新完整
 - [x] workspace cargo check + cargo test 全绿（185 测试，0 失败）
 - [x] 打 tag `auto-e2e-v0.1`
+
+### Follow-up 实施记录（2026-08-07）✅
+
+Phase 6 调研后，两个架构性限制在 auto-lang 根因修复（Plan 397）并经 auto-ai 侧消费：
+
+**auto-lang 侧（Plan 397，worktree `auto-ai-022` 已合并 master）：**
+- spec supertrait bounds（限制二①）：`spec Name: Send + Sync {}` → `trait Name: Send + Sync`（AST/Parser/Codegen + golden 010）
+- Arc<Fn> spec-param golden（限制一确认）：golden 009 锁定 `Arc<dyn Fn(...)>` spec 方法参数位（Plan 390 §15.10 能力，无 codegen 改动）
+- TaskRef Clone（`a6abb487`，Plan 397 follow-up）：解除 sink move 重用 E0382
+
+**auto-ai 侧消费（follow-up，commit `5cb79a6`）：**
+- complete_stream 流式：`spec Client` 加 `complete_stream(req, on_event Arc<Fn(JsonValue)>)`；`run_inner` 改用 complete_stream，回调 `Arc(move (ev) => forward_sse_delta(ev, sink_cb))` 把 SSE text delta 转 `StreamEvent.Delta`（per-token Delta 流式复活，保守增量——统一 Delta，Thinking 区分留后续）
+- Send+Sync：4 个 spec（Tool/Role/Client/AgentFactory）加 `: Send + Sync`
+- client_impl.rs：AiClient + StreamingAiClient impl 加 complete_stream 桥接真实 SSE
+- transpiled_harness T15 验证 Delta 转发；15 测试全绿
+
+**关键技术决策**：spec 默认体不调 self（a2r DIV-TRAIT-A2R-3）→ complete_stream 无默认体，mock 用 helper；闭包块体不支持 → 提取 forward_sse_delta 自由函数保持单表达式箭头闭包；`@TaskRef` 引用参数 + `sink.clone()` 避开 a2r move-reuse clone 推断。
+
+**留作文档化限制（转正时再议，非阻塞）**：②`&str` 返回（codegen 故意选择，medium-large auto-lang 工程）；⑥spec 内泛型方法 + `'static`（大工程，`*_shared` workaround 可用）。详见 `docs/reviews/005-transpiled-parity-matrix.md` §8.2。
