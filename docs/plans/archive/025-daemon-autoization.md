@@ -90,8 +90,17 @@
 
 ## 3. 实施路线（分阶段，可控）
 
-### Phase 0 — 建立转译树骨架
-- [ ] 0.1 创建 `crates/auto-ai-daemon/src/`（.at 源码）+ `rust/`（转译树）+ `retranspile.sh`
+### Phase 1 — EASY 文件转 .at（进行中）
+
+**sse.at 初稿完成（WIP）**：从 sse.rs 转译，用 str 操作（对齐 client.at SseBuffer 风格，
+避开字节操作）。转译发现 a2r codegen 缺陷需处理（和既有 crate 同模式，retranspile.sh sed 兜底）：
+- `self.buf.substring(...)` → `self.&buf[..]`（借用推理缺陷，self 字段借用）
+- 单参数 substring（从 pos 到末尾）不支持 → 用双参数 `substring(pos, len)` 或 `&s[pos..]`
+- `Vec.first()/last()` 返回 Option 但当 owned 用
+- `i + 1 as usize` 优先级（需 `(i+1) as usize`）
+**处理方式**：调整 .at 写法避开（如先 `let b = self.buf` 再操作）+ retranspile.sh sed。
+
+其余 EASY 文件（config/tracker/tier_router/format）待转。
 - [ ] 0.2 `rust/Cargo.toml`：crate 名 `auto-ai-daemon-a2r`，独立 workspace，`use.rust` 的 Cargo dep
       声明（axum/tokio/reqwest 等，a2r 的 `dep` 语法或手写 Cargo.toml）
 - [ ] 0.3 确认 .at 的 `use.rust axum` / `use.rust tokio` 能正确转译出 `use axum::...;`（Phase 0 验证）
