@@ -7,6 +7,18 @@
 //! agent's `Client` spec/trait to that transpiled AiClient — the trait and the
 //! struct have matching method names but slightly different signatures (owned
 //! req, Arc<dyn Fn> callback), adapted here. This is the only non-a2r glue.
+//!
+//! SYNC-IN-ASYNC MITIGATION (Plan 024): the transpiled AiClient's async methods
+//! internally call a2r-std http, which uses synchronous ureq on background
+//! threads with blocking `.join()`/`recv()`. Calling these directly inside an
+//! `async fn` would block the tokio executor. We wrap each call in
+//! `tokio::task::spawn_blocking`, which moves the blocking work onto tokio's
+//! dedicated blocking thread pool and yields the executor until it completes.
+//! The transpiled AiClient methods are themselves `async fn`, so inside the
+//! spawn_blocking closure we drive them to completion with a fresh
+//! current-thread runtime (`Runtime::new().block_on`) — this is the documented
+//! pattern for running an async-that's-really-sync from a blocking context,
+//! and avoids touching the parent runtime.
 
 use crate::agent::Client;
 use crate::auto_ai_client::{AiClient, ClientError, CompletionRequest, CompletionResponse};
@@ -14,16 +26,43 @@ use crate::wire::JsonValue;
 use async_trait::async_trait;
 use std::sync::Arc;
 
+/// Run a transpiled AiClient async method on the blocking pool, isolating its
+/// synchronous ureq I/O from the tokio executor. The closure receives an owned
+/// AiClient (a cheap clone — it holds only a String URL) and returns a future
+/// that owns it (via `async move`), so the future is `'static` and can be
+/// driven to completion inside a fresh current-thread runtime on the blocking
+/// thread. This is the documented pattern for running an async-that's-really-
+/// sync from a blocking context, without touching the parent runtime.
+async fn run_blocking<F, Fut, T>(client: AiClient, f: F) -> T
+where
+    F: FnOnce(AiClient) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build blocking runtime");
+        rt.block_on(f(client))
+    })
+    .await
+    .expect("blocking client task panicked")
+}
+
 /// Adapter: the transpiled AiClient already has complete/complete_stream; this
-/// impl just satisfies the agent's `Client` trait (signature adaptation only).
+/// impl just satisfies the agent's `Client` trait (signature adaptation only),
+/// and wraps the synchronous-via-ureq calls in spawn_blocking.
 #[async_trait]
 impl Client for AiClient {
     async fn complete(
         &self,
         req: CompletionRequest,
     ) -> Result<CompletionResponse, ClientError> {
-        // Transpiled AiClient::complete takes req by value.
-        AiClient::complete(self, req).await
+        run_blocking(self.clone(), move |c| async move {
+            AiClient::complete(&c, req).await
+        })
+        .await
     }
 
     async fn complete_stream(
@@ -31,8 +70,10 @@ impl Client for AiClient {
         req: CompletionRequest,
         on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
     ) -> Result<CompletionResponse, ClientError> {
-        // Transpiled AiClient::complete_stream takes (req by value, Arc<dyn Fn>).
-        AiClient::complete_stream(self, req, on_event).await
+        run_blocking(self.clone(), move |c| async move {
+            AiClient::complete_stream(&c, req, on_event).await
+        })
+        .await
     }
 }
 
@@ -65,12 +106,13 @@ impl Client for StreamingAiClient {
         req: CompletionRequest,
     ) -> Result<CompletionResponse, ClientError> {
         let tx = self.tx.clone();
-        // Drive complete_stream instead of complete: the daemon sends SSE deltas,
-        // each forwarded through the channel. complete_stream returns the fully
-        // assembled CompletionResponse (concatenated text + tool_calls/usage).
-        AiClient::complete_stream(&self.inner, req, Arc::new(move |ev: JsonValue| {
-            let _ = tx.send(ev);
-        }))
+        let client = self.inner.clone();
+        run_blocking(client, move |c| async move {
+            AiClient::complete_stream(&c, req, Arc::new(move |ev: JsonValue| {
+                let _ = tx.send(ev);
+            }))
+            .await
+        })
         .await
     }
 
@@ -83,10 +125,14 @@ impl Client for StreamingAiClient {
         on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
     ) -> Result<CompletionResponse, ClientError> {
         let tx = self.tx.clone();
-        AiClient::complete_stream(&self.inner, req, Arc::new(move |ev: JsonValue| {
-            let _ = tx.send(ev.clone());
-            on_event(ev);
-        }))
+        let client = self.inner.clone();
+        run_blocking(client, move |c| async move {
+            AiClient::complete_stream(&c, req, Arc::new(move |ev: JsonValue| {
+                let _ = tx.send(ev.clone());
+                on_event(ev);
+            }))
+            .await
+        })
         .await
     }
 }

@@ -138,12 +138,9 @@ pub ext AiClient {
         var model = ""
         var error_msg ?str = None
 
-        // Read the SSE stream chunk by chunk. NOTE: Auto's HTTPStream.next()
-        // returns str (not Result), so per-chunk transport errors (which Rust
-        // maps to ClientError::Http at lib.rs:132) cannot be surfaced here —
-        // a failed chunk arrives as an empty string and is skipped. This is a
-        // platform limit (B-class); the a2r→Rust path restores full error
-        // handling via futures::StreamExt.
+        // Read the SSE stream chunk by chunk. The blocking recv() runs inside
+        // a spawn_blocking wrapper at the client_impl.rs trait boundary, so the
+        // tokio executor is not blocked. next() returns "" at end-of-stream.
         for stream.is_done() == 0 {
             let chunk = stream.next()
             if chunk.is_empty() == false {

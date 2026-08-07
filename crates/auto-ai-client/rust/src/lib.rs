@@ -120,9 +120,6 @@ impl AiClient {
 
 
 
-
-
-
         while stream.is_done() == 0 {
             let chunk = stream.next();
             if chunk.is_empty() == false {
