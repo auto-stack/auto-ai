@@ -1,0 +1,210 @@
+/// Daemon configuration — delegates parsing to `ai-config`.
+///
+/// Auto port of crates/auto-ai-daemon/src/config.rs. The `DaemonConfig` struct
+/// and `.at` parsing live in the shared `ai-config` crate so client and daemon
+/// agree on the provider layout. This module just adds the daemon-specific load
+/// entry points (file discovery + env fallback) on top of it.
+///
+/// TYPE NOTE: the daemon crate links the **rust-ref** `ai-config` (Cargo.toml
+/// `[lib] path = "rust-ref/src/lib.rs"`), so the field shapes here mirror
+/// rust-ref's DaemonConfig (no `provider_names` field; `idle_timeout_min: u64`;
+/// `max_concurrency: Option<usize>`), not the in-progress ai-config `.at`
+/// transpilation. The runtime path runs under cargo.
+///
+/// a2r-FIRST NOTE: `dirs::home_dir()` / `std::fs::read_to_string` bridge to the
+/// Rust `dirs`/`std` crates (same pattern as auto-ai-agent/src/validate.at); the
+/// parser itself (`parse_daemon_config`) is a2r-first (ai-config/loader.at).
+
+use.rust std::path::PathBuf
+use.rust std::process
+
+use ai_config
+
+// Default per-provider concurrency cap when a provider doesn't set
+// `max_concurrency`. Untyped const so a2r infers the target field's type
+// (rust-ref's max_concurrency is Option<usize>), avoiding a u32/usize clash.
+const DEFAULT_CONCURRENCY = 4
+
+/// Load daemon config from `~/.config/autoos/ai-daemon.at`, else from env.
+///
+/// Mirrors rust-ref config.rs:load(). Falls back to env-var providers when the
+/// config file is absent/unreadable. Exits the process if no provider can be
+/// built (a daemon with zero providers would fail every request at runtime).
+pub fn load() DaemonConfig {
+    is load_from_file() {
+        Some(cfg) -> return cfg,
+        None -> {}
+    }
+    return load_from_env()
+}
+
+/// Read & parse `~/.config/autoos/ai-daemon.at`. None if the file is absent or
+/// unreadable/unparseable (so `load()` can fall back to env).
+fn load_from_file() ?DaemonConfig {
+    is home_dir() {
+        Some(home) -> {
+            let path = home.join(".config/autoos/ai-daemon.at")
+            let path_str = path.to_str().unwrap()
+            if fs.exists(path_str) == false {
+                return None
+            }
+            let content = read_file_text(path_str)
+            if content.is_empty() {
+                return None
+            }
+            is ai_config.parse_daemon_config(content.as_str()) {
+                Ok(cfg) -> return Some(cfg),
+                Err(_) -> return None
+            }
+        },
+        None -> return None
+    }
+    return None
+}
+
+/// Env-var fallback (Forge-compatible): ZHIPU_API_KEY / ANTHROPIC_API_KEY /
+/// OPENAI_API_KEY, each with a default concurrency cap of 4.
+///
+/// Exits the process if no provider can be built — a daemon with zero providers
+/// would just fail every request with NoProvider at runtime, so failing fast at
+/// startup is clearer (startup-time exit is acceptable per our conventions).
+fn load_from_env() DaemonConfig {
+    var providers Map<str, ai_config.ProviderConfig> = Map.new()
+
+    // Zhipu (GLM via OpenAI-compatible endpoint).
+    let zhipu_key = env.get("ZHIPU_API_KEY")
+    if zhipu_key.is_empty() == false {
+        let models = [
+            ai_config.ModelDefinition.new("glm-4.6", ai_config.ModelTier.Mid),
+            ai_config.ModelDefinition.new("glm-4-flash", ai_config.ModelTier.Min)
+        ]
+        providers.set("zhipu".to_string(), provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", zhipu_key, models))
+    }
+
+    // Anthropic (claude). Accept either ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN.
+    let anthropic_key = env.get("ANTHROPIC_API_KEY")
+    let anthropic_token = env.get("ANTHROPIC_AUTH_TOKEN")
+    let anthropic_base = env.get("ANTHROPIC_BASE_URL")
+    let key = first_non_empty(anthropic_key, anthropic_token)
+    if key.is_empty() == false {
+        let base = first_non_empty(anthropic_base, "https://api.anthropic.com")
+        let models = [
+            ai_config.ModelDefinition.new("claude-3-5-sonnet-20241022", ai_config.ModelTier.Mid)
+        ]
+        providers.set("anthropic".to_string(), provider_env("anthropic", base, key, models))
+    }
+
+    // OpenAI.
+    let openai_key = env.get("OPENAI_API_KEY")
+    let openai_base = env.get("OPENAI_BASE_URL")
+    if openai_key.is_empty() == false {
+        let base = first_non_empty(openai_base, "https://api.openai.com/v1")
+        let models = [
+            ai_config.ModelDefinition.new("gpt-4o", ai_config.ModelTier.Mid)
+        ]
+        providers.set("openai".to_string(), provider_env("openai", base, openai_key, models))
+    }
+
+    if providers.is_empty() {
+        fatal_no_provider()
+    }
+
+    // Deterministic default-provider selection (priority: zhipu > anthropic >
+    // openai; else first by sorted name). HashMap iteration order would
+    // otherwise be random, making routing non-reproducible across runs.
+    let default_provider = pick_default(providers)
+    let default_model = default_model_id(providers, default_provider)
+
+    // Start from DaemonConfig::default() (which sets tier_routing, the daemon
+    // defaults, etc.) and override only the env-derived fields. TierRouting has
+    // no `empty()` in rust-ref (only a `Default` impl), so default()-then-mutate
+    // is the cleanest path. Fully-qualified `ai_config.DaemonConfig` because the
+    // bare name doesn't resolve (no root re-export in the shim).
+    var cfg = ai_config.DaemonConfig.default()
+    cfg.providers = providers
+    cfg.default_provider = default_provider
+    cfg.default_model = default_model
+    return cfg
+}
+
+/// Build a ProviderConfig from env-style params (the daemon-side constructor).
+fn provider_env(kind str, base_url str, key str, models List<ai_config.ModelDefinition>) ai_config.ProviderConfig {
+    return ai_config.ProviderConfig(
+        kind: kind,
+        base_url: base_url,
+        api_key: Some(key),
+        key_env: None,
+        models: models,
+        max_concurrency: Some(DEFAULT_CONCURRENCY),
+        auth_required: true
+    )
+}
+
+/// Default-provider priority: zhipu > anthropic > openai; else first sorted name.
+/// (Mirrors config.rs:84-92. Walks a fixed priority list rather than relying on
+/// HashMap iteration order — .at Map has no iteration API.)
+fn pick_default(providers Map<str, ai_config.ProviderConfig>) str {
+    for candidate in ["zhipu", "anthropic", "openai"] {
+        if providers.contains(candidate) {
+            return candidate
+        }
+    }
+    // Fallback: sort the provider names and take the smallest. We can't iterate
+    // the Map directly, so collect known candidates; if none of the canonical
+    // names matched, the map has some custom key — return the first canonical
+    // name that exists, else "" (unreachable: providers is non-empty here).
+    return first_key(providers)
+}
+
+/// The first key in the map by probe order (zhipu, anthropic, openai), else "".
+/// (Deterministic stand-in for `providers.keys().min()` — the rust-ref sorts the
+/// collected keys; .at Map has no keys iterator so we probe the known set.)
+fn first_key(providers Map<str, ai_config.ProviderConfig>) str {
+    for k in ["zhipu", "anthropic", "openai"] {
+        if providers.contains(k) {
+            return k
+        }
+    }
+    return ""
+}
+
+/// The id of the default provider's first model, or "" if none.
+fn default_model_id(providers Map<str, ai_config.ProviderConfig>, default_provider str) str {
+    is providers.get(default_provider) {
+        Some(p) -> {
+            if p.models.is_empty() {
+                return ""
+            }
+            return p.models[0].id
+        },
+        None -> return ""
+    }
+    return ""
+}
+
+/// The first argument if non-empty, else the second.
+fn first_non_empty(a str, b str) str {
+    if a.is_empty() == false {
+        return a
+    }
+    return b
+}
+
+// ─── bridged helpers (use.rust → cargo runtime) ─────────────────────────────
+
+/// The user's home directory, or None if it can't be determined.
+fn home_dir() ?PathBuf {
+    return dirs.home_dir()
+}
+
+/// Read a file's full contents as text ("" if unreadable — a2r-std parity).
+fn read_file_text(path str) str {
+    return fs.read_to_string(path)
+}
+
+/// Abort startup with a diagnostic: no provider could be configured. Exits the
+/// process (mirrors rust-ref's panic! at startup; .at has no panic primitive,
+/// so we bridge to std::process::exit).
+fn fatal_no_provider() void {
+    process.exit(1)
+}

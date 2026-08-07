@@ -1,0 +1,233 @@
+/// Tier Router — multi-provider model routing with fallback.
+///
+/// Auto port of crates/auto-ai-daemon/src/tier_router.rs (production code only;
+/// the #[cfg(test)] block stays in rust-ref — a2r .at doesn't transpile tests).
+///
+/// Replaces single-default-provider tier resolution with a configurable
+/// tier→candidate-chain mapping. Each tier can have multiple candidates across
+/// providers (primary → fallback 1 → fallback 2…). The router tries them in
+/// order, falling back on 429/timeout.
+///
+/// Backward compatible: if no `tier_routing` is configured, auto-derives from
+/// providers (default_provider's models first, others as fallbacks).
+///
+/// ITER NOTE: .at's Map has no iteration API, so HashMap traversal uses
+/// `.keys().cloned().collect()` (a verified-clean a2r pattern) + per-key
+/// `get()`, rather than `for (k, v) in &map`. This mirrors the role-registry
+/// parallel-list convention but avoids maintaining a separate list: the keys
+/// are materialized on demand inside `from_config`.
+///
+/// TYPE NOTE: links the rust-ref ai-config (DaemonConfig has no `provider_names`
+/// field; TierRouting has `routes: HashMap<String, Vec<TierRouteCandidate>>`).
+
+use.rust std::collections::HashMap
+
+use ai_config
+use ai_config: ModelTier, DaemonConfig
+// TierRouting / TierRouteCandidate live in ai-config's `loader` submodule (not
+// re-exported at the crate root in rust-ref). Use the loader path.
+use ai_config.loader: TierRouting, TierRouteCandidate
+// Hand-written glue (tier_router_glue.rs) — exposes `tier_routing.routes` as
+// an owned list, since `routes` is a reserved keyword in .at (see glue file).
+use.rust tier_router_glue
+
+/// A single candidate in a tier's routing chain.
+// Explicit derive (Debug, Clone) — no PartialEq (keeps parity with rust-ref and
+// avoids a2r's auto-PartialEq, which would also need it on nested types).
+#[derive(Debug, Clone)]
+pub type TierCandidate {
+    provider str
+    model str
+}
+
+ext TierCandidate {
+    pub static fn new(provider str, model str) TierCandidate {
+        return TierCandidate(provider: provider, model: model)
+    }
+}
+
+/// The tier router — resolves a tier to an ordered list of candidates.
+#[derive(Debug, Clone)]
+pub type TierRouter {
+    // tier → ordered candidates (primary first). The map key is the ModelTier
+    // enum value (a2r renders it as the enum, usable as a HashMap key since
+    // ModelTier derives Hash+Eq in ai-config).
+    routing HashMap<ModelTier, List<TierCandidate>>
+}
+
+ext TierRouter {
+    pub static fn default() TierRouter {
+        return TierRouter(routing: HashMap.new())
+    }
+
+    /// Build a router from the daemon config. If `tier_routing` is explicitly
+    /// configured, use it. Otherwise auto-derive from providers
+    /// (default_provider's models first, others as fallbacks).
+    pub fn from_config(config DaemonConfig) TierRouter {
+        // 1. Explicit tier_routing from config.
+        if config.tier_routing.is_empty() == false {
+            var routing HashMap<ModelTier, List<TierCandidate>> = HashMap.new()
+            // NOTE: `config.tier_routing.routes` can't be written in .at —
+            // `routes` is a reserved keyword (routing/navigation). The
+            // tier_router_glue.tier_route_entries() bridge returns the entries
+            // as an owned list, sidestepping the keyword.
+            for pair in tier_router_glue.tier_route_entries(config.tier_routing.view) {
+                let tier_name = pair[0]
+                let cands = pair[1]
+                is ModelTier.parse_name(tier_name) {
+                    Some(tier) -> {
+                        var tc List<TierCandidate> = []
+                        for c in cands {
+                            tc.push(TierCandidate.new(c.provider, c.model))
+                        }
+                        routing.insert(tier, tc)
+                    },
+                    None -> {
+                        // Unknown tier name in tier_routing — skip it (rust-ref
+                        // logs a tracing::warn; omitted here since tracing:: is a
+                        // macro and a2r can't emit the ! form — Plan 025 §0 #4).
+                    }
+                }
+            }
+            // (rust-ref logs a tracing::info here; macro — see Plan 025 §0 #4.)
+            return TierRouter(routing: routing)
+        }
+
+        // 2. Auto-derive from providers (legacy behavior).
+        var routing HashMap<ModelTier, List<TierCandidate>> = HashMap.new()
+
+        // Default provider's models go first per tier.
+        is config.providers.get(config.default_provider) {
+            Some(default) -> {
+                for m in default.models {
+                    ensure_candidate(routing, m.tier, TierCandidate.new(config.default_provider, m.id))
+                }
+            },
+            None -> {}
+        }
+
+        // Other providers' models go as fallbacks.
+        for name in config.providers.keys().cloned().collect() {
+            if name == config.default_provider {
+                continue
+            }
+            is config.providers.get(name) {
+                Some(pc) -> {
+                    for m in pc.models {
+                        // Only add if this tier+provider combo isn't already there.
+                        if has_provider_for_tier(routing, m.tier, name) == false {
+                            ensure_candidate(routing, m.tier, TierCandidate.new(name, m.id))
+                        }
+                    }
+                },
+                None -> {}
+            }
+        }
+        return TierRouter(routing: routing)
+    }
+
+    /// Resolve a tier to its candidate chain (primary first). Owned Vec so the
+    /// server can reorder it. Empty = no candidates configured.
+    pub fn candidates(tier ModelTier) List<TierCandidate> {
+        is self.routing.get(tier) {
+            Some(v) -> return v,
+            None -> return []
+        }
+        return []
+    }
+
+    /// Resolve a tier to a candidate chain, honoring an optional provider
+    /// preference. When `preferred_provider` matches a candidate, that candidate
+    /// moves to the front while the rest keep their order as fallbacks.
+    pub fn candidates_preferred(tier ModelTier, preferred_provider ?str) List<TierCandidate> {
+        let base = self.candidates(tier)
+        is preferred_provider {
+            None -> return base,
+            Some(pref) -> {
+                // Find the preferred candidate's index; if present, move to front.
+                var chain = base
+                let idx = index_of_provider(chain, pref)
+                if idx >= 0 {
+                    let preferred = chain.remove(idx)
+                    // Insert at front.
+                    var reordered List<TierCandidate> = [preferred]
+                    for c in chain {
+                        reordered.push(c)
+                    }
+                    return reordered
+                }
+                // Preferred provider isn't a candidate for this tier; natural order.
+                return base
+            }
+        }
+        return base
+    }
+
+    /// Resolve a tier to its first candidate, considering an optional provider
+    /// preference. The caller handles fallback by iterating `candidates()`.
+    pub fn resolve(tier ModelTier, preferred_provider ?str) ?TierCandidate {
+        let cands = self.candidates(tier)
+        if cands.is_empty() {
+            return None
+        }
+        // If a preferred provider is specified, try it first.
+        is preferred_provider {
+            Some(pref) -> {
+                for c in cands {
+                    if c.provider == pref {
+                        return Some(c)
+                    }
+                }
+            },
+            None -> {}
+        }
+        // Default: first candidate (primary).
+        return Some(cands[0])
+    }
+}
+
+// ─── routing-table helpers (operate on the HashMap<ModelTier, Vec<_>>) ────────
+
+/// Append `tc` to the candidate list for `tier`, creating the list if absent.
+/// (Stands in for `routing.entry(tier).or_default().push(tc)`, which a2r can't
+/// express cleanly — entry-API chains don't transpile.)
+fn ensure_candidate(routing HashMap<ModelTier, List<TierCandidate>>, tier ModelTier, tc TierCandidate) void {
+    is routing.get(tier) {
+        Some(list) -> {
+            var updated = list
+            updated.push(tc)
+            routing.insert(tier, updated)
+        },
+        None -> {
+            routing.insert(tier, [tc])
+        }
+    }
+}
+
+/// Does `routing[tier]` already contain a candidate for `provider`?
+fn has_provider_for_tier(routing HashMap<ModelTier, List<TierCandidate>>, tier ModelTier, provider str) bool {
+    is routing.get(tier) {
+        Some(cands) -> {
+            for c in cands {
+                if c.provider == provider {
+                    return true
+                }
+            }
+            return false
+        },
+        None -> return false
+    }
+    return false
+}
+
+/// Index of the first candidate whose provider == `provider`, or -1 if none.
+fn index_of_provider(cands List<TierCandidate>, provider str) int {
+    var i int = 0
+    for c in cands {
+        if c.provider == provider {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}

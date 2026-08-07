@@ -1,6 +1,6 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
-> **状态**：🟡 Phase 0 完成（axum 可行性已验证），Phase 1-5 待推进
+> **状态**：🟢 Phase 0 + Phase 1 完成（5 个 EASY 文件全部转译，`./retranspile.sh check` cargo check = 0 错），Phase 2-5 待推进
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -90,28 +90,53 @@
 
 ## 3. 实施路线（分阶段，可控）
 
-### Phase 1 — EASY 文件转 .at（进行中）
+### Phase 1 — EASY 文件转 .at（✅ 完成）
 
-**sse.at 初稿完成（WIP）**：从 sse.rs 转译，用 str 操作（对齐 client.at SseBuffer 风格，
-避开字节操作）。转译发现 a2r codegen 缺陷需处理（和既有 crate 同模式，retranspile.sh sed 兜底）：
-- `self.buf.substring(...)` → `self.&buf[..]`（借用推理缺陷，self 字段借用）
-- 单参数 substring（从 pos 到末尾）不支持 → 用双参数 `substring(pos, len)` 或 `&s[pos..]`
-- `Vec.first()/last()` 返回 Option 但当 owned 用
-- `i + 1 as usize` 优先级（需 `(i+1) as usize`）
-**处理方式**：调整 .at 写法避开（如先 `let b = self.buf` 再操作）+ retranspile.sh sed。
+**5 个 EASY 文件全部转译完成，`./retranspile.sh check` 全自动流水线 cargo check = 0 错（幂等、可复现）。**
 
-其余 EASY 文件（config/tracker/tier_router/format）待转。
-- [ ] 0.2 `rust/Cargo.toml`：crate 名 `auto-ai-daemon-a2r`，独立 workspace，`use.rust` 的 Cargo dep
+sse.at 的初版用 `.substring()` + 自定义 helper（find_in_str / split_once / trim_start_spaces）
+触发了 4 类 a2r codegen 缺陷（self.&buf 借用、单参 substring、Vec.first() on Option、
+`i + 1 as usize` 优先级）。**解决方式不是逐个 sed，而是重写 sse.at 改用 auto-ai-client
+SseBuffer 已验证可编译的 `.slice()` / `.find()` / `.trim()` 模式** —— 这样在源头规避了
+全部 4 类缺陷，只剩一个机械的 `str_find(&self.buf, ...)` 借用 sed（Plan 019 D-class，
+和 client 相同）。
+
+转译过程新发现并记录的 a2r 缺陷（已用 retranspile.sh sed 兜底）：
+- `-> impl StructName`：a2r 在 struct 返回类型前误加 `impl` 关键字（config）
+- `dirs.home_dir()`：a2r 把关联函数调用渲染成方法调用（`.` 应为 `::`）（config）
+- `const X = 4` 推断成 `i32` 而非目标字段的 `usize`（config）
+- `ProviderConfig(...)`：a2r 把 struct 渲染成 positional tuple ctor（config）
+- `.as_str()` on `&str`：用了 unstable `str_as_str` feature（config）
+- `HashMap::get(&owned_key)`：借用/类型推断失败，需 `.as_str()` 或 turbofish（tracker / tier_router）
+- `m.keys().collect()`：无类型提示导致 `HashMap::get` 的 `Q` 参数推断失败，需 turbofish（tier_router）
+- `for x in &cands`（cands 已是 `&Vec`）：变成 `&&Vec` 不可迭代（tracker / tier_router / format）
+- **`routes` 是 .at 保留关键字**：`config.tier_routing.routes` 在 .at 里写不出来 →
+  tier_router 保留一份手写胶水 `tier_router_glue.rs`（暴露 routes 为 owned list，仿
+  auto-ai-agent/client_impl.rs 模式）
+
+**关键认知**：daemon crate 的 Cargo.toml 链接的是 **rust-ref 版 ai-config**
+（`[lib] path = "rust-ref/src/lib.rs"`），所以 .at 的字段形状必须对齐 rust-ref
+（DaemonConfig 无 `provider_names`、`idle_timeout_min: u64`、`max_concurrency: Option<usize>`），
+而非 ai-config 自己的 .at 转译版。
+
+**json! 宏**：a2r 不能 emit 宏。format.at 用 `serde_json::Map::new()` + `.insert()` +
+`Value::Object(...)` 手动构建（已验证 a2r 干净转译）。
+
+**ContentBlock 变体匹配**：`is block { ContentBlock.Text(t) -> ... }` 能正确转译成
+`match block { ContentBlock::Text { text } => ... }`（对齐 rust-ref 的 named-field 变体）。
+
+其余 EASY 文件（config/tracker/tier_router/format）已全部转译完成。
+- [x] 0.2 `rust/Cargo.toml`：crate 名 `auto-ai-daemon-a2r`，独立 workspace，`use.rust` 的 Cargo dep
       声明（axum/tokio/reqwest 等，a2r 的 `dep` 语法或手写 Cargo.toml）
 - [ ] 0.3 确认 .at 的 `use.rust axum` / `use.rust tokio` 能正确转译出 `use axum::...;`（Phase 0 验证）
 
-### Phase 1 — EASY 文件转 .at（低风险）
-- [ ] 1.1 config.rs → config.at
-- [ ] 1.2 tracker.rs → tracker.at
-- [ ] 1.3 sse.rs → sse.at
-- [ ] 1.4 tier_router.rs → tier_router.at
-- [ ] 1.5 format.rs → format.at（处理 `json!` 宏 → 手动 Value）
-- [ ] 1.6 retranspile + 转译树 cargo check 0 错
+### Phase 1 — EASY 文件转 .at（低风险）✅
+- [x] 1.1 config.rs → config.at
+- [x] 1.2 tracker.rs → tracker.at
+- [x] 1.3 sse.rs → sse.at
+- [x] 1.4 tier_router.rs → tier_router.at（+ 手写 `tier_router_glue.rs`：`routes` 保留关键字）
+- [x] 1.5 format.rs → format.at（`json!` 宏 → 手动 `serde_json::Map` + `Value::Object`）
+- [x] 1.6 retranspile + 转译树 cargo check 0 错 ✅（`./retranspile.sh check`，幂等可复现）
 
 ### Phase 2 — MEDIUM 文件转 .at
 - [ ] 2.1 pool.rs → pool.at（Semaphore 模式）

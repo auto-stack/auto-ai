@@ -1,0 +1,156 @@
+/// Shared OpenAI chat-completions wire-format translation.
+///
+/// Auto port of crates/auto-ai-daemon/src/format.rs. The daemon's OpenAiProvider
+/// speaks OpenAI's `/v1/chat/completions` format; this module centralizes the
+/// translation of our provider-agnostic ContentBlocks into OpenAI message shapes
+/// (plain text, assistant tool_calls, and role:"tool" results).
+///
+/// TYPE NOTE: links the rust-ref ai-config. ContentBlock variants use named
+/// fields there (Text{text}, ToolUse{id,name,input}, ToolResult{tool_use_id,
+/// content, is_error}); a2r's `is block { ContentBlock.X(...) -> }` renders the
+/// matching `match` arms correctly.
+///
+/// JSON-BUILD NOTE: `serde_json::json!({...})` is a macro a2r can't emit, so the
+/// two object constructions (tool_call, tool_to_openai) build serde_json::Map +
+/// Value::Object by hand — a verified-clean a2r pattern.
+
+use.rust serde_json
+use.rust serde_json::Value
+
+use ai_config
+use ai_config: ContentBlock, ToolDefinition, ToolCall
+
+/// One tool result extracted from a message's content blocks, ready to become
+/// an OpenAI `role:"tool"` message.
+pub type OpenAiToolResult {
+    tool_call_id str
+    content str
+}
+
+/// Classifies a message's content blocks into one of OpenAI's three shapes.
+pub enum OpenAiMsg {
+    // Plain text message (user/assistant/system): a single content string.
+    Text(str, str)
+    // Assistant message that requested one or more tools: (text, tool_calls).
+    AssistantWithTools(str, List<Value>)
+    // One or more role:"tool" messages built from tool results.
+    ToolResults(List<OpenAiToolResult>)
+}
+
+/// Translate our content blocks into the OpenAI message shape, given the
+/// message's `role`. Tool-use always yields an assistant message; tool results
+/// always split into one or more role:"tool" messages; everything else is a
+/// plain text message in the caller's role.
+pub fn openai_content(role str, blocks List<ContentBlock>) OpenAiMsg {
+    // 1. Pure tool-result message?
+    if blocks.is_empty() == false && all_tool_results(blocks) {
+        var results List<OpenAiToolResult> = []
+        for b in blocks {
+            is b {
+                ContentBlock.ToolResult(tool_use_id, content, is_error) -> {
+                    results.push(OpenAiToolResult(tool_call_id: tool_use_id, content: content))
+                },
+                ContentBlock.Text(text) -> {},
+                ContentBlock.ToolUse(id, name, input) -> {}
+            }
+        }
+        return OpenAiMsg.ToolResults(results)
+    }
+
+    // 2. Assistant message carrying tool_use blocks?
+    if has_tool_use(blocks) {
+        var text_parts List<str> = []
+        var tool_calls List<Value> = []
+        for b in blocks {
+            is b {
+                ContentBlock.Text(text) -> text_parts.push(text),
+                ContentBlock.ToolUse(id, name, input) -> {
+                    tool_calls.push(tool_call_obj(id, name, input))
+                },
+                ContentBlock.ToolResult(tool_use_id, content, is_error) -> {}
+            }
+        }
+        let text = text_parts.join("")
+        return OpenAiMsg.AssistantWithTools(text, tool_calls)
+    }
+
+    // 3. Pure text (or any block we can coerce to text): emit a plain message.
+    var text_parts List<str> = []
+    for b in blocks {
+        is b {
+            ContentBlock.Text(text) -> text_parts.push(text),
+            ContentBlock.ToolUse(id, name, input) -> {},
+            ContentBlock.ToolResult(tool_use_id, content, is_error) -> {}
+        }
+    }
+    let content = text_parts.join("")
+    return OpenAiMsg.Text(role, content)
+}
+
+/// Translate our ToolDefinition to OpenAI's tool object.
+pub fn tool_to_openai(t ToolDefinition) Value {
+    let func = serde_json.Map.new()
+    func.insert("name", Value.String(t.name))
+    func.insert("description", Value.String(t.description))
+    func.insert("parameters", t.parameters)
+    let outer = serde_json.Map.new()
+    outer.insert("type", Value.String("function".to_string()))
+    outer.insert("function", Value.Object(func))
+    return Value.Object(outer)
+}
+
+/// Parse OpenAI's `tool_calls` array into our ToolCall list.
+pub fn parse_openai_tool_calls(arr List<Value>) List<ToolCall> {
+    var out List<ToolCall> = []
+    for tc in arr {
+        let fn_obj = json.get(tc, "function")
+        let name = json.get_str(fn_obj, "name")
+        if name.is_empty() {
+            continue
+        }
+        let args_str = json.get_str(fn_obj, "arguments")
+        let input = json.parse(args_str)
+        let id = json.get_str(tc, "id")
+        out.push(ToolCall(id: id, name: name, input: input))
+    }
+    return out
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// True if every block is a ToolResult.
+fn all_tool_results(blocks List<ContentBlock>) bool {
+    for b in blocks {
+        is b {
+            ContentBlock.ToolResult(tool_use_id, content, is_error) -> {},
+            ContentBlock.Text(text) -> return false,
+            ContentBlock.ToolUse(id, name, input) -> return false
+        }
+    }
+    return true
+}
+
+/// True if any block is a ToolUse.
+fn has_tool_use(blocks List<ContentBlock>) bool {
+    for b in blocks {
+        is b {
+            ContentBlock.ToolUse(id, name, input) -> return true,
+            ContentBlock.Text(text) -> {},
+            ContentBlock.ToolResult(tool_use_id, content, is_error) -> {}
+        }
+    }
+    return false
+}
+
+/// Build one OpenAI tool_call object: {id, type:"function", function:{name, arguments}}.
+/// (Replaces `serde_json::json!({...})` — hand-built Map+Value, a2r-native.)
+fn tool_call_obj(id str, name str, input Value) Value {
+    let fn_obj = serde_json.Map.new()
+    fn_obj.insert("name", Value.String(name))
+    fn_obj.insert("arguments", Value.String(json.to_string(input)))
+    let outer = serde_json.Map.new()
+    outer.insert("id", Value.String(id))
+    outer.insert("type", Value.String("function".to_string()))
+    outer.insert("function", Value.Object(fn_obj))
+    return Value.Object(outer)
+}

@@ -1,0 +1,100 @@
+/// Usage tracker — per-app token/cost accounting.
+///
+/// Auto port of crates/auto-ai-daemon/src/tracker.rs. Thread-safe usage tracker
+/// recording per-app token consumption. The Rust original uses a
+/// `parking_lot::Mutex<HashMap<String, AppUsage>>`; this .at version mirrors it
+/// directly via `use.rust parking_lot`.
+///
+/// TYPE NOTE: links the rust-ref ai-config + parking_lot 0.12 (Cargo.toml dep).
+///
+/// MAP-ITER NOTE: .at's Map has no iteration API (same constraint as ai-config's
+/// `provider_names` parallel list), so `all()` walks a hand-maintained `names`
+/// list rather than `iter()`. The list stays in insertion order; duplicates are
+/// suppressed on insert.
+
+use.rust parking_lot::Mutex
+
+/// Per-app accumulated usage (tokens + request count).
+pub type AppUsage {
+    total_input_tokens uint
+    total_output_tokens uint
+    request_count uint
+}
+
+ext AppUsage {
+    pub static fn new() AppUsage {
+        return AppUsage(total_input_tokens: 0, total_output_tokens: 0, request_count: 0)
+    }
+
+    /// Total tokens consumed (input + output).
+    pub fn total_tokens() uint {
+        return self.total_input_tokens + self.total_output_tokens
+    }
+}
+
+/// Thread-safe usage tracker. Records per-app token consumption.
+// Explicit derive (Debug only): the Mutex field implements neither Clone nor
+// PartialEq, so a2r's default `#[derive(Clone, Debug, PartialEq)]` fails. Same
+// override pattern as auto-ai-agent/src/memory.at (foreign-type field).
+#[derive(Debug)]
+pub type UsageTracker {
+    apps Mutex<Map<str, AppUsage>>
+    names List<str>
+}
+
+ext UsageTracker {
+    pub fn new() UsageTracker {
+        return UsageTracker(
+            apps: Mutex.new(Map.new()),
+            names: []
+        )
+    }
+
+    /// Record usage for an app (accumulates into any existing entry).
+    pub fn record(app str, input uint, output uint) void {
+        let guard = self.apps.lock()
+        is guard.get(app) {
+            Some(entry) -> {
+                // `entry` is an immutable borrow (&AppUsage); build an updated
+                // owned copy and re-insert (a2r Map.get returns a reference, so
+                // in-place field mutation isn't possible without get_mut).
+                let updated = AppUsage.new()
+                updated.total_input_tokens = entry.total_input_tokens + input
+                updated.total_output_tokens = entry.total_output_tokens + output
+                updated.request_count = entry.request_count + 1
+                guard.set(app.to_string(), updated)
+            },
+            None -> {
+                let e = AppUsage.new()
+                e.total_input_tokens = input
+                e.total_output_tokens = output
+                e.request_count = 1
+                guard.set(app.to_string(), e)
+                self.names.push(app.to_string())
+            }
+        }
+    }
+
+    /// Get usage for an app (a zeroed AppUsage if unknown).
+    pub fn get(app str) AppUsage {
+        let guard = self.apps.lock()
+        is guard.get(app) {
+            Some(entry) -> return entry,
+            None -> return AppUsage.new()
+        }
+        return AppUsage.new()
+    }
+
+    /// Get all app usage as (app_name, AppUsage) pairs, in insertion order.
+    pub fn all() List<(str, AppUsage)> {
+        let guard = self.apps.lock()
+        var out List<(str, AppUsage)> = []
+        for name in self.names {
+            is guard.get(name) {
+                Some(u) -> out.push((name, u)),
+                None -> {}
+            }
+        }
+        return out
+    }
+}

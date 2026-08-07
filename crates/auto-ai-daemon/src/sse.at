@@ -1,12 +1,18 @@
 /// SSE (Server-Sent Events) incremental parser — Auto source.
 ///
 /// Ported from the daemon's native `sse.rs` (rust-ref). Parses the
-/// `text/event-stream` format used by LLM streaming APIs. This .at version
-/// operates on `str` chunks (like auto-ai-client's SseBuffer) rather than raw
-/// bytes — SSE is text, and str operations are a2r-native. The transpiled Rust
-/// links into the daemon's provider streaming path.
+/// `text/event-stream` format used by LLM streaming APIs. Operates on `str`
+/// chunks (like auto-ai-client's SseBuffer) — SSE is text, and str slice/find
+/// operations are a2r-native. The transpiled Rust links into the daemon's
+/// provider streaming path.
 ///
 /// Feed raw text via `push()`, get complete `data:` payloads back.
+///
+/// Codegen note: this file deliberately uses `.slice()` / `.find()` / `.trim()`
+/// (the proven auto-ai-client SseBuffer pattern) rather than `.substring()` or
+/// custom find/split_once/trim_start helpers. The former transpile cleanly with
+/// a single `str_find(&self.buf, ...)` sed borrow-fix; the latter triggered 5
+// classes of a2r codegen defects (Plan 025 Phase 1).
 
 // SseParser — accumulates text, yields complete `data:` payloads.
 pub type SseParser {
@@ -33,44 +39,41 @@ pub ext SseParser {
     mut fn drain_data() List<str> {
         var events List<str> = []
         loop {
-            is self.next_frame() {
-                Some(frame) -> {
-                    is extract_data(frame) {
-                        Some(data) -> events.push(data),
-                        None -> {}
-                    }
-                },
-                None -> break
+            let frame = self.next_frame()
+            if frame.is_empty() {
+                break
+            }
+            let data = extract_data(frame)
+            if data.is_empty() == false {
+                events.push(data)
             }
         }
         return events
     }
 
-    mut fn next_frame() ?str {
+    mut fn next_frame() str {
         // Try CRLF boundary first, then LF.
-        is find_in_str(self.buf, "\r\n\r\n") {
-            Some(pos) -> {
-                let frame = self.buf.substring(0, pos)
-                self.buf = self.buf.substring(pos + 4)
-                return Some(frame)
-            },
-            None -> {}
+        let crlf = self.buf.find("\r\n\r\n")
+        if crlf >= 0 {
+            let frame = self.buf.slice(0, crlf)
+            self.buf = self.buf.slice(crlf + 4)
+            return frame
         }
-        is find_in_str(self.buf, "\n\n") {
-            Some(pos) -> {
-                let frame = self.buf.substring(0, pos)
-                self.buf = self.buf.substring(pos + 2)
-                return Some(frame)
-            },
-            None -> {}
+        let lf = self.buf.find("\n\n")
+        if lf >= 0 {
+            let frame = self.buf.slice(0, lf)
+            self.buf = self.buf.slice(lf + 2)
+            return frame
         }
-        return None
+        return ""
     }
 }
 
 /// Extract the `data:` field from an SSE frame.
-/// Returns None for non-data events (ping, comments). Returns None for [DONE].
-fn extract_data(frame str) ?str {
+/// Returns "" for non-data events (ping, comments) and for the [DONE] signal.
+/// (Empty string = "no data field"; callers distinguish via the original
+/// `is_empty()` check that the rust-ref expressed as `Option::None`.)
+fn extract_data(frame str) str {
     var parts List<str> = []
     for line in frame.split("\n") {
         if line.is_empty() {
@@ -79,63 +82,40 @@ fn extract_data(frame str) ?str {
         if line.starts_with(":") {
             continue
         }
-        // SSE line format: "field:value" or "field: value".
-        // Match rust-ref's split_once(':') + key.trim()=="data".
-        is split_once(line, ":") {
-            Some(pair) -> {
-                let key = pair.first().trim()
-                if key == "data" {
-                    let value = pair.last()
-                    parts.push(trim_start_spaces(value))
-                }
-            },
-            None -> {}
+        let data = data_field(line)
+        if data.is_empty() == false {
+            parts.push(data)
         }
     }
     if parts.is_empty() {
-        return None
+        return ""
     }
     let data = parts.join("\n")
     if data == "[DONE]" {
-        return None
+        return ""
     }
-    return Some(data)
+    return data
 }
 
-// ─── string helpers (the daemon's sse.rs uses std byte ops; these str
-//     equivalents let the .at stay a2r-native). ─────────────────────────────
-
-/// Find the byte index of `needle` in `haystack`, or None.
-/// (str.find returns ?uint in .at — wrap to ?str-free option via index check.)
-fn find_in_str(haystack str, needle str) ?uint {
-    let idx = haystack.find(needle)
-    if idx < 0 {
-        return None
+/// If `line` is a `data: value` (or `data:value`) SSE field, return the value
+/// with one leading space stripped (SSE spec: a single leading space after the
+/// colon is part of the separator, not the value). Else return "".
+///
+/// Inlines str::split_once semantics via find+slice (a2r-native; avoids the
+/// `.first()/.last()`-on-Option defect that the split_once helper hit).
+fn data_field(line str) str {
+    let colon = line.find(":")
+    if colon < 0 {
+        return ""
     }
-    return Some(idx)
-}
-
-/// Split `s` at the first occurrence of `sep`, returning (before, after).
-/// Mirrors str::split_once. Returns None if `sep` not found.
-fn split_once(s str, sep str) ?List<str> {
-    let idx = s.find(sep)
-    if idx < 0 {
-        return None
+    let key = line.slice(0, colon)
+    if key.trim() != "data" {
+        return ""
     }
-    let before = s.substring(0, idx)
-    let after = s.substring(idx + sep.len())
-    return Some([before, after])
-}
-
-/// Trim leading spaces (mirrors str::trim_start_matches(' ')).
-fn trim_start_spaces(s str) str {
-    var i uint = 0
-    for i < s.len() {
-        let ch = s.substring(i, i + 1)
-        if ch != " " {
-            break
-        }
-        i = i + 1
+    let value = line.slice(colon + 1)
+    // SSE: exactly one leading space after ':' is the separator — strip it.
+    if value.starts_with(" ") {
+        return value.slice(1)
     }
-    return s.substring(i)
+    return value
 }
