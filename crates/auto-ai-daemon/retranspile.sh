@@ -82,8 +82,8 @@ done
 # (No lib.at crate root yet — lib.rs is assembled from these pieces. The Phase 0
 # spike main.rs stays hand-written for now; Phase 2 will transpile it.)
 {
-    echo "// Auto-assembled by retranspile.sh (Plan 025 Phase 1)."
-    echo "// lib stub — Phase 1 modules appended below as they come online."
+    echo "// Auto-assembled by retranspile.sh (Plan 025 Phase 1+2)."
+    echo "// lib stub — Phase 1/2 modules appended below as they come online."
     echo ""
     read_shims
     read_pub_mods
@@ -199,6 +199,56 @@ if [ -f "$RUST/format.rs" ]; then
             { print }
         ' "$RUST/tier_router.rs" > "$RUST/tier_router.rs.tmp" && mv "$RUST/tier_router.rs.tmp" "$RUST/tier_router.rs"
     fi
+fi
+
+# ── pool.rs (Phase 2) ───────────────────────────────────────────────────────
+# Same HashMap::get borrow/turbofish class as tier_router: `&name` (String) and
+# `&name` (&String) aren't Borrow<str>-inferrable; materialize the keys with a
+# turbofish and look up via .as_str(); clone the &String before pushing.
+if [ -f "$RUST/pool.rs" ]; then
+    sed -i 's|for name in config\.providers\.keys()\.cloned()\.collect() {|for name in config.providers.keys().cloned().collect::<Vec<String>>() {|' "$RUST/pool.rs"
+    sed -i 's|match config\.providers\.get(&name) {|match config.providers.get(name.as_str()) {|' "$RUST/pool.rs"
+    sed -i 's|match self\.pools\.get(&name) {|match self.pools.get(name.as_str()) {|' "$RUST/pool.rs"
+    sed -i 's|let max = self\.limits\.get(&name)\.copied()\.unwrap_or(0);|let max = self.limits.get(name.as_str()).copied().unwrap_or(0);|' "$RUST/pool.rs"
+    sed -i 's|out\.push((name, sem\.available_permits(), max));|out.push((name.clone(), sem.available_permits(), max));|' "$RUST/pool.rs"
+fi
+
+# ── error.rs (Phase 2) ──────────────────────────────────────────────────────
+if [ -f "$RUST/error.rs" ]; then
+    # Struct-variant match binds fields by reference: `retryable` is &bool, deref.
+    sed -i 's|=> return retryable,|=> return *retryable,|' "$RUST/error.rs"
+    # Upstream.status field is uint (u32); status.as_u16() is u16; body is &str.
+    sed -i 's|status: code, message: body|status: code as u32, message: body.to_string()|' "$RUST/error.rs"
+    # a2r auto-generates impl Display + impl Error from the .message() method,
+    # but NOT impl From<reqwest::Error> (Auto has no impl From). Append it so the
+    # Phase-4 providers' `?` / `.into()` on reqwest::Error resolve. Mirrors the
+    # .from_reqwest_error() factory in error.at.
+    if ! grep -q "impl From<reqwest::Error> for LlmError" "$RUST/error.rs"; then
+        cat >> "$RUST/error.rs" <<'FROMEOF'
+
+// Injected by retranspile.sh: impl From<reqwest::Error> (a2r can't emit impl
+// From; mirrors the from_reqwest_error() factory. Classifies timeouts so the
+// tier router treats them as retryable.)
+impl From<reqwest::Error> for LlmError {
+    fn from(e: reqwest::Error) -> Self {
+        if e.is_timeout() {
+            return Self::Timeout(e.to_string());
+        }
+        Self::Http(e.to_string())
+    }
+}
+FROMEOF
+    fi
+fi
+
+# ── provider.rs (Phase 2) ───────────────────────────────────────────────────
+if [ -f "$RUST/provider.rs" ]; then
+    # from_daemon_config delegates to the hand-written provider_glue.rs build
+    # fn; a2r renders the module-qualified call as a method (`.` → use `::`).
+    sed -i 's|return provider_glue\.build_registry(config);|return crate::provider_glue::build_registry(\&config);|' "$RUST/provider.rs"
+    # default_provider / get return &Arc<dyn AiProvider> from map.get — clone.
+    sed -i 's|Some(p) => return Ok(p),|Some(p) => return Ok(p.clone()),|' "$RUST/provider.rs"
+    sed -i 's|Some(p) => return Some(p),|Some(p) => return Some(p.clone()),|' "$RUST/provider.rs"
 fi
 
 echo "[retranspile] assembly complete."

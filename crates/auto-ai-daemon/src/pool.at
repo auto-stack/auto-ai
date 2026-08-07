@@ -1,0 +1,141 @@
+/// Concurrency management — per-provider/per-model Semaphore pools.
+///
+/// Auto port of crates/auto-ai-daemon/src/pool.rs (production code only; the
+/// #[cfg(test)] block stays in rust-ref — a2r .at doesn't transpile tests).
+///
+/// Each provider has a `Semaphore(max_concurrency)`. Acquiring a permit blocks
+/// until a slot is free. Guards release on drop (the OwnedSemaphorePermit is
+/// returned to the caller, who owns its lifetime).
+///
+/// ITER NOTE: .at's Map has no iteration API, so `status()` walks a
+/// hand-maintained `names` list (same convention as ai-config's provider_names
+/// and tracker's names). `from_config` materializes keys via
+/// `.keys().cloned().collect()` (a verified-clean a2r pattern).
+///
+/// TYPE NOTE: links the rust-ref ai-config (DaemonConfig.providers is a
+/// HashMap<String, ProviderConfig>). tokio::sync::Semaphore / Arc /
+/// OwnedSemaphorePermit bridge via use.rust (cargo runtime).
+
+use.rust std::collections::HashMap
+use.rust std::sync::Arc
+use.rust std::time::Duration
+use.rust tokio::sync::Semaphore
+use.rust tokio::sync::OwnedSemaphorePermit
+use.rust tokio::time::timeout
+
+use ai_config: DaemonConfig
+
+/// Manages concurrency limits per provider. Each provider has a
+/// Semaphore(max_concurrency). Acquiring a permit blocks until a slot is free.
+// Explicit derive (Debug only): the Arc<Semaphore> / HashMap fields implement
+// neither Clone nor PartialEq, so a2r's default derive fails. Same override
+// pattern as tracker.at / agent memory.at.
+#[derive(Debug)]
+pub type ConcurrencyManager {
+    pools HashMap<str, Arc<Semaphore>>
+    limits HashMap<str, usize>
+    names List<str>
+}
+
+ext ConcurrencyManager {
+    /// Build from daemon config. Each provider gets a Semaphore sized by its
+    /// max_concurrency (default 4 when unset).
+    pub fn from_config(config DaemonConfig) ConcurrencyManager {
+        let pools = HashMap.new()
+        let limits = HashMap.new()
+        var names List<str> = []
+        for name in config.providers.keys().cloned().collect() {
+            is config.providers.get(name) {
+                Some(provider) -> {
+                    // max_concurrency is Option<usize>; default to a sane cap.
+                    let limit = provider.max_concurrency.unwrap_or(4)
+                    pools.insert(name.clone(), Arc.new(Semaphore.new(limit)))
+                    limits.insert(name.clone(), limit)
+                    names.push(name)
+                },
+                None -> {}
+            }
+        }
+        return ConcurrencyManager(pools: pools, limits: limits, names: names)
+    }
+
+    /// Acquire a concurrency permit for a provider. Returns a guard that
+    /// releases on drop. Blocks indefinitely until a slot frees (use
+    /// acquire_with_timeout for bounded waiting). None if the provider is
+    /// unknown or the semaphore closed.
+    pub fn acquire(provider str) ~?OwnedSemaphorePermit {
+        is self.pools.get(provider) {
+            Some(sem) -> {
+                let owned = sem.clone()
+                is owned.acquire_owned().await {
+                    Ok(permit) -> return Some(permit),
+                    Err(_) -> return None
+                }
+                return None
+            },
+            None -> return None
+        }
+        return None
+    }
+
+    /// Like acquire but gives up after `timeout`, returning None. Makes the
+    /// "concurrency pool unavailable" path reachable (bare acquire waits
+    /// forever, so a saturated provider would queue until the client's timeout).
+    pub fn acquire_with_timeout(provider str, t Duration) ~?OwnedSemaphorePermit {
+        is self.pools.get(provider) {
+            Some(sem) -> {
+                let owned = sem.clone()
+                is timeout(t, owned.acquire_owned()).await {
+                    Ok(result) -> {
+                        is result {
+                            Ok(permit) -> return Some(permit),
+                            Err(_) -> return None
+                        }
+                        return None
+                    },
+                    Err(_) -> {
+                        // (rust-ref logs a tracing::warn here; tracing:: is a
+                        // macro a2r can't emit — Plan 025 §0 #4.)
+                        return None
+                    }
+                }
+                return None
+            },
+            None -> return None
+        }
+        return None
+    }
+
+    /// How many permits are currently held (in use) for a provider. None if the
+    /// provider is unknown.
+    pub fn in_use(provider str) ?usize {
+        is self.pools.get(provider) {
+            Some(sem) -> {
+                let limit = self.limits.get(provider).copied().unwrap_or(0)
+                return Some(limit - sem.available_permits())
+            },
+            None -> return None
+        }
+        return None
+    }
+
+    /// Max concurrency for a provider (0 if unknown).
+    pub fn limit(provider str) usize {
+        return self.limits.get(provider).copied().unwrap_or(0)
+    }
+
+    /// Status snapshot: provider → (available, max), in insertion order.
+    pub fn status() List<(str, usize, usize)> {
+        var out List<(str, usize, usize)> = []
+        for name in self.names {
+            is self.pools.get(name) {
+                Some(sem) -> {
+                    let max = self.limits.get(name).copied().unwrap_or(0)
+                    out.push((name, sem.available_permits(), max))
+                },
+                None -> {}
+            }
+        }
+        return out
+    }
+}

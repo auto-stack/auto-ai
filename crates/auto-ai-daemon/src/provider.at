@@ -1,0 +1,113 @@
+/// Provider trait + registry + concrete provider implementations.
+///
+/// Auto port of crates/auto-ai-daemon/src/provider/mod.rs (the trait, the
+/// StreamDelta enum, and the ProviderRegistry). The concrete providers
+/// (openai/anthropic/ollama) are Phase 4; their construction lives in the
+/// hand-written provider_glue.rs until then (mirrors tier_router_glue.rs).
+///
+/// Providers translate canonical CompletionRequests to their wire format and
+/// parse responses back into canonical CompletionResponses.
+///
+/// TRAIT NOTE: the agent's tool.at already proved a2r renders `pub spec X:
+/// Send + Sync { ... }` → `#[async_trait] pub trait X: Send + Sync { ... }`,
+/// and `~Result<...>` method signatures → `async fn ... -> Result<...>`. The
+/// `Arc<dyn Fn(StreamDelta) + Send + Sync>` callback param is a verified a2r
+/// pattern (Plan 397 golden 009).
+///
+/// ITER NOTE: .at's Map has no iteration API, so provider_names() walks a
+/// hand-maintained `names` list (same convention as pool/tracker).
+
+use.rust std::collections::HashMap
+use.rust std::sync::Arc
+use.rust async_trait
+use.rust tokio_util::sync::CancellationToken
+
+use ai_config: CompletionRequest, CompletionResponse, DaemonConfig, ProviderConfig
+use error: LlmError
+
+/// One streamed chunk from a provider. `Text` is the model's visible answer;
+/// `Reasoning` is the chain-of-thought (emitted by reasoning-capable models
+/// *before* the answer). Consumers route the two to separate UI regions.
+#[derive(Clone, Debug)]
+pub enum StreamDelta {
+    // A chunk of the model's visible answer.
+    Text(str)
+    // A chunk of the model's reasoning/thinking (kept separate from Text).
+    Reasoning(str)
+}
+
+/// Trait that every LLM provider implements.
+pub spec AiProvider: Send + Sync {
+    /// Provider name (e.g. "zhipu", "anthropic").
+    fn name() str
+
+    /// Available models.
+    fn models() List<str>
+
+    /// Non-streaming completion.
+    fn complete(req CompletionRequest) ~Result<CompletionResponse, LlmError>
+
+    /// Streaming completion. Calls `on_delta` for each chunk (visible text or
+    /// reasoning) so the caller can route them independently.
+    ///
+    /// `cancel` lets the caller (e.g. SSE client disconnect) abort the upstream
+    /// fetch early, so a dropped connection doesn't keep pulling tokens (and
+    /// spending quota). Honored at each SSE chunk boundary.
+    fn complete_stream(
+        req CompletionRequest,
+        on_delta Arc<Fn(StreamDelta)>,
+        cancel CancellationToken
+    ) ~Result<CompletionResponse, LlmError>
+}
+
+/// Registry of configured providers.
+// Explicit derive (Debug only): the providers map holds trait objects behind
+// Arc, which isn't Clone/PartialEq. Same override as pool/tracker.
+#[derive(Debug)]
+pub type ProviderRegistry {
+    providers HashMap<str, Arc<AiProvider>>
+    default_name str
+    names List<str>
+}
+
+ext ProviderRegistry {
+    /// Build a registry from a daemon-side config. (Constructs the concrete
+    /// providers — Phase-4 work, lives in provider_glue.rs until openai/
+    /// anthropic/ollama are transpiled. This stub returns NoProvider so the
+    /// module compiles standalone; provider_glue overrides it post-transpile.)
+    pub fn from_daemon_config(config DaemonConfig) Result<ProviderRegistry, LlmError> {
+        return provider_glue.build_registry(config)
+    }
+
+    /// The default provider, or NoProvider if the name isn't registered.
+    pub fn default_provider() Result<Arc<AiProvider>, LlmError> {
+        is self.providers.get(self.default_name) {
+            Some(p) -> return Ok(p),
+            None -> return Err(LlmError.NoProvider)
+        }
+        return Err(LlmError.NoProvider)
+    }
+
+    /// Look up a provider by name.
+    pub fn get(name str) ?Arc<AiProvider> {
+        is self.providers.get(name) {
+            Some(p) -> return Some(p),
+            None -> return None
+        }
+        return None
+    }
+
+    /// All registered provider names, in insertion order.
+    pub fn provider_names() List<str> {
+        return self.names
+    }
+
+    /// The model ids a provider serves, or [] if unknown.
+    pub fn models_for(provider str) List<str> {
+        is self.providers.get(provider) {
+            Some(p) -> return p.models(),
+            None -> return []
+        }
+        return []
+    }
+}

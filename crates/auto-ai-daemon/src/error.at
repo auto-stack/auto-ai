@@ -1,0 +1,96 @@
+/// Error from an LLM API call (used by the provider layer).
+///
+/// Auto port of the `LlmError` enum + helpers from crates/auto-ai-daemon/src/
+/// lib.rs (extracted into its own module so lib.rs stays the assembled crate
+/// root). The structured variants (`RateLimited` / `Timeout` / `Upstream`) let
+/// the tier router decide whether to fall back to the next provider candidate:
+/// rate limits, timeouts, and 5xx are retryable on another provider; 4xx (other
+/// than 429) indicate a request-shape problem that fallback won't fix.
+///
+/// DISPLAY/FROM NOTE: a2r can't emit `impl Display` (uses the `write!` macro) or
+/// `impl From<reqwest::Error>` (Auto has no impl From). So the human-readable
+/// form is a `.message()` method (same pattern as agent/error.at +
+/// client/error.at), and the reqwest conversion is a factory
+/// `.from_reqwest_error()`. retranspile.sh then sed-injects the real
+/// `impl Display` / `impl std::error::Error` / `impl From<reqwest::Error>` so
+/// the provider layer's `?` / `.into()` (Phase 4) keep working.
+
+use.rust reqwest::StatusCode
+
+/// Error from an LLM API call.
+// Explicit derive (Debug only) — mirrors rust-ref's `#[derive(Debug)]` and
+// avoids a2r's auto-PartialEq (LlmError carries Strings + a struct variant).
+#[derive(Debug)]
+pub enum LlmError {
+    // A transport-level failure (connection refused, DNS, TLS, …).
+    Http(str)
+    // A retryable rate limit (HTTP 429).
+    RateLimited
+    // A request/connection timeout.
+    Timeout(str)
+    // An upstream HTTP response with a non-success status. `retryable` is true
+    // for 5xx (transient server faults); false for 4xx other than 429.
+    Upstream { status uint, message str, retryable bool }
+    // A successful HTTP response whose body couldn't be parsed/understood.
+    Api(str)
+    NoProvider
+    // No API key available for the named provider.
+    NoApiKey(str)
+}
+
+ext LlmError {
+    /// Whether falling back to another provider candidate is reasonable.
+    pub fn is_retryable() bool {
+        is self {
+            LlmError.RateLimited -> return true,
+            LlmError.Timeout(_) -> return true,
+            LlmError.Upstream(status, message, retryable) -> return retryable,
+            // Http (transport) is also retryable on another provider.
+            LlmError.Http(_) -> return true,
+            LlmError.Api(_) -> return false,
+            LlmError.NoProvider -> return false,
+            LlmError.NoApiKey(_) -> return false
+        }
+        return false
+    }
+
+    /// Classify an upstream non-success HTTP status into the right variant:
+    /// 429 → RateLimited; 5xx → retryable Upstream; other 4xx → non-retryable
+    /// Upstream. Used by both providers' status-check path.
+    pub static fn from_upstream_status(status StatusCode, body str) LlmError {
+        let code = status.as_u16()
+        if code == 429 {
+            return LlmError.RateLimited
+        }
+        return LlmError.Upstream(
+            status: code,
+            message: body,
+            retryable: status.is_server_error()
+        )
+    }
+
+    /// Human-readable message (mirrors rust-ref's `impl Display for LlmError`).
+    /// retranspile.sh sed-injects the real `impl Display` delegating to this.
+    pub fn message() str {
+        is self {
+            LlmError.Http(e) -> return f"HTTP error: ${e}",
+            LlmError.RateLimited -> return "rate limited (HTTP 429)",
+            LlmError.Timeout(e) -> return f"timeout: ${e}",
+            LlmError.Upstream(status, message, retryable) -> return f"upstream error (${status}): ${message}",
+            LlmError.Api(e) -> return f"API error: ${e}",
+            LlmError.NoProvider -> return "no provider configured",
+            LlmError.NoApiKey(p) -> return f"no API key for provider '${p}'"
+        }
+        return ""
+    }
+
+    /// Factory mirroring rust-ref's `impl From<reqwest::Error> for LlmError`
+    /// (classifies timeouts so the router treats them as retryable). Auto has
+    /// no impl From; retranspile.sh sed-injects the real impl.
+    pub static fn from_reqwest_error(e reqwest.Error) LlmError {
+        if e.is_timeout() {
+            return LlmError.Timeout(e.to_string())
+        }
+        return LlmError.Http(e.to_string())
+    }
+}

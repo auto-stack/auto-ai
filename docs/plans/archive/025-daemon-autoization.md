@@ -1,6 +1,6 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
-> **状态**：🟢 Phase 0 + Phase 1 完成（5 个 EASY 文件全部转译，`./retranspile.sh check` cargo check = 0 错），Phase 2-5 待推进
+> **状态**：🟢 Phase 0 + Phase 1 + Phase 2 完成（8 个文件转译：5 EASY + pool/error/provider，`./retranspile.sh check` cargo check = 0 错），Phase 3-5 待推进
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -138,12 +138,32 @@ SseBuffer 已验证可编译的 `.slice()` / `.find()` / `.trim()` 模式** —�
 - [x] 1.5 format.rs → format.at（`json!` 宏 → 手动 `serde_json::Map` + `Value::Object`）
 - [x] 1.6 retranspile + 转译树 cargo check 0 错 ✅（`./retranspile.sh check`，幂等可复现）
 
-### Phase 2 — MEDIUM 文件转 .at
-- [ ] 2.1 pool.rs → pool.at（Semaphore 模式）
-- [ ] 2.2 lib.rs → lib.at（LlmError + #[from]）
-- [ ] 2.3 provider/mod.rs → provider/mod.at（AiProvider trait + Registry）
-- [ ] 2.4 provider/ollama.rs → ollama.at（纯委托）
-- [ ] 2.5 retranspile + cargo check
+### Phase 2 — MEDIUM 文件转 .at（✅ 基本完成，ollama 推迟到 Phase 4）
+
+**pool / error / provider(mod) 三个 MEDIUM 文件全部转译完成，`./retranspile.sh check` cargo check = 0 错。**
+
+ollama.rs 与 openai.rs 强耦合（委托 `OpenAiProvider`），单独转译无法编译，整体推迟到 Phase 4。
+
+- [x] 2.1 pool.rs → pool.at（`tokio::sync::Semaphore` + `Arc` + async acquire；用 `~?OwnedSemaphorePermit` 表达 async）
+- [x] 2.2 lib.rs → **error.at**（LlmError 抽到独立模块；lib.rs 保持组装式 crate root）
+      - Display/Error：a2r 从 `.message()` 方法**自动生成** `impl Display` + `impl Error`（无需 sed）
+      - `impl From<reqwest::Error>`：Auto 无 impl From → 用 `.from_reqwest_error()` factory + retranspile.sh sed 注入真实 impl（Phase-4 providers 的 `?`/`.into()` 需要）
+      - 结构体变体 `Upstream { status, message, retryable }`：`is self { Variant(f1, f2, f3) -> }` 干净转译；但字段绑定是引用（`retryable` 是 `&bool`）需 sed deref
+- [x] 2.3 provider/mod.rs → **provider.at**（`pub spec AiProvider: Send + Sync` → `#[async_trait] pub trait`；`StreamDelta` enum；`ProviderRegistry`）
+      - **关键发现**：spec 方法签名里的 `Arc<Fn(StreamDelta) + Send + Sync>` 会触发 .at 解析错误（`+ Send + Sync` 在参数位不允许）→ 只写 `Arc<Fn(StreamDelta)>`，a2r 自动补 `+ Send + Sync`
+      - `from_daemon_config` 委托 `provider_glue.rs`（Phase-4 stub：返回 NoProvider；Phase 4 替换为真实 provider 构造）
+- [ ] 2.4 ~~provider/ollama.rs~~ → **推迟到 Phase 4**（与 openai.rs 强耦合）
+- [x] 2.5 retranspile + cargo check（`./retranspile.sh check`，幂等可复现）
+
+Phase 2 新发现并记录的 a2r 缺陷（已 retranspile.sh sed 兜底）：
+- **`+ Send + Sync` 在 spec 方法的 `Arc<Fn(..)>` 参数位是解析错误**（只能写在 spec 头 `: Send + Sync`，a2r 自动补到 Fn bound）——这是个 .at 写法约束，记入 .at 风格指南
+- 结构体变体 match 的字段绑定是引用（需 deref）
+- a2r 从 `.message()` 方法**自动生成** Display + Error impl（意外的好行为，省了 sed）
+- `impl From` 完全不支持（Auto 无此语法）→ factory + sed 注入
+
+**当前转译树状态**：8 个 `.at` 源文件（Phase 1 的 5 个 + Phase 2 的 pool/error/provider），
+2 个手写胶水（tier_router_glue.rs / provider_glue.rs），lib.rs 组装式 crate root，
+main.rs 仍是 Phase 0 spike（Phase 3 转）。
 
 ### Phase 3 — server.rs + main.rs（axum 层，核心验证）
 - [ ] 3.1 main.rs → main.at（#[tokio::main] + TcpListener + axum::serve）
@@ -151,10 +171,12 @@ SseBuffer 已验证可编译的 `.slice()` / `.find()` / `.trim()` 模式** —�
 - [ ] 3.3 CancelOnDrop 留 .rs helper（server_glue.rs）
 - [ ] 3.4 retranspile + cargo check（**关键里程碑**：axum 服务端从 .at 转译成功）
 
-### Phase 4 — provider openai/anthropic（select! 胶水）
+### Phase 4 — provider openai/anthropic（select! 胶水）+ ollama
 - [ ] 4.1 openai.rs/anthropic.rs 的非流式部分（build_body、response 解析）→ .at
 - [ ] 4.2 流式 select! 循环 → 手写 .rs 胶水（provider/stream_glue.rs）
-- [ ] 4.3 retranspile + cargo check
+- [ ] 4.3 ollama.rs → ollama.at（纯委托 OpenAiProvider；Phase 2 推迟至此，与 openai.rs 一起转）
+- [ ] 4.4 用真实 provider 构造替换 provider_glue.rs 的 build_registry stub
+- [ ] 4.5 retranspile + cargo check
 
 ### Phase 5 — 端到端验证
 - [ ] 5.1 转译版 daemon（auto-ai-daemon-a2r）build 出 aaid 二进制
