@@ -84,11 +84,11 @@ pub fn openai_content(role: &str, blocks: Vec<ContentBlock>) -> OpenAiMsg {
     return OpenAiMsg::Text(role.to_string(), content);
 }
 
-pub fn tool_to_openai(t: ToolDefinition) -> Value {
+pub fn tool_to_openai(t: &ToolDefinition) -> Value {
     let mut func = serde_json::Map::new();
-    func.insert("name".to_string(), Value::String(t.name));
-    func.insert("description".to_string(), Value::String(t.description));
-    func.insert("parameters".to_string(), t.parameters);
+    func.insert("name".to_string(), Value::String(t.name.clone()));
+    func.insert("description".to_string(), Value::String(t.description.clone()));
+    func.insert("parameters".to_string(), t.parameters.clone());
     let mut outer = serde_json::Map::new();
     outer.insert("type".to_string(), Value::String("function".to_string()));
     outer.insert("function".to_string(), Value::Object(func));

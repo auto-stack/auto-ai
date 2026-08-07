@@ -1,0 +1,51 @@
+//! Ollama provider — a thin wrapper over OpenAiProvider.
+//!
+//! Auto port of crates/auto-ai-daemon/src/provider/ollama.rs (full file — no
+//! select!, all transpiled). Ollama exposes an OpenAI-compatible endpoint, so
+//! it delegates everything to OpenAiProvider. No API key needed (Ollama ignores
+//! it); a placeholder is supplied for the inner OpenAI client.
+
+use.rust std::sync::Arc
+use.rust tokio_util::sync::CancellationToken
+
+use ai_config: CompletionRequest, CompletionResponse
+use error: LlmError
+use openai: OpenAiProvider
+use provider: AiProvider, StreamDelta
+
+/// Ollama provider — delegates everything to an OpenAiProvider pointed at the
+/// Ollama OpenAI-compatible endpoint.
+#[allow(dead_code)]
+pub type OllamaProvider has AiProvider {
+    inner OpenAiProvider
+
+    pub fn name() str {
+        return self.inner.name()
+    }
+
+    pub fn models() List<str> {
+        return self.inner.models()
+    }
+
+    pub fn complete(req CompletionRequest) ~Result<CompletionResponse, LlmError> {
+        return self.inner.complete(req).await
+    }
+
+    pub fn complete_stream(
+        req CompletionRequest,
+        on_delta Arc<Fn(StreamDelta)>,
+        cancel CancellationToken
+    ) ~Result<CompletionResponse, LlmError> {
+        return self.inner.complete_stream(req, on_delta, cancel).await
+    }
+}
+
+ext OllamaProvider {
+    /// Create a new Ollama provider. `base_url` should point at the
+    /// OpenAI-compatible root (e.g. http://localhost:11434/v1).
+    pub static fn new(name str, base_url str, models List<str>) OllamaProvider {
+        return OllamaProvider(
+            inner: OpenAiProvider.new(name, base_url, "no-key-needed".to_string(), models)
+        )
+    }
+}

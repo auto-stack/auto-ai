@@ -1,0 +1,244 @@
+/// OpenAI-compatible provider (works with OpenAI, Zhipu GLM, Moonshot, etc.).
+///
+/// Auto port of crates/auto-ai-daemon/src/provider/openai.rs (non-streaming
+/// parts). Uses the standard OpenAI `/v1/chat/completions` API format.
+///
+/// HTTP NOTE: the Rust original holds a `reqwest::Client` and uses
+/// `client.post().json().send().await`. Auto's port uses the global `http`
+/// module's `http.request("POST", url)...send_async()` chain instead — the
+/// project's established pattern (auto-ai-client/src/lib.at:84-113). The
+/// `reqwest::Client` field is dropped (http is internally connection-pooled).
+///
+/// STREAM NOTE: `complete_stream` (which uses `tokio::select!` for cancel +
+/// idle-timeout racing) is NOT transpiled — it lives in provider_glue.rs as
+/// hand-written Rust (select! has no .at syntax). This type's complete_stream
+/// method delegates to `provider_glue.openai_complete_stream`.
+///
+/// JSON NOTE: `serde_json::json!({...})` is a macro a2r can't emit, so
+/// build_body uses `serde_json.Map.new()` + `.insert()` + `Value.Object(...)`
+/// construction (same pattern as format.at / server.at). Response parsing uses
+/// a2r-std's `json.get / get_at / get_str / as_int` (auto-ai-client/lib.at mode).
+
+use.rust std::sync::Arc
+use.rust tokio_util::sync::CancellationToken
+use.rust serde_json
+use.rust serde_json::Value
+
+use ai_config: CompletionRequest, CompletionResponse, ToolCall, Usage
+use error: LlmError
+use sse: SseParser
+use format: openai_content, OpenAiMsg, parse_openai_tool_calls, tool_to_openai
+use provider: AiProvider, StreamDelta
+
+/// One OpenAI-compatible provider instance. `client` is dropped vs rust-ref —
+/// we use the global `http` module instead of a per-instance reqwest::Client.
+// No derive: holds only String/Vec (Clone+Debug would work, but rust-ref
+// doesn't derive either and we keep parity). a2r's default derive is suppressed
+// via #[allow(dead_code)] (Phase 3 pattern).
+#[allow(dead_code)]
+pub type OpenAiProvider has AiProvider {
+    name str
+    base_url str
+    api_key str
+    models_list List<str>
+
+    pub fn name() str {
+        return self.name
+    }
+
+    pub fn models() List<str> {
+        return self.models_list
+    }
+
+    /// Non-streaming completion. Builds the OpenAI request body, POSTs it,
+    /// parses the JSON response into a canonical CompletionResponse.
+    pub fn complete(req CompletionRequest) ~Result<CompletionResponse, LlmError> {
+        let body = self.build_body(req)
+        let url = self.url()
+        // a2r requires method chains on a SINGLE line — multi-line chains break
+        // (each line rebinds to `self`). The http request chain is one statement.
+        let resp = http.request("POST", url).header("Authorization", f"Bearer ${self.api_key}").header("Content-Type", "application/json").body(json.to_string(body)).send_async().await
+
+        let status = resp.status_code()
+        if status < 200 || status >= 300 {
+            let text = bytes_to_str(resp.body_bytes())
+            return Err(LlmError.from_upstream_status(status, text))
+        }
+
+        let text = bytes_to_str(resp.body_bytes())
+        let v = json.parse(text)
+
+        // choices[0].message.content
+        let choices = json.get(v, "choices")
+        let choice = json.get_at(choices, 0)
+        let message = json.get(choice, "message")
+        let content = json.get_str(message, "content")
+
+        // tool_calls (optional)
+        let raw_tool_calls = json.get(message, "tool_calls")
+        var tool_calls List<ToolCall> = []
+        if raw_tool_calls.is_null() == false {
+            tool_calls = parse_openai_tool_calls(raw_tool_calls.as_array())
+        }
+
+        // finish_reason (optional, may be empty)
+        let stop_reason = opt_str_field(choice, "finish_reason")
+
+        // usage (optional)
+        let usage = parse_usage_openai(v)
+
+        // model (defaults to req.model if absent)
+        let model_field = json.get_str(v, "model")
+        let model = is model_field.is_empty() {
+            true -> req.model,
+            false -> model_field
+        }
+
+        return Ok(CompletionResponse(
+            content: content,
+            tool_calls: tool_calls,
+            stop_reason: stop_reason,
+            usage: usage,
+            model: model,
+            error: None
+        ))
+    }
+
+    /// Streaming completion. Delegates to provider_glue (tokio::select! loop —
+    /// no .at syntax). See openai.rs:174-374 for the rust-ref original.
+    pub fn complete_stream(
+        req CompletionRequest,
+        on_delta Arc<Fn(StreamDelta)>,
+        cancel CancellationToken
+    ) ~Result<CompletionResponse, LlmError> {
+        return provider_glue.openai_complete_stream(self, req, on_delta, cancel)
+    }
+}
+
+ext OpenAiProvider {
+    /// Construct an OpenAI-compatible provider.
+    pub static fn new(name str, base_url str, api_key str, models List<str>) OpenAiProvider {
+        return OpenAiProvider(
+            name: name,
+            base_url: base_url,
+            api_key: api_key,
+            models_list: models
+        )
+    }
+
+    /// The `/chat/completions` endpoint URL (base_url normalized, no trailing /).
+    pub fn url() str {
+        let base = self.base_url.trim_end_matches("/")
+        return f"${base}/chat/completions"
+    }
+
+    /// Build the OpenAI `/v1/chat/completions` request body from a canonical
+    /// CompletionRequest. (Replaces rust-ref's `serde_json::json!({...})` with
+    /// hand-built serde_json::Map + Value — a2r-native, format.at pattern.)
+    pub fn build_body(req CompletionRequest) Value {
+        // Translate each message via the shared format module.
+        var messages List<Value> = []
+        for m in req.messages {
+            is openai_content(m.role, m.content) {
+                OpenAiMsg.Text(role, content) -> {
+                    let obj = serde_json.Map.new()
+                    obj.insert("role".to_string(), Value.String(role))
+                    obj.insert("content".to_string(), Value.String(content))
+                    messages.push(Value.Object(obj))
+                },
+                OpenAiMsg.AssistantWithTools(text, tool_calls) -> {
+                    let obj = serde_json.Map.new()
+                    obj.insert("role".to_string(), Value.String("assistant".to_string()))
+                    if text.is_empty() == false {
+                        obj.insert("content".to_string(), Value.String(text))
+                    }
+                    obj.insert("tool_calls".to_string(), Value.Array(tool_calls))
+                    messages.push(Value.Object(obj))
+                },
+                OpenAiMsg.ToolResults(results) -> {
+                    for r in results {
+                        let obj = serde_json.Map.new()
+                        obj.insert("role".to_string(), Value.String("tool".to_string()))
+                        obj.insert("tool_call_id".to_string(), Value.String(r.tool_call_id))
+                        obj.insert("content".to_string(), Value.String(r.content))
+                        messages.push(Value.Object(obj))
+                    }
+                }
+            }
+        }
+
+        let body = serde_json.Map.new()
+        body.insert("model".to_string(), Value.String(req.model))
+        body.insert("stream".to_string(), Value.Bool(false))
+
+        // Prepend system message if present. (if/else, not `is`/match — the
+        // two branches do different work and a match would need unified types.)
+        if req.system_prompt.is_some() {
+            let sys = req.system_prompt.unwrap()
+            var all_msgs List<Value> = []
+            let sys_obj = serde_json.Map.new()
+            sys_obj.insert("role".to_string(), Value.String("system".to_string()))
+            sys_obj.insert("content".to_string(), Value.String(sys))
+            all_msgs.push(Value.Object(sys_obj))
+            for m in messages {
+                all_msgs.push(m)
+            }
+            body.insert("messages".to_string(), Value.Array(all_msgs))
+        } else {
+            body.insert("messages".to_string(), Value.Array(messages))
+        }
+
+        // tools (optional)
+        if req.tools.is_empty() == false {
+            var tools_arr List<Value> = []
+            for t in req.tools {
+                tools_arr.push(tool_to_openai(t))
+            }
+            body.insert("tools".to_string(), Value.Array(tools_arr))
+        }
+
+        // max_tokens / temperature (optional). Use if (not `is`/match) so the
+        // arms don't need a unified return type — body.insert returns Option,
+        // which would clash with the None arm's ().
+        if req.max_tokens.is_some() {
+            let n = req.max_tokens.unwrap()
+            body.insert("max_tokens".to_string(), Value.Number(n))
+        }
+        if req.temperature.is_some() {
+            let t = req.temperature.unwrap()
+            body.insert("temperature".to_string(), Value.Number(t))
+        }
+
+        return Value.Object(body)
+    }
+}
+
+// ── helpers (module-level; .at has no fn-local structs) ─────────────────────
+
+/// Decode response body bytes to a UTF-8 string (lossy). Mirrors
+/// auto-ai-client/lib.at:321.
+fn bytes_to_str(bytes []byte) str {
+    return str.from_bytes(bytes)
+}
+
+/// An optional string field, or None if absent/empty.
+fn opt_str_field(value Value, key str) ?str {
+    let s = json.get_str(value, key)
+    if s.is_empty() {
+        return None
+    }
+    return Some(s)
+}
+
+/// Parse the `usage` object (OpenAI shape: prompt_tokens/completion_tokens),
+/// or None if absent.
+fn parse_usage_openai(value Value) ?Usage {
+    let u = json.get(value, "usage")
+    if u.is_null() {
+        return None
+    }
+    return Some(Usage(
+        input_tokens: json.as_int(json.get(u, "prompt_tokens")),
+        output_tokens: json.as_int(json.get(u, "completion_tokens"))
+    ))
+}

@@ -1,7 +1,8 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
-> **状态**：🟢 Phase 0 + 1 + 2 + 3 完成（server.at 含 AppState + status/models/usage/chat_completions 四个 handler 全从 .at 转译，
-> config_test/services_*/streaming_response 留 server_glue.rs 手写，services.rs 复制，`./retranspile.sh check` cargo check = 0 错幂等），Phase 4-5 待推进
+> **状态**：🟢 Phase 0 + 1 + 2 + 3 + 4 完成（12 个 .at 源文件：8 基础 + server + openai + anthropic + ollama；
+> openai/anthropic 的 complete_stream（select!）+ build_registry 留 provider_glue.rs 手写，
+> `./retranspile.sh check` cargo check = 0 错三次幂等），Phase 5（e2e 验证）待推进
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -230,14 +231,62 @@ main.rs 仍是 Phase 0 spike（Phase 3 转）。
 lib.rs 组装式 crate root，main.rs 手写 bin。server.at 覆盖 rust-ref server.rs 的
 AppState + 4 个核心 handler；server_glue.rs 覆盖路由挂载 + 3 个 handler + streaming + CancelOnDrop。
 
-### Phase 4 — provider openai/anthropic（select! 胶水）+ ollama ⬅️ 下一会话从这里继续
-- [ ] 4.1 openai.rs/anthropic.rs 的非流式部分（build_body、response 解析）→ .at
-- [ ] 4.2 流式 select! 循环 → 手写 .rs 胶水（provider/stream_glue.rs）
-- [ ] 4.3 ollama.rs → ollama.at（纯委托 OpenAiProvider；Phase 2 推迟至此，与 openai.rs 一起转）
-- [ ] 4.4 用真实 provider 构造替换 provider_glue.rs 的 build_registry stub
-- [ ] 4.5 retranspile + cargo check
+### Phase 4 — provider openai/anthropic/ollama 转译 ✅ 完成
 
-### Phase 5 — 端到端验证
+**3 个 provider 全部从 .at 转译**（openai.at/anthropic.at/ollama.at），complete_stream（select!）
++ build_registry 真实构造留 provider_glue.rs 手写。`./retranspile.sh check` = 0 错三次幂等。
+
+**Phase 4 关键决策与发现**：
+
+1. **complete() 用 a2r-std http 链，不用 reqwest**。调研发现项目从不用 `reqwest::Client` 链式
+   （auto-ai-client/lib.at 用 `http.request().send()`）。openai/anthropic 的 complete() 用
+   `http.request("POST", url).header(...).body(...).send_async().await` + json.get/get_at/get_str
+   解析响应。complete_stream 用 reqwest（需 bytes_stream + StreamExt，仅 reqwest 提供）。
+
+2. **a2r 方法链必须单行**。多行方法链（`.header().body().send_async().await`）在方法体内会断
+   链——每行续行被 a2r 当独立语句，receiver 重绑到 `self`。http 请求链压成单行才能正确转译。
+   （client/lib.at 的多行 `.send()` 恰好被 a2r 合并，但 `.send_async().await` 结尾的多行链断。）
+
+3. **complete_stream 留 provider_glue.rs 手写**（文档 §2.1 + 用户决策）。select! 的 cancel 响应
+   + idle-timeout 竞速无 .at 语法；a2r-std 的 post_stream_with_headers_async 虽可流式但无法
+   表达竞速语义。openai/anthropic 的 complete_stream 委托 glue 的 openai/anthropic_complete_stream
+   （含完整 select! 循环 + SseParser + tool 累积，从 rust-ref 移植）。
+
+4. **ollama.at 全转译**（纯委托 OpenAiProvider，无 select!）。OllamaProvider.has AiProvider
+   四个方法全委托 self.inner。
+
+5. **build_registry 真实化**。provider_glue.rs 从 NoProvider stub 换成真实构造（resolve_key +
+   按 kind 分发 OpenAi/Anthropic/Ollama），provider.at 加 from_entries 方法接收预构造的
+   (name, provider) 列表（.at Map 无迭代 API，glue 遍历 HashMap 后传入）。
+
+6. **.at 的 `has SpecName` 实现 trait**。`pub type X has AiProvider { 字段 + 方法 }` →
+   `#[async_trait] impl AiProvider for X`（skill.at 的 `has Tool` 同模式）。
+
+7. **ext 方法的构造器 self 陷阱（Phase 3 发现的延续）**。openai/anthropic/ollama 的 `new(name str)`
+   被 a2r 转 `&str`，但 rust-ref + glue 调用传 owned String。retranspile.sh sed 改回 String。
+
+8. **serde_json::Value::as_array() vs a2r_std::json::as_array**。`.at` 的 `blocks.as_array()` 被
+   a2r 渲染成 serde_json::Value::as_array（返回 `Option<&Vec>`），而非 a2r-std 的 `json::as_array`
+   （返回 owned Vec）。迭代时前者给 `&&Vec`（不可迭代）。sed 改成 `a2r_std::json::as_array(&x)`。
+
+9. **temperature 是 f64**。`Value.Number(t)` 当 t 是 temperature（f64）时 `Number::from(f64)` 不存在，
+   需 `Number::from_f64(t).unwrap()`（max_tokens 是 usize/i64，用 `Number::from`）。
+
+10. **Option 字段的 match 臂类型**。`is req.field { Some -> body.insert(...), None -> {} }` 的
+    Some 臂返回 Option（insert 的返回值），None 臂返回 ()，类型不一致。改用 `if req.field.is_some()`
+    避免 match 臂类型统一要求。
+
+- [x] 4.1 openai.at（OpenAiProvider + new/url/build_body/complete，http 链 + json 解析）
+- [x] 4.2 anthropic.at（AnthropicProvider + build_body + content_blocks/tool_to 适配器 + complete）
+- [x] 4.3 ollama.at（纯委托 OpenAiProvider）
+- [x] 4.4 provider_glue.rs 真实化（build_registry 真实构造 + openai/anthropic complete_stream 手写 select!）
+- [x] 4.5 retranspile.sh 补丁 + 全量闸门（0 错三次幂等）
+
+**当前转译树状态**：12 个 `.at` 源文件（Phase 1-3 的 9 个 + openai/anthropic/ollama），3 个手写胶水
+（tier_router_glue / server_glue / **provider_glue**，后者含 build_registry + 两个 complete_stream），
+1 个直接复制（services.rs），main.rs 手写 bin。daemon 的全部 HTTP + provider 层都有 Auto 版。
+
+### Phase 5 — 端到端验证 ⬅️ 下一会话从这里继续
 - [ ] 5.1 转译版 daemon（auto-ai-daemon-a2r）build 出 aaid 二进制
 - [ ] 5.2 启动转译版 daemon，用 auto-ai-react（转译版 agent + Plan 024 转译版 client）跑全链路 e2e：
       转译版 agent → 转译版 client → **转译版 daemon** → LLM
@@ -260,11 +309,12 @@ AppState + 4 个核心 handler；server_glue.rs 覆盖路由挂载 + 3 个 handl
 
 ## 5. 完成判定
 
-- [x] daemon 的核心文件转 .at（config/tracker/sse/format/tier_router/pool/error/provider/**server** = 9 个 .at）
+- [x] daemon 的核心文件转 .at（config/tracker/sse/format/tier_router/pool/error/provider/server/**openai/anthropic/ollama** = 12 个 .at）
 - [x] server.rs 的 axum 层从 .at 转译（AppState + status/models/usage/chat_completions）
+- [x] openai/anthropic/ollama provider 的 complete() + build_body + wire 适配器从 .at 转译
 - [x] CancelOnDrop / streaming_response / config_test / services_* 留 server_glue.rs 手写（已知限制）
+- [x] openai/anthropic 的 complete_stream（select!）+ build_registry 留 provider_glue.rs 手写（已知限制）
 - [x] services.rs 直接复制（OS 胶水，非转译）
-- [ ] openai/anthropic 的流式 select! 循环留 .rs 胶水（Phase 4 已知限制）
 - [ ] 转译版 daemon 能 build 出 aaid 二进制 + 启动 + 响应 /v1/status（Phase 5）
 - [ ] **全链路 Auto 版 e2e**：转译版 agent + client + daemon 三层跑通（Phase 5）
 - [ ] workspace + 转译版测试无回归（Phase 5）

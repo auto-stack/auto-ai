@@ -1,0 +1,229 @@
+/// Anthropic Claude provider.
+///
+/// Auto port of crates/auto-ai-daemon/src/provider/anthropic.rs (non-streaming
+/// parts). Uses the Anthropic Messages API (`/v1/messages`).
+///
+/// See openai.at for the HTTP/STREAM/JSON notes (same conventions apply: global
+/// `http` module for non-streaming, complete_stream delegated to provider_glue,
+/// serde_json::Map hand-built instead of json! macro).
+
+use.rust std::sync::Arc
+use.rust tokio_util::sync::CancellationToken
+use.rust serde_json
+use.rust serde_json::Value
+
+use ai_config: CompletionRequest, CompletionResponse, ContentBlock, ToolCall, ToolDefinition, Usage
+use error: LlmError
+use sse: SseParser
+use provider: AiProvider, StreamDelta
+
+/// One Anthropic provider instance.
+#[allow(dead_code)]
+pub type AnthropicProvider has AiProvider {
+    name str
+    base_url str
+    api_key str
+    models_list List<str>
+
+    pub fn name() str {
+        return self.name
+    }
+
+    pub fn models() List<str> {
+        return self.models_list
+    }
+
+    /// Non-streaming completion. POSTs to /v1/messages, parses the response.
+    pub fn complete(req CompletionRequest) ~Result<CompletionResponse, LlmError> {
+        let body = self.build_body(req)
+        let url = self.url()
+        // Single-line http chain (a2r breaks multi-line method chains onto self).
+        let resp = http.request("POST", url).header("x-api-key", self.api_key).header("anthropic-version", "2023-06-01").header("Content-Type", "application/json").body(json.to_string(body)).send_async().await
+
+        let status = resp.status_code()
+        if status < 200 || status >= 300 {
+            let text = bytes_to_str(resp.body_bytes())
+            return Err(LlmError.from_upstream_status(status, text))
+        }
+
+        let text = bytes_to_str(resp.body_bytes())
+        let v = json.parse(text)
+
+        // Anthropic returns content as an array of blocks.
+        var content = ""
+        var tool_calls List<ToolCall> = []
+        let blocks = json.get(v, "content")
+        if blocks.is_null() == false {
+            for b in blocks.as_array() {
+                let btype = json.get_str(b, "type")
+                is btype {
+                    "text" -> {
+                        content = content + json.get_str(b, "text")
+                    },
+                    "tool_use" -> {
+                        let id = json.get_str(b, "id")
+                        let tc_name = json.get_str(b, "name")
+                        let input = json.get(b, "input")
+                        tool_calls.push(ToolCall(id: id, name: tc_name, input: input))
+                    },
+                    else -> {}
+                }
+            }
+        }
+
+        let stop_reason = opt_str_field(v, "stop_reason")
+        let usage = parse_usage_anthropic(v)
+        let model_field = json.get_str(v, "model")
+        let model = is model_field.is_empty() {
+            true -> req.model,
+            false -> model_field
+        }
+
+        return Ok(CompletionResponse(
+            content: content,
+            tool_calls: tool_calls,
+            stop_reason: stop_reason,
+            usage: usage,
+            model: model,
+            error: None
+        ))
+    }
+
+    /// Streaming completion. Delegates to provider_glue (tokio::select! loop).
+    pub fn complete_stream(
+        req CompletionRequest,
+        on_delta Arc<Fn(StreamDelta)>,
+        cancel CancellationToken
+    ) ~Result<CompletionResponse, LlmError> {
+        return provider_glue.anthropic_complete_stream(self, req, on_delta, cancel)
+    }
+}
+
+ext AnthropicProvider {
+    /// Construct an Anthropic provider.
+    pub static fn new(name str, base_url str, api_key str, models List<str>) AnthropicProvider {
+        return AnthropicProvider(
+            name: name,
+            base_url: base_url,
+            api_key: api_key,
+            models_list: models
+        )
+    }
+
+    /// The `/v1/messages` endpoint URL.
+    pub fn url() str {
+        let base = self.base_url.trim_end_matches("/")
+        return f"${base}/v1/messages"
+    }
+
+    /// Build the Anthropic Messages API request body.
+    pub fn build_body(req CompletionRequest) Value {
+        var messages List<Value> = []
+        for m in req.messages {
+            let obj = serde_json.Map.new()
+            obj.insert("role".to_string(), Value.String(m.role))
+            obj.insert("content".to_string(), content_blocks_to_anthropic(m.content))
+            messages.push(Value.Object(obj))
+        }
+
+        let body = serde_json.Map.new()
+        body.insert("model".to_string(), Value.String(req.model))
+        // max_tokens defaults to 4096 (Anthropic requires it). if/else (not
+        // `is`/match) so arms need no unified return type.
+        if req.max_tokens.is_some() {
+            let n = req.max_tokens.unwrap()
+            body.insert("max_tokens".to_string(), Value.Number(n))
+        } else {
+            body.insert("max_tokens".to_string(), Value.Number(4096))
+        }
+        body.insert("messages".to_string(), Value.Array(messages))
+
+        if req.system_prompt.is_some() {
+            let sys = req.system_prompt.unwrap()
+            body.insert("system".to_string(), Value.String(sys))
+        }
+        if req.temperature.is_some() {
+            let t = req.temperature.unwrap()
+            body.insert("temperature".to_string(), Value.Number(t))
+        }
+
+        if req.tools.is_empty() == false {
+            var tools_arr List<Value> = []
+            for t in req.tools {
+                tools_arr.push(tool_to_anthropic(t))
+            }
+            body.insert("tools".to_string(), Value.Array(tools_arr))
+        }
+
+        return Value.Object(body)
+    }
+}
+
+// ── Anthropic wire-format adapters ──────────────────────────────────────────
+
+/// Translate our content blocks into Anthropic's content block array.
+fn content_blocks_to_anthropic(blocks List<ContentBlock>) Value {
+    var out List<Value> = []
+    for b in blocks {
+        is b {
+            ContentBlock.Text(text) -> {
+                let obj = serde_json.Map.new()
+                obj.insert("type".to_string(), Value.String("text".to_string()))
+                obj.insert("text".to_string(), Value.String(text))
+                out.push(Value.Object(obj))
+            },
+            ContentBlock.ToolUse(id, name, input) -> {
+                let obj = serde_json.Map.new()
+                obj.insert("type".to_string(), Value.String("tool_use".to_string()))
+                obj.insert("id".to_string(), Value.String(id))
+                obj.insert("name".to_string(), Value.String(name))
+                obj.insert("input".to_string(), input)
+                out.push(Value.Object(obj))
+            },
+            ContentBlock.ToolResult(tool_use_id, content, is_error) -> {
+                let obj = serde_json.Map.new()
+                obj.insert("type".to_string(), Value.String("tool_result".to_string()))
+                obj.insert("tool_use_id".to_string(), Value.String(tool_use_id))
+                obj.insert("content".to_string(), Value.String(content))
+                obj.insert("is_error".to_string(), Value.Bool(is_error))
+                out.push(Value.Object(obj))
+            }
+        }
+    }
+    return Value.Array(out)
+}
+
+/// Translate our ToolDefinition to Anthropic's tool object.
+fn tool_to_anthropic(t ToolDefinition) Value {
+    let obj = serde_json.Map.new()
+    obj.insert("name".to_string(), Value.String(t.name))
+    obj.insert("description".to_string(), Value.String(t.description))
+    obj.insert("input_schema".to_string(), t.parameters)
+    return Value.Object(obj)
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+fn bytes_to_str(bytes []byte) str {
+    return str.from_bytes(bytes)
+}
+
+fn opt_str_field(value Value, key str) ?str {
+    let s = json.get_str(value, key)
+    if s.is_empty() {
+        return None
+    }
+    return Some(s)
+}
+
+/// Parse usage (Anthropic shape: input_tokens/output_tokens), or None.
+fn parse_usage_anthropic(value Value) ?Usage {
+    let u = json.get(value, "usage")
+    if u.is_null() {
+        return None
+    }
+    return Some(Usage(
+        input_tokens: json.as_int(json.get(u, "input_tokens")),
+        output_tokens: json.as_int(json.get(u, "output_tokens"))
+    ))
+}

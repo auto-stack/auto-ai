@@ -51,6 +51,27 @@ read_pub_mods() {
     done
 }
 
+# fix_provider_impl — common a2r fixes for a concrete AiProvider impl block
+# (openai/anthropic/ollama). Each impl's complete/complete_stream must match the
+# trait signature (Phase 3 sed changed the trait to take &CompletionRequest, so
+# the impls must too — otherwise E0195 lifetime mismatch). Also rewrites the
+# provider_glue delegation `.` → `crate::provider_glue::`.
+fix_provider_impl() {
+    local f="$1"
+    # E0195: impl method signatures must match the trait. The trait (provider.rs)
+    # was fixed to `req: &CompletionRequest`; apply the same to each impl.
+    sed -i 's|async fn complete(&self, req: CompletionRequest)|async fn complete(\&self, req: \&CompletionRequest)|g' "$f"
+    sed -i 's|async fn complete_stream(&self, req: CompletionRequest,|async fn complete_stream(\&self, req: \&CompletionRequest,|g' "$f"
+    # build_body takes owned CompletionRequest, but complete now has &req — clone.
+    sed -i 's|self.build_body(req)|self.build_body(req.clone())|g' "$f"
+    # Constructors: a2r renders `pub static fn new(name str, ...)` params as
+    # `&str`, but rust-ref (and provider_glue callers) pass owned String. The
+    # struct fields are owned String, so new must take owned. (OpenAi/Anthropic/
+    # Ollama all share this shape.)
+    sed -i 's|pub fn new(name: \&str, base_url: \&str, api_key: \&str, models: Vec<String>)|pub fn new(name: String, base_url: String, api_key: String, models: Vec<String>)|g' "$f"
+    sed -i 's|pub fn new(name: \&str, base_url: \&str, models: Vec<String>)|pub fn new(name: String, base_url: String, models: Vec<String>)|g' "$f"
+}
+
 echo "[retranspile] transpiling all .at files..."
 transpile_one() {
     local f="$1"
@@ -279,6 +300,141 @@ if [ -f "$RUST/provider.rs" ]; then
     # complete_stream: same — rust-ref takes &CompletionRequest, a2r renders by
     # value. Phase 3.6's streaming_response (in server_glue.rs) passes &req.
     sed -i 's|async fn complete_stream(&self, req: CompletionRequest,|async fn complete_stream(\&self, req: \&CompletionRequest,|' "$RUST/provider.rs"
+    # from_entries iterates `for entry in &entries` (Phase 4) — entry.0/.1 are
+    # behind a shared ref (String / Arc). Clone before moving into insert/push.
+    sed -i 's|providers.insert(name.clone(), provider)|providers.insert(name.clone(), provider.clone())|' "$RUST/provider.rs"
+    sed -i 's|let name = entry.0;|let name = entry.0.clone();|' "$RUST/provider.rs"
+    sed -i 's|let provider = entry.1;|let provider = entry.1.clone();|' "$RUST/provider.rs"
+fi
+
+# ── openai.rs (Phase 4) ─────────────────────────────────────────────────────
+if [ -f "$RUST/openai.rs" ]; then
+    fix_provider_impl "$RUST/openai.rs"
+    # SseParser is crate-local (crate::sse), but a2r routes `use sse:` to
+    # a2r_std::sse (which doesn't exist). Restore the crate path.
+    sed -i 's|use a2r_std::sse::{SseParser};|use crate::sse::SseParser;|' "$RUST/openai.rs"
+    sed -i 's|use a2r_std::sse::SseParser;|use crate::sse::SseParser;|' "$RUST/openai.rs"
+    # complete_stream delegates to provider_glue (`.` → `::`).
+    sed -i 's|provider_glue\.openai_complete_stream|crate::provider_glue::openai_complete_stream|' "$RUST/openai.rs"
+    # build_body returns Value; provider_glue needs &serde_json::Value + mut index.
+    # Value::Number(usize/f64) → Number::from (json! coerces implicitly).
+    sed -i 's|Value::Number(n)|Value::Number(serde_json::Number::from(n))|g' "$RUST/openai.rs"
+    sed -i 's|Value::Number(t)|Value::Number(serde_json::Number::from(t))|g' "$RUST/openai.rs"
+    # temperature (t) is f64 — Number::from(f64) doesn't exist; use from_f64.
+    sed -i 's|Value::Number(serde_json::Number::from(t))|Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0)))|g' "$RUST/openai.rs"
+    sed -i 's|Value::Number(4096)|Value::Number(serde_json::Number::from(4096))|g' "$RUST/openai.rs"
+    # from_upstream_status takes (&StatusCode, &str); status is u32 (resp.status_
+    # code()), text is String — pass &text. Also status is u32 not StatusCode:
+    # error.at's from_upstream_status bridges to the real signature post-sed.
+    sed -i 's|from_upstream_status(status, text)|from_upstream_status(status, \&text)|g' "$RUST/openai.rs"
+    # Value::String(<&str/&String>) needs owned String — .to_string() at each.
+    sed -i 's|Value::String(content)|Value::String(content.to_string())|g' "$RUST/openai.rs"
+    sed -i 's|Value::String(r.tool_call_id)|Value::String(r.tool_call_id.to_string())|g' "$RUST/openai.rs"
+    sed -i 's|Value::String(r.content)|Value::String(r.content.to_string())|g' "$RUST/openai.rs"
+    # Usage tokens: json.as_int returns i64; Usage.input_tokens is u32 — cast.
+    # (Match the a2r-fully-qualified form a2r_std::json::as_int(&a2r_std::json::get(...)).)
+    sed -i 's|input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "prompt_tokens"))|input_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "prompt_tokens")) as u32|' "$RUST/openai.rs"
+    sed -i 's|output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "completion_tokens"))|output_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "completion_tokens")) as u32|' "$RUST/openai.rs"
+    # tool_calls list binding: raw_tool_calls.as_array() is serde_json's
+    # (Option<&Vec>); use a2r-std json::as_array (→ owned Vec).
+    sed -i 's|parse_openai_tool_calls(raw_tool_calls.as_array().clone())|parse_openai_tool_calls(a2r_std::json::as_array(\&raw_tool_calls))|' "$RUST/openai.rs"
+    sed -i 's|parse_openai_tool_calls(raw_tool_calls.as_array())|parse_openai_tool_calls(a2r_std::json::as_array(\&raw_tool_calls))|' "$RUST/openai.rs"
+    # tool_to_openai(&t): t is already &ToolDefinition (iterating &req.tools),
+    # &t is &&ToolDefinition. tool_to_openai now takes &ToolDefinition — pass t.
+    sed -i 's|tool_to_openai(&t)|tool_to_openai(t)|g' "$RUST/openai.rs"
+    # complete_stream delegates to an async glue fn — the return needs .await.
+    sed -i 's|return crate::provider_glue::openai_complete_stream(self, req, on_delta, cancel);|return crate::provider_glue::openai_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/openai.rs"
+    # from_upstream_status takes reqwest::StatusCode; resp.status_code() is u32.
+    sed -i 's|from_upstream_status(status, \&text)|from_upstream_status(reqwest::StatusCode::from_u16(status as u16).unwrap_or(reqwest::StatusCode::BAD_GATEWAY), \&text)|g' "$RUST/openai.rs"
+    # tool_to_openai takes owned ToolDefinition; the for-loop yields &ToolDefinition.
+    # Match the a2r-emitted form `t: ToolDefinition` (with colon).
+    sed -i 's|fn tool_to_openai(t: ToolDefinition)|fn tool_to_openai(t: \&ToolDefinition)|' "$RUST/format.rs"
+    # t is &ToolDefinition (for-in &req.tools); pass it directly (no extra &).
+    sed -i 's|tool_to_openai(&t)|tool_to_openai(t)|g' "$RUST/openai.rs"
+    # tool_to_openai body: t is now &ToolDefinition — clone the borrowed fields.
+    sed -i 's|Value::String(t.name)|Value::String(t.name.clone())|g' "$RUST/format.rs"
+    sed -i 's|Value::String(t.description)|Value::String(t.description.clone())|g' "$RUST/format.rs"
+    sed -i 's|func.insert("parameters".to_string(), t.parameters)|func.insert("parameters".to_string(), t.parameters.clone())|' "$RUST/format.rs"
+    # header() takes &str; self.api_key is String — borrow it (& the f-string
+    # Bearer interpolation already produces a String, but a2r wraps it; pass &).
+    sed -i 's|.header("Authorization", format!("Bearer {}", self.api_key))|.header("Authorization", \&format!("Bearer {}", self.api_key))|g' "$RUST/openai.rs"
+    # build_body message loop: m is &Message (iterating &req.messages); openai_
+    # content takes (&str, Vec<ContentBlock>) — borrow role, clone content.
+    sed -i 's|openai_content(m.role, m.content)|openai_content(m.role.as_str(), m.content.clone())|g' "$RUST/openai.rs"
+    # `let model = match model_field.is_empty() { true => req.model, ... }` — req
+    # is &CompletionRequest, req.model can't move. Clone it.
+    sed -i 's|true => req.model,|true => req.model.clone(),|g' "$RUST/openai.rs"
+fi
+
+# ── anthropic.rs (Phase 4) ──────────────────────────────────────────────────
+if [ -f "$RUST/anthropic.rs" ]; then
+    fix_provider_impl "$RUST/anthropic.rs"
+    sed -i 's|use a2r_std::sse::{SseParser};|use crate::sse::SseParser;|' "$RUST/anthropic.rs"
+    sed -i 's|use a2r_std::sse::SseParser;|use crate::sse::SseParser;|' "$RUST/anthropic.rs"
+    sed -i 's|provider_glue\.anthropic_complete_stream|crate::provider_glue::anthropic_complete_stream|' "$RUST/anthropic.rs"
+    sed -i 's|Value::Number(n)|Value::Number(serde_json::Number::from(n))|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::Number(t)|Value::Number(serde_json::Number::from(t))|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::Number(serde_json::Number::from(t))|Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0)))|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::Number(4096)|Value::Number(serde_json::Number::from(4096))|g' "$RUST/anthropic.rs"
+    sed -i 's|from_upstream_status(status, text)|from_upstream_status(status, \&text)|g' "$RUST/anthropic.rs"
+    # Usage tokens i64 → u32.
+    sed -i 's|input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens"))|input_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "input_tokens")) as u32|' "$RUST/anthropic.rs"
+    sed -i 's|output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens"))|output_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "output_tokens")) as u32|' "$RUST/anthropic.rs"
+    # content blocks: `blocks.as_array()` resolves to serde_json::Value::as_array
+    # (→ Option<&Vec>), not a2r-std's json::as_array (→ Vec owned). Use the
+    # a2r-std fn so for-in yields owned Value elements; &b is then &Value.
+    sed -i 's|for b in blocks.as_array() {|for b in a2r_std::json::as_array(\&blocks) {|' "$RUST/anthropic.rs"
+    # content_blocks_to_anthropic: blocks param is now &Vec; iterate blocks
+    # directly (not &blocks — that's &&Vec).
+    sed -i 's|for b in &blocks {|for b in blocks {|g' "$RUST/anthropic.rs"
+    # Value::String(&str/&String fields) → owned.
+    sed -i 's|Value::String(text)|Value::String(text.to_string())|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::String(id)|Value::String(id.to_string())|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::String(tc_name)|Value::String(tc_name.to_string())|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::String(tool_use_id)|Value::String(tool_use_id.to_string())|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::String(content)|Value::String(content.to_string())|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::String(name)|Value::String(name.to_string())|g' "$RUST/anthropic.rs"
+    # Value::Bool(&bool) → deref.
+    sed -i 's|Value::Bool(is_error)|Value::Bool(*is_error)|g' "$RUST/anthropic.rs"
+    # tool_to_anthropic takes &ToolDefinition; the for-loop yields &ToolDefinition
+    # (a2r borrows), so pass t directly (already a ref). The .at call is
+    # tool_to_anthropic(t) where t is &ToolDefinition — but the fn takes owned.
+    # Make tool_to_anthropic take a reference instead.
+    sed -i 's|fn tool_to_anthropic(t ToolDefinition)|fn tool_to_anthropic(t: \&ToolDefinition)|' "$RUST/anthropic.rs"
+    # complete_stream + StatusCode (same fixes as openai).
+    sed -i 's|return crate::provider_glue::anthropic_complete_stream(self, req, on_delta, cancel);|return crate::provider_glue::anthropic_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/anthropic.rs"
+    sed -i 's|from_upstream_status(status, \&text)|from_upstream_status(reqwest::StatusCode::from_u16(status as u16).unwrap_or(reqwest::StatusCode::BAD_GATEWAY), \&text)|g' "$RUST/anthropic.rs"
+    # header() &str + build_body message loop (m is &Message).
+    sed -i 's|.header("x-api-key", self.api_key)|.header("x-api-key", \&self.api_key)|g' "$RUST/anthropic.rs"
+    sed -i 's|obj.insert("role".to_string(), Value.String(m.role))|obj.insert("role".to_string(), Value::String(m.role.clone()))|g' "$RUST/anthropic.rs"
+    # content_blocks_to_anthropic takes &Vec<ContentBlock>; m.content is Vec.
+    sed -i 's|content_blocks_to_anthropic(m.content)|content_blocks_to_anthropic(\&m.content)|g' "$RUST/anthropic.rs"
+    # And update the fn signature to match (&Vec, not owned Vec).
+    sed -i 's|fn content_blocks_to_anthropic(blocks: Vec<ContentBlock>)|fn content_blocks_to_anthropic(blocks: \&Vec<ContentBlock>)|' "$RUST/anthropic.rs"
+    # tool_to_anthropic: same as openai's tool_to_openai — take &ToolDefinition,
+    # pass t directly (for-in yields &ToolDefinition).
+    sed -i 's|fn tool_to_anthropic(t: ToolDefinition)|fn tool_to_anthropic(t: \&ToolDefinition)|' "$RUST/anthropic.rs"
+    sed -i 's|tool_to_anthropic(&t)|tool_to_anthropic(t)|g' "$RUST/anthropic.rs"
+    # a2r may auto-clone the loop var (for t in req.tools → tool_to_anthropic(t.clone()));
+    # tool_to_anthropic now takes &ToolDefinition — drop the clone.
+    sed -i 's|tool_to_anthropic(t.clone())|tool_to_anthropic(t)|g' "$RUST/anthropic.rs"
+    sed -i 's|tool_to_openai(t.clone())|tool_to_openai(t)|g' "$RUST/openai.rs"
+    # tool_to_anthropic body: t is now &ToolDefinition — clone borrowed fields.
+    sed -i 's|Value::String(t.name)|Value::String(t.name.clone())|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::String(t.description)|Value::String(t.description.clone())|g' "$RUST/anthropic.rs"
+    sed -i 's|obj.insert("input_schema".to_string(), t.parameters)|obj.insert("input_schema".to_string(), t.parameters.clone())|' "$RUST/anthropic.rs"
+    # req.model + m.role can't move out of &req/&Message — clone.
+    sed -i 's|true => req.model,|true => req.model.clone(),|g' "$RUST/anthropic.rs"
+    sed -i 's|Value::String(m.role)|Value::String(m.role.clone())|g' "$RUST/anthropic.rs"
+fi
+
+# ── ollama.rs (Phase 4) ─────────────────────────────────────────────────────
+if [ -f "$RUST/ollama.rs" ]; then
+    fix_provider_impl "$RUST/ollama.rs"
+    # ollama delegates complete/complete_stream to self.inner — pass &req to
+    # match the (Phase-3-fixed) complete signature.
+    sed -i 's|self.inner.complete(req)|self.inner.complete(\&req)|g' "$RUST/ollama.rs"
+    sed -i 's|self.inner.complete_stream(req,|self.inner.complete_stream(\&req,|g' "$RUST/ollama.rs"
 fi
 
 echo "[retranspile] assembly complete."

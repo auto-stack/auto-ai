@@ -6,9 +6,12 @@ pub mod ai_config {
     pub use ::ai_config::*;
 }
 
+pub mod anthropic;
 pub mod config;
 pub mod error;
 pub mod format;
+pub mod ollama;
+pub mod openai;
 pub mod pool;
 pub mod provider;
 pub mod provider_glue;

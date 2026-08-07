@@ -65,6 +65,17 @@ impl ProviderRegistry {
     pub fn from_daemon_config(config: &DaemonConfig) -> Result<ProviderRegistry, LlmError> {
         return crate::provider_glue::build_registry(&config);
     }
+    pub fn from_entries(entries: Vec<(String, Arc<dyn AiProvider>)>, default_name: &str) -> ProviderRegistry {
+        let mut providers = HashMap::new();
+        let mut names: Vec<String> = vec![];
+        for entry in &entries {
+            let name = entry.0.clone();
+            let provider = entry.1.clone();
+            providers.insert(name.clone(), provider.clone());
+            names.push(name.clone());
+        }
+        return ProviderRegistry { providers: providers, default_name: default_name.to_string(), names: names };
+    }
     pub fn default_provider(&self) -> Result<Arc<dyn AiProvider>, LlmError> {
         match self.providers.get(&self.default_name.clone()) {
             Some(p) => return Ok(p.clone()),
