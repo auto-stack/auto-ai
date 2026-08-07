@@ -38,8 +38,8 @@ pub enum StreamDelta {
 pub trait AiProvider: Send + Sync {
     fn name(&self) -> String;
     fn models(&self) -> Vec<String>;
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError>;
-    async fn complete_stream(&self, req: CompletionRequest, on_delta: Arc<dyn Fn(StreamDelta) + Send + Sync>, cancel: CancellationToken) -> Result<CompletionResponse, LlmError>;
+    async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, LlmError>;
+    async fn complete_stream(&self, req: &CompletionRequest, on_delta: Arc<dyn Fn(StreamDelta) + Send + Sync>, cancel: CancellationToken) -> Result<CompletionResponse, LlmError>;
 }
 
 
@@ -62,7 +62,7 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
-    pub fn from_daemon_config(&self, config: DaemonConfig) -> Result<ProviderRegistry, LlmError> {
+    pub fn from_daemon_config(config: &DaemonConfig) -> Result<ProviderRegistry, LlmError> {
         return crate::provider_glue::build_registry(&config);
     }
     pub fn default_provider(&self) -> Result<Arc<dyn AiProvider>, LlmError> {

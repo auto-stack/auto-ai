@@ -1,6 +1,7 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
-> **状态**：🟢 Phase 0 + Phase 1 + Phase 2 完成（8 个文件转译：5 EASY + pool/error/provider，`./retranspile.sh check` cargo check = 0 错），Phase 3-5 待推进
+> **状态**：🟢 Phase 0 + 1 + 2 + 3 完成（server.at 含 AppState + status/models/usage/chat_completions 四个 handler 全从 .at 转译，
+> config_test/services_*/streaming_response 留 server_glue.rs 手写，services.rs 复制，`./retranspile.sh check` cargo check = 0 错幂等），Phase 4-5 待推进
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -165,24 +166,71 @@ Phase 2 新发现并记录的 a2r 缺陷（已 retranspile.sh sed 兜底）：
 2 个手写胶水（tier_router_glue.rs / provider_glue.rs），lib.rs 组装式 crate root，
 main.rs 仍是 Phase 0 spike（Phase 3 转）。
 
-### Phase 3 — server.rs + main.rs（axum 层，核心验证）⬅️ 下一会话从这里继续
+### Phase 3 — server.rs + main.rs（axum 层，核心验证）✅ 完成
 
-**Phase 3 启动 checklist**（新会话首步）：
-1. 跑 `AUTO=.../auto ./crates/auto-ai-daemon/retranspile.sh check` 确认 Phase 1+2 基线绿（应 0 错）。
-2. 读 `crates/auto-ai-daemon/src/main.rs`（rust-ref 原版，Phase 3.1 目标）+
-   `src/server.rs`（rust-ref 原版，Phase 3.2 目标，含 CancelOnDrop）。
-3. 当前转译树的 `rust/src/main.rs` 还是 **Phase 0 spike**（手写 `/health` demo），
-   Phase 3.1 要把它换成从 `main.at` 转译的完整版（bind 17699/17654 + 真实 build_app）。
-4. `server.rs` 的 `CancelOnDrop`（`impl Drop`）按 Phase 3.3 留 `server_glue.rs` 手写
-   （a2r 不支持 `impl Drop`）。
-5. **关键里程碑**：Phase 3.4 = axum 服务端首次从 .at 完整转译成功。
+**axum 服务端从 .at 完整转译成功**——`server.at` 含 `AppState` + `status`/`models`/`usage`/`chat_completions`
+四个 handler 全部从 `.at` 转译（含候选链 fallback + permit + provider.complete），`config_test`/`services_*`/
+`streaming_response` 留 `server_glue.rs` 手写（reqwest 链式 + spawn/mpsc/stream! 无 .at 先例），
+`services.rs` 直接复制（OS 胶水），`./retranspile.sh check` cargo check = 0 错（三次幂等可复现）。
 
-- [ ] 3.1 main.rs → main.at（#[tokio::main] + TcpListener + axum::serve）
-- [ ] 3.2 server.rs → server.at（Router 链 + 解构 extractor + impl IntoResponse + async_stream SSE body）
-- [ ] 3.3 CancelOnDrop 留 .rs helper（server_glue.rs）
-- [ ] 3.4 retranspile + cargo check（**关键里程碑**：axum 服务端从 .at 转译成功）
+**Phase 3 实施过程中的关键决策与发现**：
 
-### Phase 4 — provider openai/anthropic（select! 胶水）+ ollama
+1. **main.rs 保持手写**（非 main.at）。a2r 把 `println`/`eprintln` 渲染成函数调用（应为宏 `println!`），
+   `env.args()` 路由到不存在的 `a2r_std::env::args`，且 `#[tokio.main]` 双重输出。bin 是纯胶水
+   （arg 解析 + bind + serve），axum 验证里程碑在 server.at，故 main.rs 手写引用转译版 lib
+   （同 auto-ai-agent/rust/src/main.rs 模式）。
+
+2. **AppState 不能 derive**。`ProviderRegistry` 含 `Arc<dyn AiProvider>`（不实现 Debug/Clone），
+   a2r 的默认 derive 全失败；`#[allow(dead_code)]` 抑制默认 derive（rust-ref 的 AppState 也无 derive）。
+
+3. **.at for 循环只支持 2-tuple 解构**。`pool.status()` 返回 3-tuple `(name, available, max)`，
+   .at 里用 `entry.0/.1/.2` 索引访问代替解构。
+
+4. **`ext` 方法的构造器陷阱**：`pub fn from_config(config)` 在 `ext` 块里被 a2r 加 `&self`
+   （当实例方法），但它是关联函数（构造器）。retranspile.sh sed 把 `from_config`/`from_daemon_config`/
+   `complete`/`complete_stream` 的签名改成正确的 `&self`/`&DaemonConfig`/`&CompletionRequest` 形式
+   （rust-ref 签名）。Phase 3 首次调用这些方法才暴露此 latent 问题。
+
+5. **`~IntoResponse` 在有 extractor 参数时丢失 `impl`**。golden 015 证明 `~IntoResponse` →
+   `async fn -> impl IntoResponse`，但当参数列表含 `State(...)`/`Json(...)` 解构时 a2r 输出
+   `-> IntoResponse`（无 impl，E0782）。retranspile.sh sed 补 `impl`。
+
+6. **`json!` 宏 → `serde_json.Map` + `Value` 手动构造**（沿用 format.at 模式）。整数需
+   `serde_json.Number.from(n)` 包装（`Value.Number(int)` 类型不匹配，json! 宏隐式转换）。
+
+7. **streaming_response 留 server_glue.rs 手写**。裸 `tokio::spawn` + 双向 `mpsc` +
+   `async_stream::stream!` 三件套无 .at 转译先例（仅 actor 抽象的 spawn + 单向 recv 有），
+   整个 SSE 桥接函数手写实现（含 CancelOnDrop guard），server.at 的 chat_completions 流式分支
+   委托它。Arc 闭包回调（on_delta）虽低风险，但 spawn/channel/stream 组合决定了整体留 glue。
+
+8. **config_test + services_* 留 server_glue.rs**。config_test 用 reqwest 客户端链式
+   （项目无 reqwest 客户端调用先例，用 VM 内建 http）；services_* 委托手写的 services.rs
+   （OS 胶水，cfg!windows/Command/reqwest::blocking）。
+
+9. **tracker.at 的 `names` 字段改为 `Mutex<List>`**。原 `names: List<str>` 在 `record(&self)` 下
+   无法 push（Vec 需 `&mut self`，但 record 经 `Arc<AppState>` 调用只能是 `&self`）。包 Mutex 后
+   `&self` + 内部可变性工作，all() 用 `names.lock().iter()`。
+
+10. **services.rs（233 行）直接复制**（非转译）。含 `cfg!(windows)`、`std::process::Command`、
+    `reqwest::blocking`、`spawn_blocking` 等 OS 胶水，转译风险高且与 axum 核心无关。Cargo.toml
+    补 reqwest `blocking` feature。
+
+- [x] 3.1 main.rs 手写（bin 保留 .rs，a2r 不能 emit println!/args 宏）—— cargo check 绿
+- [x] 3.2 server.at 最小版（AppState + new/cfg + router 委托 glue + status）—— axum 基础链路 0 错
+- [x] 3.3 models/usage/resolve_tier_model（json! → serde_json.Map 手动构造）—— 0 错
+- [x] 3.4 chat_completions（候选链 fallback + permit + provider.complete + into_response）—— **关键里程碑：0 错**
+- [x] 3.5 config_test + services_*（glue 手写，reqwest 链式 + services 委托）—— 0 错
+- [x] 3.6 streaming_response（glue 手写真实版：spawn + mpsc + async_stream + CancelOnDrop）—— 0 错
+- [x] 3.7 server_glue.rs（build_router 全路由 + CancelOnDrop + streaming + config_test + services_*）
+- [x] 3.8 services.rs 复制 + Cargo.toml 补 reqwest blocking feature
+- [x] 3.9 retranspile + cargo check（**里程碑达成**：axum 服务端从 .at 转译，0 错三次幂等）
+
+**当前转译树状态**：9 个 `.at` 源文件（Phase 1-2 的 8 个 + server.at），3 个手写胶水
+（tier_router_glue / provider_glue / **server_glue**），1 个直接复制（services.rs），
+lib.rs 组装式 crate root，main.rs 手写 bin。server.at 覆盖 rust-ref server.rs 的
+AppState + 4 个核心 handler；server_glue.rs 覆盖路由挂载 + 3 个 handler + streaming + CancelOnDrop。
+
+### Phase 4 — provider openai/anthropic（select! 胶水）+ ollama ⬅️ 下一会话从这里继续
 - [ ] 4.1 openai.rs/anthropic.rs 的非流式部分（build_body、response 解析）→ .at
 - [ ] 4.2 流式 select! 循环 → 手写 .rs 胶水（provider/stream_glue.rs）
 - [ ] 4.3 ollama.rs → ollama.at（纯委托 OpenAiProvider；Phase 2 推迟至此，与 openai.rs 一起转）
@@ -212,12 +260,15 @@ main.rs 仍是 Phase 0 spike（Phase 3 转）。
 
 ## 5. 完成判定
 
-- [ ] daemon 的 8 文件中 6+ 转 .at（config/tracker/sse/format/tier_router/pool/lib/main/server/ollama/provider-mod）
-- [ ] openai/anthropic 的流式 select! 循环留 .rs 胶水（已知限制）
-- [ ] 转译版 daemon 能 build 出 aaid 二进制 + 启动 + 响应 /v1/status
-- [ ] **全链路 Auto 版 e2e**：转译版 agent + client + daemon 三层跑通
-- [ ] workspace + 转译版测试无回归
-- [ ] KNOWN-DEBT 记录 select! / CancelOnDrop / services.rs 限制
+- [x] daemon 的核心文件转 .at（config/tracker/sse/format/tier_router/pool/error/provider/**server** = 9 个 .at）
+- [x] server.rs 的 axum 层从 .at 转译（AppState + status/models/usage/chat_completions）
+- [x] CancelOnDrop / streaming_response / config_test / services_* 留 server_glue.rs 手写（已知限制）
+- [x] services.rs 直接复制（OS 胶水，非转译）
+- [ ] openai/anthropic 的流式 select! 循环留 .rs 胶水（Phase 4 已知限制）
+- [ ] 转译版 daemon 能 build 出 aaid 二进制 + 启动 + 响应 /v1/status（Phase 5）
+- [ ] **全链路 Auto 版 e2e**：转译版 agent + client + daemon 三层跑通（Phase 5）
+- [ ] workspace + 转译版测试无回归（Phase 5）
+- [ ] KNOWN-DEBT 记录 select! / CancelOnDrop / services.rs / streaming 限制（Phase 6）
 
 ## 6. 里程碑意义
 

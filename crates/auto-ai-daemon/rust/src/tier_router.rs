@@ -49,7 +49,7 @@ impl TierRouter {
     pub fn default() -> TierRouter {
         return TierRouter { routing: HashMap::new() };
     }
-    pub fn from_config(&self, config: DaemonConfig) -> TierRouter {
+    pub fn from_config(config: &DaemonConfig) -> TierRouter {
 
         if config.tier_routing.is_empty() == false {
             let mut routing: HashMap<ModelTier, Vec<TierCandidate>> = HashMap::new();

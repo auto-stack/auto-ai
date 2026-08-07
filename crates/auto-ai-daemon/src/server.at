@@ -1,0 +1,337 @@
+/// HTTP server (axum) — the daemon's public API. Auto-transpiled.
+///
+/// Auto port of crates/auto-ai-daemon/src/server.rs. Endpoints:
+/// - `POST /v1/chat/completions` — receive a canonical CompletionRequest,
+///   resolve a provider, call upstream, return a canonical CompletionResponse.
+/// - `GET /v1/status` / `/v1/models` / `/v1/usage` — observability.
+///
+/// ARCHITECTURE: AppState (shared state) + router() + handlers. The router's
+/// framework glue (ServeDir for frontend-dist, CorsLayer, CARGO_MANIFEST_DIR,
+/// route mounting) lives in the hand-written server_glue.rs::build_router —
+/// those constructs can't be expressed in .at (compile-time macro +
+/// tower_http layering). This module owns AppState + the handlers it can
+/// express; server_glue owns route wiring + the bits that can't be transpiled.
+///
+/// EXTRACTOR NOTE: golden 016_extractor_destructure proves `State(s):
+/// State<Arc<T>>` and `Json(d): Json<T>` render correctly in param position.
+/// RETURN NOTE: golden 015_impl_trait_return proves `~IntoResponse` →
+/// `async fn -> impl IntoResponse`.
+///
+/// JSON NOTE: rust-ref uses the `json!` macro heavily; a2r can't emit macros.
+/// All json!({...}) calls become `serde_json.Map.new()` + `.insert()` +
+/// `Value.Object(...)` construction (same pattern as format.at). Integers need
+/// `serde_json.Number.from(n)` wrapping (json! does this implicitly; we do it
+/// by hand) — see retranspile.sh for the Value.Number → Value::Number fixup.
+///
+/// LOG NOTE: rust-ref's `tracing::info!`/`warn!` become println!/eprintln!
+/// (a2r can't emit macros — Phase 0 spike #4).
+
+use.rust std::sync::Arc
+use.rust std::time::Duration
+use.rust parking_lot::{Mutex, RwLock, RwLockReadGuard}
+use.rust axum::extract::State
+use.rust axum::http::{HeaderMap, StatusCode}
+use.rust axum::response::{IntoResponse, Response}
+use.rust axum::Json
+use.rust serde_json
+use.rust serde_json::Value
+
+use ai_config: DaemonConfig, CompletionRequest, CompletionResponse, ModelTier
+use pool: ConcurrencyManager
+use provider: ProviderRegistry, AiProvider
+use tracker: UsageTracker
+use tier_router: TierRouter
+
+/// Shared application state, wrapped in `Arc` and passed to handlers via axum's
+/// `State` extractor. Mirrors rust-ref server.rs:24-31.
+// No derive: AppState is runtime state (holds locks + trait objects), not a
+// value type — rust-ref doesn't derive anything on it either. a2r's default
+// derive (Clone/Debug/PartialEq/Eq) all fail on these fields (ProviderRegistry
+// holds Arc<dyn AiProvider> which isn't Debug/Clone), so we suppress derives
+// entirely via #[allow(dead_code)] (a2r treats a present attr as "derive
+// already specified" and skips its default derive set).
+#[allow(dead_code)]
+pub type AppState {
+    config Arc<RwLock<DaemonConfig>>
+    registry ProviderRegistry
+    pool ConcurrencyManager
+    tracker UsageTracker
+    current_model Mutex<str>
+    tier_router TierRouter
+}
+
+ext AppState {
+    /// Construct from a loaded config: builds the provider registry, concurrency
+    /// pool, and tier router. The registry build currently returns NoProvider
+    /// (provider_glue Phase-4 stub); router/handlers still compile and the
+    /// status endpoint works — Phase 4 wires real providers.
+    pub fn new(config DaemonConfig) AppState {
+        let registry = ProviderRegistry.from_daemon_config(config).unwrap()
+        let pool = ConcurrencyManager.from_config(config)
+        let current_model = config.default_model
+        let tier_router = TierRouter.from_config(config)
+        return AppState(
+            config: Arc.new(RwLock.new(config)),
+            registry: registry,
+            pool: pool,
+            tracker: UsageTracker.new(),
+            current_model: Mutex.new(current_model),
+            tier_router: tier_router
+        )
+    }
+
+    /// Read-locked access to the config (for GET handlers). The guard type is
+    /// imported via use.rust (a2r renders the bare name cleanly).
+    pub fn cfg() RwLockReadGuard<DaemonConfig> {
+        return self.config.read()
+    }
+}
+
+/// Build the axum Router. Delegates the framework-glue wiring (ServeDir,
+/// CorsLayer, CARGO_MANIFEST_DIR, route mounting) to server_glue::build_router
+/// — those constructs can't be expressed in .at. This fn is the .at-visible
+/// entry point the bin (main.at) calls.
+pub fn router(state Arc<AppState>) axum.Router {
+    return server_glue.build_router(state)
+}
+
+/// `GET /v1/status` — daemon liveness + per-provider pool snapshot.
+pub fn status(State(state) State<Arc<AppState>>) ~IntoResponse {
+    // Build the pools array manually (json! macro → serde_json.Map + Value).
+    // .at for-loops only destructure 2-tuples, so index the 3-tuple (name,
+    // available, max) returned by pool.status() instead of destructuring it.
+    var pools List<Value> = []
+    for entry in state.pool.status() {
+        let name = entry.0
+        let available = entry.1
+        let max = entry.2
+        let m = serde_json.Map.new()
+        m.insert("provider".to_string(), Value.String(name))
+        m.insert("available_permits".to_string(), Value.Number(available))
+        m.insert("max_concurrency".to_string(), Value.Number(max))
+        m.insert("in_use".to_string(), Value.Number(max - available))
+        pools.push(Value.Object(m))
+    }
+
+    let current_model = state.current_model.lock().clone()
+    let root = serde_json.Map.new()
+    root.insert("status".to_string(), Value.String("running".to_string()))
+    root.insert("current_model".to_string(), Value.String(current_model))
+    root.insert("pools".to_string(), Value.Array(pools))
+    return Json(Value.Object(root))
+}
+
+/// `GET /v1/models` — all (provider, model) pairs the daemon can serve.
+/// Uses server_glue::config_provider_models because .at's Map has no iteration
+/// API (DaemonConfig.providers is a HashMap).
+pub fn models(State(state) State<Arc<AppState>>) ~IntoResponse {
+    let cfg = state.cfg()
+    var out List<Value> = []
+    for (name, models) in server_glue.config_provider_models(cfg) {
+        for m in models {
+            let entry = serde_json.Map.new()
+            entry.insert("provider".to_string(), Value.String(name.clone()))
+            entry.insert("model".to_string(), Value.String(m.id))
+            out.push(Value.Object(entry))
+        }
+    }
+    let root = serde_json.Map.new()
+    root.insert("models".to_string(), Value.Array(out))
+    return Json(Value.Object(root))
+}
+
+/// `GET /v1/usage` — per-app token accounting.
+pub fn usage(State(state) State<Arc<AppState>>) ~IntoResponse {
+    var apps List<Value> = []
+    for (name, u) in state.tracker.all() {
+        let entry = serde_json.Map.new()
+        entry.insert("app".to_string(), Value.String(name.clone()))
+        entry.insert("input_tokens".to_string(), Value.Number(u.total_input_tokens))
+        entry.insert("output_tokens".to_string(), Value.Number(u.total_output_tokens))
+        entry.insert("total_tokens".to_string(), Value.Number(u.total_tokens()))
+        entry.insert("requests".to_string(), Value.Number(u.request_count))
+        apps.push(Value.Object(entry))
+    }
+    let root = serde_json.Map.new()
+    root.insert("usage".to_string(), Value.Array(apps))
+    return Json(Value.Object(root))
+}
+
+/// Resolve a `tier:<name>` token to a concrete model id via the default
+/// provider's model list (legacy fallback when TierRouter has no candidates).
+/// Returns None if the tier is unknown or the default provider has no matching
+/// model. (Mirrors rust-ref server.rs:419-425.)
+fn resolve_tier_model(token str, config DaemonConfig) ?str {
+    // strip_prefix("tier:") — .at str has no strip_prefix; emulate with slice.
+    if token.starts_with("tier:") == false {
+        return None
+    }
+    let tier_name_raw = token.slice(5)
+    let tier_name = tier_name_raw.trim().to_ascii_lowercase()
+    is ai_config.ModelTier.parse_name(tier_name) {
+        Some(tier) -> {
+            is config.providers.get(config.default_provider) {
+                Some(provider) -> {
+                    let models = provider.models
+                    is ai_config.resolve_model_id(tier, models) {
+                        Some(m) -> return Some(m),
+                        None -> return None
+                    }
+                    return None
+                },
+                None -> return None
+            }
+            return None
+        },
+        None -> return None
+    }
+    return None
+}
+
+/// `POST /v1/chat/completions` — receive a canonical request, resolve a
+/// provider (with tier fallback across the candidate chain), call upstream,
+/// return a canonical response.
+///
+/// STREAMING NOTE: the streaming branch (`req.stream == true`) is wired to
+/// server_glue::streaming_response (Phase 3.6) — the SSE bridge uses bare
+/// tokio::spawn + mpsc channel + async_stream::stream!, which have no .at
+/// precedent, so the whole streaming fn lives in glue. The non-streaming path
+/// (candidate chain + fallback + provider.complete) is fully transpiled here.
+pub fn chat_completions(
+    State(state) State<Arc<AppState>>,
+    headers HeaderMap,
+    Json(req) Json<CompletionRequest>
+) ~IntoResponse {
+    // x-app-name header (defaults to "unknown").
+    let app_name = header_or(headers, "x-app-name", "unknown")
+
+    var req = req
+    let is_tier_request = req.model.starts_with("tier:")
+
+    // Build the ordered (provider_name, model_id) candidate list.
+    var candidates List<(str, str)> = []
+    if is_tier_request {
+        let tier_name_raw = req.model.slice(5)
+        let tier_name = tier_name_raw.trim().to_ascii_lowercase()
+        is ModelTier.parse_name(tier_name.as_str()) {
+            Some(tier) -> {
+                let chain = state.tier_router.candidates_preferred(tier, req.preferred_provider)
+                for c in chain {
+                    candidates.push((c.provider, c.model))
+                }
+                if candidates.is_empty() {
+                    // Legacy fallback: resolve via default provider's models.
+                    let cfg = state.cfg()
+                    is resolve_tier_model(req.model, cfg) {
+                        Some(resolved) -> candidates.push((cfg.default_provider, resolved)),
+                        None -> {
+                            return error_response(StatusCode.BAD_REQUEST, "could not resolve tier '" + req.model + "' — no candidates")
+                        }
+                    }
+                }
+            },
+            None -> {
+                return error_response(StatusCode.BAD_REQUEST, "unknown tier '" + tier_name + "'")
+            }
+        }
+    } else {
+        // Concrete model id — find the provider that owns it.
+        let cfg = state.cfg()
+        var found = cfg.default_provider
+        for (name, models) in server_glue.config_provider_models(cfg) {
+            for m in models {
+                if m.id == req.model {
+                    found = name
+                }
+            }
+        }
+        candidates.push((found, req.model))
+    }
+
+    // Iterate candidates with fallback. A retryable failure moves to the next.
+    var last_error ?str = None
+    for entry in candidates {
+        let provider_name = entry.0
+        let model_id = entry.1
+        req.model = model_id
+
+        // Acquire a permit (bounded wait so a saturated provider fails fast).
+        is state.pool.acquire_with_timeout(provider_name, Duration.from_secs(30)).await {
+            Some(permit) -> {
+                is state.registry.get(provider_name) {
+                    Some(provider) -> {
+                        // Streaming: delegate to the glue SSE bridge (Phase 3.6).
+                        if req.stream {
+                            return server_glue.streaming_response(state, app_name, provider, req, permit)
+                        }
+                        // Non-streaming: try the call, fall back on retryable.
+                        is provider.complete(req).await {
+                            Ok(resp) -> {
+                                is resp.usage {
+                                    Some(u) -> state.tracker.record(app_name, u.input_tokens, u.output_tokens),
+                                    None -> {}
+                                }
+                                return ok_response(resp)
+                            },
+                            Err(e) -> {
+                                let retryable = e.is_retryable()
+                                last_error = Some(e.message())
+                                if retryable {
+                                    // try next candidate
+                                } else {
+                                    return error_response(StatusCode.BAD_GATEWAY, "upstream error: " + e.message())
+                                }
+                            }
+                        }
+                    },
+                    None -> {
+                        last_error = Some("provider '" + provider_name + "' not in registry")
+                    }
+                }
+            },
+            None -> {
+                last_error = Some("provider '" + provider_name + "' concurrency pool unavailable")
+            }
+        }
+    }
+
+    // All candidates exhausted.
+    let msg = is last_error {
+        Some(e) -> e,
+        None -> "unknown"
+    }
+    return error_response(StatusCode.BAD_GATEWAY, "all providers failed; last error: " + msg)
+}
+
+/// Build a JSON error response `(status, Json({"error":{"message":...}}))`.
+/// (Replaces rust-ref's `(StatusCode, Json(json!(...))).into_response()` — we
+/// hand-build the Value and let the IntoResponse impl for tuples do the rest.)
+fn error_response(status StatusCode, message str) Response {
+    let err = serde_json.Map.new()
+    err.insert("message".to_string(), Value.String(message))
+    let root = serde_json.Map.new()
+    root.insert("error".to_string(), Value.Object(err))
+    return (status, Json(Value.Object(root))).into_response()
+}
+
+/// Build a JSON success response from a CompletionResponse.
+fn ok_response(resp CompletionResponse) Response {
+    let body = serde_json.to_value(resp)
+    return (StatusCode.OK, Json(body)).into_response()
+}
+
+/// Read a header value as a string, or return the default. (Headers are ASCII;
+/// non-UTF8 falls back to default.)
+fn header_or(headers HeaderMap, name str, default str) str {
+    is headers.get(name) {
+        Some(v) -> {
+            is v.to_str() {
+                Ok(s) -> return s.to_string(),
+                Err(_) -> return default.to_string()
+            }
+            return default.to_string()
+        },
+        None -> return default.to_string()
+    }
+    return default.to_string()
+}

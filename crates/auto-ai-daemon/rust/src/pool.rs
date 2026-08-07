@@ -34,7 +34,7 @@ pub struct ConcurrencyManager {
 }
 
 impl ConcurrencyManager {
-    pub fn from_config(&self, config: DaemonConfig) -> ConcurrencyManager {
+    pub fn from_config(config: &DaemonConfig) -> ConcurrencyManager {
         let mut pools = HashMap::new();
         let mut limits = HashMap::new();
         let mut names: Vec<String> = vec![];

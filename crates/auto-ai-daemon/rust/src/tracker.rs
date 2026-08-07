@@ -36,14 +36,14 @@ impl AppUsage {
 #[derive(Debug)]
 pub struct UsageTracker {
     pub apps: Mutex<std::collections::HashMap<String, AppUsage>>,
-    pub names: Vec<String>,
+    pub names: Mutex<Vec<String>>,
 }
 
 impl UsageTracker {
     pub fn new() -> UsageTracker {
-        return UsageTracker { apps: Mutex::new(std::collections::HashMap::new()), names: vec![] };
+        return UsageTracker { apps: Mutex::new(std::collections::HashMap::new()), names: Mutex::new(vec![]) };
     }
-    pub fn record(&mut self, app: &str, input: u32, output: u32) {
+    pub fn record(&self, app: &str, input: u32, output: u32) {
         let mut guard = self.apps.lock();
         match guard.get(app) {
             Some(entry) => {
@@ -63,7 +63,7 @@ impl UsageTracker {
                 e.total_output_tokens = output;
                 e.request_count = 1;
                 guard.insert(app.to_string(), e);
-                self.names.push(app.to_string());
+                self.names.lock().push(app.to_string());
             },
         };
     }
@@ -77,8 +77,9 @@ impl UsageTracker {
     }
     pub fn all(&self) -> Vec<(String, AppUsage)> {
         let guard = self.apps.lock();
+        let names = self.names.lock();
         let mut out: Vec<(String, AppUsage)> = vec![];
-        for name in &self.names {
+        for name in names.iter() {
             match guard.get(name) {
                 Some(u) => out.push((name.clone(), u.clone())),
                 None => {},

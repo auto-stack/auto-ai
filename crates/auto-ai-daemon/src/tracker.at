@@ -39,14 +39,14 @@ ext AppUsage {
 #[derive(Debug)]
 pub type UsageTracker {
     apps Mutex<Map<str, AppUsage>>
-    names List<str>
+    names Mutex<List<str>>
 }
 
 ext UsageTracker {
     pub fn new() UsageTracker {
         return UsageTracker(
             apps: Mutex.new(Map.new()),
-            names: []
+            names: Mutex.new([])
         )
     }
 
@@ -70,7 +70,7 @@ ext UsageTracker {
                 e.total_output_tokens = output
                 e.request_count = 1
                 guard.set(app.to_string(), e)
-                self.names.push(app.to_string())
+                self.names.lock().push(app.to_string())
             }
         }
     }
@@ -88,8 +88,9 @@ ext UsageTracker {
     /// Get all app usage as (app_name, AppUsage) pairs, in insertion order.
     pub fn all() List<(str, AppUsage)> {
         let guard = self.apps.lock()
+        let names = self.names.lock()
         var out List<(str, AppUsage)> = []
-        for name in self.names {
+        for name in names {
             is guard.get(name) {
                 Some(u) -> out.push((name, u)),
                 None -> {}
