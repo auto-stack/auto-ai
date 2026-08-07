@@ -1,7 +1,7 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
 > **状态**：✅ 完成（Phase 0-6）。12 个 .at 源文件，全 Auto 版 e2e 跑通（转译版 agent → client → **daemon** → LLM），
-> 转译版 daemon 与原生版 /v1/chat/completions 响应逐字一致，KNOWN-DEBT 已记录
+> 转译版 daemon 与原生版 /v1/chat/completions 响应结构 + token 计数一致（content 文本因 LLM 非确定性偶有大小写差异），KNOWN-DEBT 已记录
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -288,7 +288,7 @@ AppState + 4 个核心 handler；server_glue.rs 覆盖路由挂载 + 3 个 handl
 ### Phase 5 — 端到端验证 ✅ 完成
 
 **全 Auto 版三栈链路跑通**：转译版 agent → 转译版 client → **转译版 daemon** → LLM。
-转译版 daemon 与原生版行为对等（/v1/chat/completions 同 prompt 响应逐字一致）。
+转译版 daemon 与原生版行为对等（/v1/chat/completions 同 prompt 响应结构 + token 计数一致；content 文本因 LLM 非确定性偶有大小写差异，非转译缺陷）。
 
 - [x] 5.1 转译版 daemon（aaid-a2r）build 出二进制（14MB，link 锁清理后成功）
 - [x] 5.2 启动转译版 daemon + 全链路 e2e：
@@ -298,9 +298,9 @@ AppState + 4 个核心 handler；server_glue.rs 覆盖路由挂载 + 3 个 handl
         agent 输出 `hello world`，断言通过
 - [x] 5.3 对比原生 daemon 与转译版 daemon 行为：
       - `/v1/status`：结构一致（status:running + 相同的 3 provider pool；pools 顺序因 HashMap 迭代而异，正常）
-      - `/v1/chat/completions`（同 prompt "Reply with exactly one word: ok"）：**逐字相同响应**
-        `{"content":"ok","error":null,"model":"glm-5.2","stop_reason":"end_turn","tool_calls":[],
-         "usage":{"input_tokens":13,"output_tokens":2}}`（连 token 计数都一致）
+      - `/v1/chat/completions`（同 prompt "Reply with exactly one word: ok"）：**响应结构 + token 计数一致**
+        （6/6 字段对齐：content/model/stop_reason/tool_calls/usage/error；input 12/output 2 一致）。
+        content 文本偶有大小写差异（"ok" vs "Ok"）——LLM 非确定性，非转译缺陷。
 
 **e2e 验证的意义**：证明 daemon 从 `.at` 转译后端到端工作——axum handler（server.at）→ tier_router →
 provider registry（build_registry）→ OpenAiProvider.complete（openai.at）→ http.request().send_async()
@@ -345,7 +345,7 @@ auto-ai 的三层核心（agent + client + daemon）全部有 Auto 版且全链�
 - [x] services.rs 直接复制（OS 胶水，非转译）
 - [x] 转译版 daemon 能 build 出 aaid 二进制 + 启动 + 响应 /v1/status（Phase 5）
 - [x] **全链路 Auto 版 e2e**：转译版 agent + client + daemon 三层跑通（Phase 5，e2e-daemon-a2r.sh）
-- [x] 转译版 daemon 与原生版 /v1/chat/completions 行为逐字一致（Phase 5 对比验证）
+- [x] 转译版 daemon 与原生版 /v1/chat/completions 行为结构一致（Phase 5 对比验证；token 计数一致，content 文本因 LLM 非确定性偶异）
 - [x] KNOWN-DEBT 记录 select! / CancelOnDrop / services.rs / streaming / 156 sed workaround 限制（Phase 6）
 
 ## 6. 里程碑意义
@@ -357,5 +357,5 @@ auto-ai 的三层核心（agent + client + daemon）全部有 Auto 版且全链�
 **✅ 计划完成（Phase 0-6，2026-08-07）**：daemon 的 12 个 .at 源文件（config/tracker/sse/format/
 tier_router/pool/error/provider/server/openai/anthropic/ollama）+ 4 个手写胶水（tier_router_glue /
 server_glue / provider_glue / services.rs）+ 手写 main.rs。全 Auto 版 e2e 跑通（转译版 daemon 与
-原生版 /v1/chat/completions 逐字一致）。已知限制（select!/impl Drop/main 手写/services.rs/
+原生版 /v1/chat/completions 结构 + token 一致）。已知限制（select!/impl Drop/main 手写/services.rs/
 框架 wiring/156 sed workaround）已记入 KNOWN-DEBT。
