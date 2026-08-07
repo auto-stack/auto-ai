@@ -5,7 +5,7 @@
 # which makes a2r emit `pub use` (re-exports) + `#![allow(...)]` pragma.
 # After transpilation, this script INJECTS the assembly-layer scaffolding
 # a2r cannot know about:
-#   - extern-crate shims (pub mod auto_ai_client { pub use ::auto_ai_client::*; })
+#   - extern-crate shims (pub mod auto_ai_client { pub use ::auto_ai_client_a2r::*; })
 #   - `pub mod X;` declarations for hoisted modules
 #
 # Assembly rules (hoisting):
@@ -37,7 +37,10 @@ read_shims() {
     cat <<'SHIMS'
 // ── extern-crate shims (a2r emits `use crate::<these>::...`) ────────────────
 pub mod auto_ai_client {
-    pub use ::auto_ai_client::*;
+    // Plan 024: agent now consumes the TRANSPILED client (auto-ai-client-a2r),
+    // not rust-ref. The shim re-exports it under the name agent .at source uses
+    // (auto_ai_client), so the rest of the crate is unaffected.
+    pub use ::auto_ai_client_a2r::*;
 }
 pub mod ai_config {
     pub use ::ai_config::*;

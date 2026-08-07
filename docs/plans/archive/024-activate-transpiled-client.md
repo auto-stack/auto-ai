@@ -1,6 +1,6 @@
 # Plan 024: 激活转译版 auto-ai-client（agent→client 全链路 Auto 版）
 
-> **状态**：📋 计划（待批准）
+> **状态**：✅ 完成（2026-08-07）— 转译版 agent→client 全链路 Auto 版，e2e 实跑通过
 > **仓库**：auto-ai（纯 auto-ai 侧）
 > **目标**：让转译版 agent（`auto-ai-react`）消费转译版 client（`auto-ai-client-a2r`），
 > 使 agent→client 路线完整 Auto 化（不再经 rust-ref client）。
@@ -108,8 +108,27 @@
 
 ## 4. 完成判定
 
-- [ ] 转译版 agent（auto-ai-react）的运行链路里，client 层用的是转译版（auto_ai_client_a2r），
+- [x] 转译版 agent（auto-ai-react）的运行链路里，client 层用的是转译版（auto_ai_client_a2r），
       不再经 rust-ref
-- [ ] e2e 实跑通过（转译版 client → a2r-std http → daemon → LLM）
-- [ ] workspace + 转译版测试全绿，无回归
-- [ ] KNOWN-DEBT 记录 sync-in-async 限制
+- [x] e2e 实跑通过（转译版 client → a2r-std http → daemon → LLM）— 纯文本 + 工具调用两条路径
+- [x] workspace + 转译版测试全绿（15/15），无回归
+- [x] KNOWN-DEBT 记录 sync-in-async 限制
+
+## 实施记录（2026-08-07）✅
+
+**Phase 1（.at 源码修复）**：`lib.at` 加 `pub`（type AiClient + ext + new/with_url/default/url/is_daemon_mode）；
+`complete_stream` 的 `on_event fn(JsonValue)` → `Arc<Fn(JsonValue)>`（Plan 397 能力）；
+加 `use.rust std::sync::Arc`。retranspile 0 错，转译产物确认 `pub struct AiClient` + `Arc<dyn Fn(JsonValue) + Send + Sync>`。
+
+**Phase 2（依赖切换）**：`agent/rust/Cargo.toml` 的 `auto-ai-client` dep → `auto-ai-client-a2r = { path = "../../auto-ai-client/rust" }`；
+`agent/retranspile.sh` 的 shim `pub use ::auto_ai_client::*` → `pub use ::auto_ai_client_a2r::*`（agent .at 源码的 `use auto_ai_client:` 不变）。
+
+**Phase 3（client_impl.rs 重写）**：`impl Client for AiClient` 现适配转译版 AiClient（owned req + Arc 回调直接转发）；
+StreamingAiClient 保留（侧信道 mpsc 给 main.rs printer），complete/complete_stream 用 `Arc::new(move |ev| ...)` 包装。
+
+**Phase 4（验证）**：转译版 cargo check 0 错；transpiled_harness 15/15 全绿；workspace 0 错（rust-ref 不受影响）；
+**e2e 实跑**（daemon glm-5.2 + 配置文件 key）：纯文本 "hello world"（1 turn, 3 tokens）+ 工具调用 echo（2 turns, 21 tokens）全通过。
+转译版 client 经 a2r-std http（ureq）与 daemon 通信正常——**agent→client 全链路 Auto 版确认可运行**。
+
+**Phase 5（KNOWN-DEBT）**：记录 sync-in-async 限制（a2r-std http 用 ureq 同步，async fn 实际阻塞；
+auto-ai-react 单用户 REPL 可接受，生产前置需改异步）。

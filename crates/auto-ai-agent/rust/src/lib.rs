@@ -3,7 +3,10 @@
 
 // ── extern-crate shims (a2r emits `use crate::<these>::...`) ────────────────
 pub mod auto_ai_client {
-    pub use ::auto_ai_client::*;
+    // Plan 024: agent now consumes the TRANSPILED client (auto-ai-client-a2r),
+    // not rust-ref. The shim re-exports it under the name agent .at source uses
+    // (auto_ai_client), so the rest of the crate is unaffected.
+    pub use ::auto_ai_client_a2r::*;
 }
 pub mod ai_config {
     pub use ::ai_config::*;

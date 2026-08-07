@@ -16,6 +16,7 @@ pub mod error;
 use a2r_std;
 use a2r_std::*;
 
+pub use std::sync::Arc;
 pub use crate::error::{ClientError};
 pub use crate::ai_config::{CompletionRequest, CompletionResponse, ContentBlock, Message, ToolCall, ToolDefinition, Usage};
 /// AutoOS AI client — a thin daemon HTTP client.
@@ -50,27 +51,27 @@ pub use crate::ai_config::{CompletionRequest, CompletionResponse, ContentBlock, 
 /// stores only the URL and issues each request via the global `http` module —
 /// Auto's HTTP client is connection-pooled internally.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct AiClient {
+pub struct AiClient {
     pub url: String,
 }
 
 impl AiClient {
-    fn new() -> Result<AiClient, ClientError> {
+    pub fn new() -> Result<AiClient, ClientError> {
         match daemon::ensure_daemon() {
             Some(url) => return Ok(AiClient { url: url.to_string() }),
             None => return Err(ClientError::DaemonUnavailable),
         }
     }
-    fn with_url(url: &str) -> AiClient {
+    pub fn with_url(url: &str) -> AiClient {
         return AiClient { url: url.to_string() };
     }
-    fn default() -> AiClient {
+    pub fn default() -> AiClient {
         return AiClient::with_url(daemon::daemon_url().as_str());
     }
-    fn url(&self) -> String {
+    pub fn url(&self) -> String {
         return self.url.clone();
     }
-    fn is_daemon_mode(&self) -> bool {
+    pub fn is_daemon_mode(&self) -> bool {
         return true;
     }
     pub async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, ClientError> {
@@ -99,7 +100,7 @@ impl AiClient {
             Err(e) => return Err(ClientError::Api(format!("parse response: {}", e))),
         }
     }
-    pub async fn complete_stream(&self, req: CompletionRequest, on_event: fn(JsonValue) -> ()) -> Result<CompletionResponse, ClientError> {
+    pub async fn complete_stream(&self, req: CompletionRequest, on_event: Arc<dyn Fn(JsonValue) + Send + Sync>) -> Result<CompletionResponse, ClientError> {
         let mut sreq: CompletionRequest = req.clone();
         sreq.stream = true;
 

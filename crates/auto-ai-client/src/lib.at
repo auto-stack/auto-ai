@@ -25,6 +25,8 @@
 /// Rust** (where serde_json + reqwest provide the real behavior). The pure-VM
 /// path is exercised only for the non-IO pieces (SseBuffer, error formatting).
 
+use.rust std::sync::Arc
+
 use error: ClientError
 use daemon
 use ai_config: CompletionRequest, CompletionResponse, ContentBlock, Message, ToolCall, ToolDefinition, Usage
@@ -38,14 +40,14 @@ use ai_config: CompletionRequest, CompletionResponse, ContentBlock, Message, Too
 /// Unlike the Rust original (which holds a `reqwest::Client`), the Auto port
 /// stores only the URL and issues each request via the global `http` module —
 /// Auto's HTTP client is connection-pooled internally.
-type AiClient {
+pub type AiClient {
     url str
 }
 
-ext AiClient {
+pub ext AiClient {
     /// Create a client. Auto-discovers the daemon (lazy-starting it if needed,
     /// ssh-agent model). Errors if the daemon can't be reached.
-    static fn new() Result<AiClient, ClientError> {
+    pub static fn new() Result<AiClient, ClientError> {
         is daemon.ensure_daemon() {
             Some(url) -> {
                 return Ok(AiClient(url: url))
@@ -55,24 +57,24 @@ ext AiClient {
     }
 
     /// Create a client pointed at an explicit daemon URL (for testing).
-    static fn with_url(url str) AiClient {
+    pub static fn with_url(url str) AiClient {
         return AiClient(url: url)
     }
 
     /// Default: honor `$AAID_URL` instead of hardcoding the default port, so
     /// tests and callers that set the env var aren't surprised (plan 011 L6).
     /// Mirrors Rust's `impl Default for AiClient` (lib.rs:210-216).
-    static fn default() AiClient {
+    pub static fn default() AiClient {
         return AiClient.with_url(daemon.daemon_url())
     }
 
     /// The daemon URL this client talks to.
-    fn url() str {
+    pub fn url() str {
         return self.url
     }
 
     /// Always true (the client is daemon-only).
-    fn is_daemon_mode() bool {
+    pub fn is_daemon_mode() bool {
         return true
     }
 
@@ -119,7 +121,7 @@ ext AiClient {
     /// handle each type.
     ///
     /// Returns the accumulated full text (all deltas concatenated) on success.
-    pub fn complete_stream(req CompletionRequest, on_event fn(JsonValue)) ~Result<CompletionResponse, ClientError> {
+    pub fn complete_stream(req CompletionRequest, on_event Arc<Fn(JsonValue)>) ~Result<CompletionResponse, ClientError> {
         var sreq = req
         sreq.stream = true
 

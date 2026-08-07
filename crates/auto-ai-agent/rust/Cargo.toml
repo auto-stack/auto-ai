@@ -37,7 +37,7 @@ auto-val = { path = "../../../../auto-lang/crates/auto-val", features = ["serde"
 # checkout. (The earlier `../../../../../../` form only worked inside `.worktrees/`
 # because the extra level happened to line the depth up — it broke the main
 # checkout, which is the canonical build location.)
-auto-ai-client = { path = "../../auto-ai-client" }
+auto-ai-client-a2r = { path = "../../auto-ai-client/rust" }
 ai-config = { path = "../../ai-config" }
 
 async-trait = "0.1"
