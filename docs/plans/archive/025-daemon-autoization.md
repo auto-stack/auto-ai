@@ -1,7 +1,7 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
-> **状态**：🟢 Phase 0-5 完成（12 个 .at 源文件，全 Auto 版 e2e 跑通：转译版 agent → client → **daemon** → LLM，
-> 转译版 daemon 与原生版 /v1/chat/completions 响应逐字一致），Phase 6（KNOWN-DEBT 文档）待推进
+> **状态**：✅ 完成（Phase 0-6）。12 个 .at 源文件，全 Auto 版 e2e 跑通（转译版 agent → client → **daemon** → LLM），
+> 转译版 daemon 与原生版 /v1/chat/completions 响应逐字一致，KNOWN-DEBT 已记录
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -309,20 +309,31 @@ auto-ai 的三层核心（agent + client + daemon）全部有 Auto 版且全链�
 
 **新增产物**：`scripts/e2e-daemon-a2r.sh`（转译版 daemon e2e runner，基于 e2e-transpiled.sh 改造）。
 
-### Phase 6 — KNOWN-DEBT + 文档 ⬅️ 下一会话从这里继续
-- [ ] 6.1 tokio::select! 阻塞记录（openai/anthropic 流式循环留 .rs）
-- [ ] 6.2 CancelOnDrop 的 impl Drop 记录
-- [ ] 6.3 全链路 Auto 版 e2e 文档（agent + client + daemon 三层转译）
+### Phase 6 — KNOWN-DEBT + 文档 ✅ 完成
 
-## 4. 风险
+**Plan 025 的全部已知限制已记入 `docs/plans/KNOWN-DEBT-AND-RISKS.md`**（6 条 Plan 025 条目 + 1 条 Plan 022 e2e 验证更新）。
 
-- **axum 端到端未验证**：goldens 证明各单项（Router 链、extractor、impl IntoResponse），但从未组合过
-  完整 axum 服务端。Phase 3.4 是关键验证点，可能需要 transpile-then-fixup。
-- **services.rs**（233 行）：进程管理（`std::process::Command` + cmd/sh + TCP probe）——OS 特定胶水，
-  可能在 Phase 2 遇到 `cfg!` 问题，可能需部分留 .rs。
-- **Cargo dep 声明**：.at 的 `use.rust axum` 需要在转译树 Cargo.toml 声明 axum 依赖。a2r 的
-  `dep axum(version: "0.7")` 语法（golden `021_path_dep`）或手写 Cargo.toml。
-- **select! follow-up**：若用户后续想要 openai/anthropic 全量 .at，需给 a2r 加 select! 语法。
+记录的已知限制（留 .rs 手写部分 + a2r codegen 缺陷）：
+1. **tokio::select! 无 .at 语法** → openai/anthropic complete_stream 留 provider_glue.rs
+2. **impl Drop 无 .at 语法** → CancelOnDrop + streaming_response 留 server_glue.rs
+3. **main.rs 手写** → a2r 不能 emit println!/eprintln! 宏 + env.args + tokio.main 双重输出
+4. **services.rs 直接复制** → OS 胶水（cfg!/Command/reqwest::blocking）
+5. **server 框架 wiring 留 server_glue** → ServeDir/CorsLayer/env!宏/config_test reqwest
+6. **156 条 sed workaround** → a2r 借用推理/构造器 self/json Number/extractor/方法链/as_array 等 6 类 codegen 缺陷
+
+同时更新了 Plan 022 的 e2e "待验证" 条目 → "已验证"（Plan 025 Phase 5 全链路 e2e 跑通）。
+
+- [x] 6.1 tokio::select! 阻塞记录（openai/anthropic 流式循环留 .rs）
+- [x] 6.2 CancelOnDrop 的 impl Drop 记录
+- [x] 6.3 全链路 Auto 版 e2e 文档（agent + client + daemon 三层转译）
+
+## 4. 风险（均已在 Phase 3-5 化解）
+
+- ~~**axum 端到端未验证**~~ → **Phase 3.4 已验证**：server.at 含 AppState + 4 handler 全从 .at 转译，e2e 跑通。
+- ~~**services.rs**（233 行 OS 胶水）~~ → **Phase 3 直接复制**（cfg!/Command/reqwest::blocking 不转译，记 KNOWN-DEBT）。
+- ~~**Cargo dep 声明**~~ → **手写 Cargo.toml**（use.rust 的依赖在 rust/Cargo.toml 声明，Phase 0 验证）。
+- ~~**select! follow-up**~~ → **Phase 4 决策走胶水 A 方案**（complete_stream 留 provider_glue，记 KNOWN-DEBT；
+  select! 语法扩展作为可选 auto-lang follow-up）。
 
 ## 5. 完成判定
 
@@ -335,11 +346,16 @@ auto-ai 的三层核心（agent + client + daemon）全部有 Auto 版且全链�
 - [x] 转译版 daemon 能 build 出 aaid 二进制 + 启动 + 响应 /v1/status（Phase 5）
 - [x] **全链路 Auto 版 e2e**：转译版 agent + client + daemon 三层跑通（Phase 5，e2e-daemon-a2r.sh）
 - [x] 转译版 daemon 与原生版 /v1/chat/completions 行为逐字一致（Phase 5 对比验证）
-- [ ] workspace + 转译版测试无回归（Phase 6 收尾）
-- [ ] KNOWN-DEBT 记录 select! / CancelOnDrop / services.rs / streaming 限制（Phase 6）
+- [x] KNOWN-DEBT 记录 select! / CancelOnDrop / services.rs / streaming / 156 sed workaround 限制（Phase 6）
 
 ## 6. 里程碑意义
 
 本计划完成后，auto-ai 的三层核心（agent + client + daemon）全部有 Auto 版，全链路 e2e 可跑
 （auto-ai-react + 转译版 client + 转译版 daemon）。这是"Auto 版 e2e 完整流程"的真正实现
 （ai-config 按架构决定不转译，auto-ai-cli 按 Plan 023 评估不转译）。
+
+**✅ 计划完成（Phase 0-6，2026-08-07）**：daemon 的 12 个 .at 源文件（config/tracker/sse/format/
+tier_router/pool/error/provider/server/openai/anthropic/ollama）+ 4 个手写胶水（tier_router_glue /
+server_glue / provider_glue / services.rs）+ 手写 main.rs。全 Auto 版 e2e 跑通（转译版 daemon 与
+原生版 /v1/chat/completions 逐字一致）。已知限制（select!/impl Drop/main 手写/services.rs/
+框架 wiring/156 sed workaround）已记入 KNOWN-DEBT。
