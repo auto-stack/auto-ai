@@ -12,7 +12,7 @@ use async_trait;
 use crate::wire::{ToolDefinition, JsonValue};
 use crate::error::{ToolError};
 #[async_trait::async_trait]
-pub trait Tool {
+pub trait Tool: Send + Sync {
     fn name(&self) -> String;
     fn description(&self) -> String;
     fn parameters(&self) -> JsonValue{

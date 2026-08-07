@@ -12,6 +12,8 @@ use std::sync::atomic::Ordering;
 use std::future::Future;
 use std::pin::Pin;
 use async_trait;
+use serde_json;
+use serde_json::Value;
 use crate::auto_ai_client::{ClientError, CompletionRequest, CompletionResponse, Message};
 use crate::error::{AgentError};
 use crate::memory::{Memory};
@@ -37,25 +39,28 @@ use crate::wire::{ContentBlock, JsonValue, ToolDefinition};
 /// AgentResult, ToolCallRecord, the Agent struct, truncate_tool_result, public
 /// accessors) AND the ReAct loop (run / run_stream / run_inner / build_request).
 /// 
-/// ARCHITECTURE ADAPTATION (Auto side; see 013-handoff §D): the Rust original
-/// drives events via an `Arc<dyn Fn(StreamEvent)>` callback (true streaming, fed
-/// by the client's SSE deltas). Auto's parser rejects `dyn Fn` parameters, so
-/// this port drives events through an **Auto actor sink** instead (auto-lang
-/// Plan 387 §16/17): `run_stream` takes a `TaskRef<StreamEvent>` handle (spawned
-/// from `EventSink`, defined below) and every event point does `sink.send(...)`.
-/// `run` spawns a throwaway sink so the loop body is sink-only (no Option
-/// branching — mirrors rust-ref's "on_event is always a sink", review-003 M4).
-/// Events reach the actor mailbox asynchronously (TaskRef.send is non-blocking);
-/// the sink handler forwards each event to `cb` — a `Box<dyn Fn(StreamEvent)>`
-/// closure (Plan 390 §15.10) injected at spawn, so apps can receive the stream.
+/// ARCHITECTURE (streaming — Plan 022 follow-up, auto-lang Plan 397): the loop
+/// now mirrors rust-ref: `run_inner` calls `Client.complete_stream(req, cb)`
+/// where `cb` is an `Arc<Fn(JsonValue)>` (Plan 397 confirmed this works as a spec
+/// method parameter). The cb forwards each SSE text delta to the EventSink actor
+/// as `StreamEvent.Delta` (per-token streaming). The Client spec's
+/// `complete_stream` has a default impl that falls back to non-streaming
+/// `complete` + one synthetic delta, so test mocks stay simple.
+/// 
+/// Event delivery uses an **Auto actor sink** (auto-lang Plan 387 §16/17):
+/// `run_stream` takes a `TaskRef<StreamEvent>` handle (spawned from `EventSink`,
+/// defined below) and every event point does `sink.send(...)`. `run` spawns a
+/// throwaway sink so the loop body is sink-only (mirrors rust-ref's "on_event is
+/// always a sink", review-003 M4). The sink handler forwards each event to `cb` —
+/// a `Box<dyn Fn(StreamEvent)>` closure (Plan 390 §15.10) injected at spawn.
 /// Tool execution stays async (`execute ~Result<str,ToolError>`).
 /// 
 /// Other Auto-side adaptations (none affect behavior):
 /// - generic `fn new<P: Role>(role P, ...)` → `new_shared(role Role, ...)` with
 /// a spec-typed field (Auto `spec` is auto-dyn, equivalent to Arc<dyn Role>).
-/// - `complete_stream` on the Client spec is NOT ported (needs dyn-Fn); only
-/// `complete` is. The loop uses complete (non-streaming) — the actor sink
-/// restores the agent-layer *event* stream without a transport-level stream.
+/// - `StreamEvent.Thinking` (rust-ref's reasoning-event variant) is NOT yet
+/// ported — the cb currently forwards all text as Delta (Plan 022 §6.1
+/// conservative increment; reasoning distinction is a follow-up).
 /// 
 /// VARIANT NOTE: StreamEvent's struct-style variants are modeled as tuple
 /// variants (plan 013 gotcha B3). Field order:
@@ -91,8 +96,9 @@ pub fn truncate_tool_result(s: &str) -> String {
 }
 
 #[async_trait::async_trait]
-pub trait Client {
+pub trait Client: Send + Sync {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, ClientError>;
+    async fn complete_stream(&self, req: CompletionRequest, on_event: Arc<dyn Fn(JsonValue) + Send + Sync>) -> Result<CompletionResponse, ClientError>;
 }
 
 
@@ -103,13 +109,16 @@ pub trait Client {
 /// Abstracts auto_ai_client.AiClient so the ReAct loop can be unit-tested with
 /// a deterministic mock.
 /// 
-/// NOTE: the Rust `complete_stream` default method takes an
-/// `Arc<dyn Fn(serde_json::Value)>` callback, which Auto can't express. The
-/// transport-level stream stays out of this spec — the agent-layer event stream
-/// (StreamEvent) is restored via the EventSink actor instead (Plan 021 缺口 1).
-/// Callers that need transport token-level streaming call the transport's own
-/// complete_stream directly (the real AiClient adapter does this in driver.at).
+/// complete_stream (Plan 022 follow-up, auto-lang Plan 397): takes an
+/// `Arc<Fn(JsonValue)>` callback invoked per SSE event the daemon emits. The
+/// real AiClient adapter (client_impl.rs) overrides it with true SSE streaming;
+/// test mocks implement it via the `default_complete_stream` helper (a free fn
+/// in client_impl.rs) since spec default bodies can't call self methods
+/// (a2r DIV-TRAIT-A2R-3 known gap).
 /// One non-streaming completion request.
+/// Streaming completion. Calls `on_event` for each SSE event the daemon
+/// emits (a JsonValue like {"type":"delta","text":"…"}). Returns the
+/// accumulated full response on success.
 /// Events emitted by Agent.run_stream as the ReAct loop progresses.
 /// Tuple variants (plan 013 gotcha B3) — see file header for field order.
 /// A chunk of the model's text output. (text)
@@ -348,7 +357,12 @@ impl Agent {
             
 
 
-            let resp = self.client.complete(req).await?;
+
+
+
+
+            let sink_cb = sink.clone();
+            let resp = self.client.complete_stream(req, Arc::new(move |ev| forward_sse_delta(ev.clone(), &sink_cb))).await?;
             
 
             if is_cancelled(cancel.clone()) {
@@ -556,6 +570,25 @@ fn record_usage(result: AgentResult, resp: CompletionResponse) -> u32 {
 /// A Cancelled event carrying a snapshot of the current result.
 fn cancelled_event(result: AgentResult) -> StreamEvent {
     return StreamEvent::Cancelled(clone_result(result.clone()));
+}
+
+/// Forward one SSE event (from Client.complete_stream's callback) to the
+/// EventSink as a StreamEvent.Delta. Conservative (Plan 022 §6.1): every text
+/// chunk becomes Delta; the reasoning→Thinking distinction is a follow-up.
+/// Extracted as a free fn so the run_inner closure stays a single-expression
+/// arrow closure (a2r parses `(ev) => expr`, not block-body move closures).
+/// `@TaskRef` (by ref): TaskRef is not Clone; send takes &self, so a borrow
+/// suffices and avoids a2r's move-reuse clone inference (Plan 019 class D).
+fn forward_sse_delta(ev: JsonValue, sink: &a2r_std::task::TaskRef<StreamEvent>) {
+    match ev.get("text") {
+        Some(t) => {
+            let text = t.as_str().unwrap_or_default();
+            if text.is_empty() == false {
+                sink.send(StreamEvent::Delta(text.to_string()));
+            }
+        },
+        None => {},
+    };
 }
 
 /// Copy an AgentResult (used for event payloads, so the returned result stays

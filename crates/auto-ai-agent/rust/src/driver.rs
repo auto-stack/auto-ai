@@ -111,7 +111,7 @@ fn noop_stream_handler(_ev: StreamEvent) {
     return;
 }
 
-pub trait AgentFactory {
+pub trait AgentFactory: Send + Sync {
     fn build_agent(&self, role_id: &str, handoff: Option<HandoffDocument>) -> Result<Agent, String>;
 }
 

@@ -133,7 +133,7 @@ fn noop_stream_handler(_ev StreamEvent) void {
 ///
 /// The factory receives the role name (e.g. "coder") and the previous step's
 /// handoff (if any). It returns a fully-configured Agent ready to run.
-pub spec AgentFactory {
+pub spec AgentFactory: Send + Sync {
     /// Build an agent for the given role, optionally seeded with the previous
     /// step's handoff. Errors as a string message.
     fn build_agent(role_id str, handoff ?HandoffDocument) Result<Agent, str>

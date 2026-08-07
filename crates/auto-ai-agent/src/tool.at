@@ -28,7 +28,7 @@ use error: ToolError
 ///
 /// Implementors supply the metadata the model sees (name/description/
 /// parameters) and an async execute.
-pub spec Tool {
+pub spec Tool: Send + Sync {
     /// Tool name (must be unique within a registry).
     fn name() str
 

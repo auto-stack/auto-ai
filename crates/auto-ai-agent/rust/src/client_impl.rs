@@ -8,7 +8,9 @@
 
 use crate::agent::Client;
 use crate::auto_ai_client::{AiClient, ClientError, CompletionRequest, CompletionResponse};
+use crate::wire::JsonValue;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Plain non-streaming adapter (used when live display isn't needed).
 #[async_trait]
@@ -18,6 +20,20 @@ impl Client for AiClient {
         req: CompletionRequest,
     ) -> Result<CompletionResponse, ClientError> {
         AiClient::complete(self, &req).await
+    }
+
+    /// True SSE streaming (Plan 022 follow-up): drives the real
+    /// AiClient::complete_stream, forwarding each daemon SSE event to the
+    /// callback. Mirrors rust-ref agent.rs:79-85. The callback is an
+    /// `Arc<dyn Fn(Value) + Send + Sync>`; the real AiClient takes
+    /// `impl Fn(Value) + Send + 'static`, so we unwrap the Arc into a move
+    /// closure (the Arc is captured by the closure, cheap).
+    async fn complete_stream(
+        &self,
+        req: CompletionRequest,
+        on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
+    ) -> Result<CompletionResponse, ClientError> {
+        AiClient::complete_stream(self, &req, move |ev| on_event(ev)).await
     }
 }
 
@@ -54,6 +70,24 @@ impl Client for StreamingAiClient {
         // assembled CompletionResponse (concatenated text + tool_calls/usage).
         AiClient::complete_stream(&self.inner, &req, move |ev| {
             let _ = tx.send(ev);
+        })
+        .await
+    }
+
+    /// True SSE streaming (Plan 022 follow-up): forwards each daemon SSE event
+    /// BOTH to the `on_event` callback (the agent's formal stream) AND to the
+    /// side-channel mpsc (the REPL's live printer). This keeps the existing
+    /// main.rs printer working while the agent's StreamEvent.Delta path is now
+    /// driven through the formal callback.
+    async fn complete_stream(
+        &self,
+        req: CompletionRequest,
+        on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
+    ) -> Result<CompletionResponse, ClientError> {
+        let tx = self.tx.clone();
+        AiClient::complete_stream(&self.inner, &req, move |ev| {
+            let _ = tx.send(ev.clone());
+            on_event(ev);
         })
         .await
     }

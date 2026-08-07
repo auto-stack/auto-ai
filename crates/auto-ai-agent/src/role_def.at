@@ -24,7 +24,7 @@ use ai_config: ModelTier
 ///
 /// Only [Role.name] and [Role.system_prompt] are required; every other method
 /// has a sensible default that an implementor overrides.
-pub spec Role {
+pub spec Role: Send + Sync {
     /// Role name ("coder", "reviewer", ...).
     fn name() str
 

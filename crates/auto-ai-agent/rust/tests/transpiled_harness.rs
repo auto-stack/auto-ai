@@ -25,8 +25,26 @@ use auto_ai_agent_a2r::agent::{spawn_event_sink, spawn_event_sink_with};
 use auto_ai_agent_a2r::auto_ai_client::{
     ClientError, CompletionRequest, CompletionResponse, ToolCall,
 };
+// JsonValue (= serde_json::Value) is the SSE event type complete_stream forwards.
+use auto_ai_agent_a2r::wire::JsonValue;
 
 // ─── mock infrastructure ───────────────────────────────────────────────────
+
+/// Fallback complete_stream for mocks: delegate to complete and emit a single
+/// delta event (mirrors the rust-ref Client default impl). The mock's `complete`
+/// is the scripted path; complete_stream just wraps it so mock-based tests are
+/// unaffected by the streaming plumbing (Plan 022 follow-up).
+async fn mock_complete_stream<C: Client + ?Sized>(
+    client: &C,
+    req: CompletionRequest,
+    on_event: &Arc<dyn Fn(JsonValue) + Send + Sync>,
+) -> Result<CompletionResponse, ClientError> {
+    let resp = client.complete(req).await?;
+    if !resp.content.is_empty() {
+        on_event(serde_json::json!({"type":"delta","text": resp.content}));
+    }
+    Ok(resp)
+}
 
 /// A `Client` whose `complete` returns a queued `CompletionResponse` per call.
 /// Pops the queue front each turn; an empty queue yields a default text reply
@@ -60,6 +78,13 @@ impl Client for ScriptedClient {
             Ok(q.remove(0))
         }
     }
+    async fn complete_stream(
+        &self,
+        req: CompletionRequest,
+        on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
+    ) -> Result<CompletionResponse, ClientError> {
+        mock_complete_stream(self, req, &on_event).await
+    }
 }
 
 /// A `Client` that always errors — for error-propagation tests.
@@ -70,6 +95,13 @@ impl Client for ErrorClient {
     async fn complete(
         &self,
         _req: CompletionRequest,
+    ) -> Result<CompletionResponse, ClientError> {
+        Err(ClientError::Http("simulated upstream failure".into()))
+    }
+    async fn complete_stream(
+        &self,
+        _req: CompletionRequest,
+        _on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
     ) -> Result<CompletionResponse, ClientError> {
         Err(ClientError::Http("simulated upstream failure".into()))
     }
@@ -96,6 +128,13 @@ impl Client for CapturingClient {
     ) -> Result<CompletionResponse, ClientError> {
         self.seen.lock().unwrap().push(req);
         Ok(text_response("done"))
+    }
+    async fn complete_stream(
+        &self,
+        req: CompletionRequest,
+        on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
+    ) -> Result<CompletionResponse, ClientError> {
+        mock_complete_stream(self, req, &on_event).await
     }
 }
 
@@ -485,5 +524,42 @@ async fn t14_preferred_provider_flows_to_request() {
         reqs[0].preferred_provider.as_deref(),
         Some("zhipu"),
         "preferred_provider must propagate from the role to the request"
+    );
+}
+
+// ─── T15: complete_stream forwards SSE deltas to the sink as Delta events ───
+/// Plan 022 follow-up: run_inner now calls complete_stream; the callback
+/// forwards each text chunk to the sink as StreamEvent::Delta. ScriptedClient's
+/// complete_stream (mock_complete_stream) emits one delta per turn, so run_stream
+/// must surface a Delta event for the model's text reply.
+#[tokio::test]
+async fn t15_complete_stream_forwards_deltas() {
+    let collected: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(vec![]));
+    let cb_collected = collected.clone();
+    let sink = spawn_event_sink_with(
+        String::new(),
+        Box::new(move |ev: StreamEvent| {
+            cb_collected.lock().unwrap().push(ev);
+        }),
+    );
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // ScriptedClient returns a text reply → loop ends in one turn, and
+    // mock_complete_stream emits one delta for "hi there".
+    let client = ScriptedClient::new(vec![text_response("hi there")]);
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client));
+    let _result = agent.run_stream("say hi", cancel, sink).await.unwrap();
+    a2r_std::task::drain_all().await;
+    let events = collected.lock().unwrap();
+    // At least one Delta event must have been forwarded from complete_stream.
+    let has_delta = events.iter().any(|e| matches!(e, StreamEvent::Delta(_)));
+    assert!(
+        has_delta,
+        "run_stream via complete_stream must forward a Delta event; got: {:?}",
+        events.iter().map(|e| match e {
+            StreamEvent::Delta(_) => "Delta",
+            StreamEvent::Done(_) => "Done",
+            StreamEvent::Tool(_, _, _) => "Tool",
+            other => unreachable!("unexpected event {:?}", other),
+        }).collect::<Vec<_>>()
     );
 }
