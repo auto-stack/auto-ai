@@ -1,6 +1,6 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
-> **状态**：📋 计划（待批准）
+> **状态**：🟡 Phase 0 完成（axum 可行性已验证），Phase 1-5 待推进
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -51,6 +51,21 @@
 | provider/openai.rs | 485 | `tokio::select!`（:276，流式 cancel-race） | 非 stream 的 complete() 可 .at；stream 循环留 .rs 胶水 |
 | provider/anthropic.rs | 493 | `tokio::select!`（:280） | 同 openai |
 | provider/ollama.rs | 80 | 无（纯委托） | 可 .at |
+
+### Phase 0 — axum 可行性验证 ✅（2026-08-07）
+
+**Spike 验证**：建立了 `crates/auto-ai-daemon/rust/`（Cargo.toml + lib.rs + main.rs），
+写了一个极简 axum server（`/health` handler），转译 + 编译 + 运行 + curl 测试全通过。
+**确认 use.rust axum/tokio 方案可行**——Router + async handler + serve + TcpListener 全链路工作。
+
+**验证发现的 a2r 转译细节**（正式转译时需处理）：
+1. `use.rust` 类型/函数在 `.at` 里用**点号**语法（`axum.Router`、`TcpListener.bind`），a2r 转 `::`
+2. **三层路径**（`axum.routing.get`）转译有问题（中间层转 `::` 但末层保留 `.`）→ 绕过：用 `use.rust axum::routing::get` 直接导入末层，调用处只写 `get(health)`
+3. **`#[tokio.main]` 重复**：`.at` 的 `#[tokio.main]` + `pub fn main` 导致重复输出 → 正式转译时 main 不加 `pub`，或用专门的 main 处理
+4. **`tracing::info` 是宏**：a2r 把 `tracing.info(...)` 转成函数调用 `tracing::info(...)`，但实际是宏 → 需用 a2r 的宏调用语法（`#[macro]` 或 `tracing::info!`），或用 `println!` 替代
+5. **axum handler 必须是 async fn**：`fn health() -> String` 不满足 `Handler` trait，需 `async fn`（这是 axum 约束，非 a2r 问题）
+
+**结论**：方案可行，上述 1-4 是转译时需注意的细节，5 是 axum 本身的约束（.at 的 `~String` 方法会转 async fn，正好匹配）。
 
 ## 2. 技术决策
 
