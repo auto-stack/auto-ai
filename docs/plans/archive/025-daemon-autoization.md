@@ -1,8 +1,7 @@
 # Plan 025: auto-ai-daemon Auto 化（直接 use.rust axum/tokio 方案）
 
-> **状态**：🟢 Phase 0 + 1 + 2 + 3 + 4 完成（12 个 .at 源文件：8 基础 + server + openai + anthropic + ollama；
-> openai/anthropic 的 complete_stream（select!）+ build_registry 留 provider_glue.rs 手写，
-> `./retranspile.sh check` cargo check = 0 错三次幂等），Phase 5（e2e 验证）待推进
+> **状态**：🟢 Phase 0-5 完成（12 个 .at 源文件，全 Auto 版 e2e 跑通：转译版 agent → client → **daemon** → LLM，
+> 转译版 daemon 与原生版 /v1/chat/completions 响应逐字一致），Phase 6（KNOWN-DEBT 文档）待推进
 > **仓库**：auto-ai（daemon）+ 可能 auto-lang（select! 语法若决定支持）
 > **目标**：把 auto-ai-daemon（3165 行纯 Rust HTTP 网关）Auto 化——`.at` 源码 + 转译树，
 > 直接用 `use.rust axum/tokio/reqwest` 调用 Rust 框架（不用 a2r-std 包装）。
@@ -286,13 +285,31 @@ AppState + 4 个核心 handler；server_glue.rs 覆盖路由挂载 + 3 个 handl
 （tier_router_glue / server_glue / **provider_glue**，后者含 build_registry + 两个 complete_stream），
 1 个直接复制（services.rs），main.rs 手写 bin。daemon 的全部 HTTP + provider 层都有 Auto 版。
 
-### Phase 5 — 端到端验证 ⬅️ 下一会话从这里继续
-- [ ] 5.1 转译版 daemon（auto-ai-daemon-a2r）build 出 aaid 二进制
-- [ ] 5.2 启动转译版 daemon，用 auto-ai-react（转译版 agent + Plan 024 转译版 client）跑全链路 e2e：
-      转译版 agent → 转译版 client → **转译版 daemon** → LLM
-- [ ] 5.3 对比原生 daemon 的 /v1/status、/v1/chat/completions 行为
+### Phase 5 — 端到端验证 ✅ 完成
 
-### Phase 6 — KNOWN-DEBT + 文档
+**全 Auto 版三栈链路跑通**：转译版 agent → 转译版 client → **转译版 daemon** → LLM。
+转译版 daemon 与原生版行为对等（/v1/chat/completions 同 prompt 响应逐字一致）。
+
+- [x] 5.1 转译版 daemon（aaid-a2r）build 出二进制（14MB，link 锁清理后成功）
+- [x] 5.2 启动转译版 daemon + 全链路 e2e：
+      - `/v1/status` + `/v1/models` 响应正确（3 个 provider pool，4 个模型）
+      - `/v1/chat/completions` 真实 LLM 调用返回 `"hello world"`（验证 provider complete 转译正确）
+      - **全 Auto 链路 e2e**（`scripts/e2e-daemon-a2r.sh`）：转译版 agent → client → daemon → LLM，
+        agent 输出 `hello world`，断言通过
+- [x] 5.3 对比原生 daemon 与转译版 daemon 行为：
+      - `/v1/status`：结构一致（status:running + 相同的 3 provider pool；pools 顺序因 HashMap 迭代而异，正常）
+      - `/v1/chat/completions`（同 prompt "Reply with exactly one word: ok"）：**逐字相同响应**
+        `{"content":"ok","error":null,"model":"glm-5.2","stop_reason":"end_turn","tool_calls":[],
+         "usage":{"input_tokens":13,"output_tokens":2}}`（连 token 计数都一致）
+
+**e2e 验证的意义**：证明 daemon 从 `.at` 转译后端到端工作——axum handler（server.at）→ tier_router →
+provider registry（build_registry）→ OpenAiProvider.complete（openai.at）→ http.request().send_async()
+→ GLM API → 响应解析 → canonical CompletionResponse，全链路正确。这是 Plan 025 的核心里程碑：
+auto-ai 的三层核心（agent + client + daemon）全部有 Auto 版且全链路 e2e 可跑。
+
+**新增产物**：`scripts/e2e-daemon-a2r.sh`（转译版 daemon e2e runner，基于 e2e-transpiled.sh 改造）。
+
+### Phase 6 — KNOWN-DEBT + 文档 ⬅️ 下一会话从这里继续
 - [ ] 6.1 tokio::select! 阻塞记录（openai/anthropic 流式循环留 .rs）
 - [ ] 6.2 CancelOnDrop 的 impl Drop 记录
 - [ ] 6.3 全链路 Auto 版 e2e 文档（agent + client + daemon 三层转译）
@@ -315,9 +332,10 @@ AppState + 4 个核心 handler；server_glue.rs 覆盖路由挂载 + 3 个 handl
 - [x] CancelOnDrop / streaming_response / config_test / services_* 留 server_glue.rs 手写（已知限制）
 - [x] openai/anthropic 的 complete_stream（select!）+ build_registry 留 provider_glue.rs 手写（已知限制）
 - [x] services.rs 直接复制（OS 胶水，非转译）
-- [ ] 转译版 daemon 能 build 出 aaid 二进制 + 启动 + 响应 /v1/status（Phase 5）
-- [ ] **全链路 Auto 版 e2e**：转译版 agent + client + daemon 三层跑通（Phase 5）
-- [ ] workspace + 转译版测试无回归（Phase 5）
+- [x] 转译版 daemon 能 build 出 aaid 二进制 + 启动 + 响应 /v1/status（Phase 5）
+- [x] **全链路 Auto 版 e2e**：转译版 agent + client + daemon 三层跑通（Phase 5，e2e-daemon-a2r.sh）
+- [x] 转译版 daemon 与原生版 /v1/chat/completions 行为逐字一致（Phase 5 对比验证）
+- [ ] workspace + 转译版测试无回归（Phase 6 收尾）
 - [ ] KNOWN-DEBT 记录 select! / CancelOnDrop / services.rs / streaming 限制（Phase 6）
 
 ## 6. 里程碑意义
