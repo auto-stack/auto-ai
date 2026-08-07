@@ -165,7 +165,18 @@ Phase 2 新发现并记录的 a2r 缺陷（已 retranspile.sh sed 兜底）：
 2 个手写胶水（tier_router_glue.rs / provider_glue.rs），lib.rs 组装式 crate root，
 main.rs 仍是 Phase 0 spike（Phase 3 转）。
 
-### Phase 3 — server.rs + main.rs（axum 层，核心验证）
+### Phase 3 — server.rs + main.rs（axum 层，核心验证）⬅️ 下一会话从这里继续
+
+**Phase 3 启动 checklist**（新会话首步）：
+1. 跑 `AUTO=.../auto ./crates/auto-ai-daemon/retranspile.sh check` 确认 Phase 1+2 基线绿（应 0 错）。
+2. 读 `crates/auto-ai-daemon/src/main.rs`（rust-ref 原版，Phase 3.1 目标）+
+   `src/server.rs`（rust-ref 原版，Phase 3.2 目标，含 CancelOnDrop）。
+3. 当前转译树的 `rust/src/main.rs` 还是 **Phase 0 spike**（手写 `/health` demo），
+   Phase 3.1 要把它换成从 `main.at` 转译的完整版（bind 17699/17654 + 真实 build_app）。
+4. `server.rs` 的 `CancelOnDrop`（`impl Drop`）按 Phase 3.3 留 `server_glue.rs` 手写
+   （a2r 不支持 `impl Drop`）。
+5. **关键里程碑**：Phase 3.4 = axum 服务端首次从 .at 完整转译成功。
+
 - [ ] 3.1 main.rs → main.at（#[tokio::main] + TcpListener + axum::serve）
 - [ ] 3.2 server.rs → server.at（Router 链 + 解构 extractor + impl IntoResponse + async_stream SSE body）
 - [ ] 3.3 CancelOnDrop 留 .rs helper（server_glue.rs）
