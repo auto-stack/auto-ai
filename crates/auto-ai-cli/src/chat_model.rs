@@ -108,10 +108,25 @@ impl AssistantTurn {
         }
     }
 
-    /// Append thinking text to the last block if it's a Thinking block,
-    /// otherwise start a new Thinking block.
+    /// Append thinking text to the last Thinking block, or start a new one.
+    ///
+    /// Searches backwards for the most recent Thinking block and appends to it
+    /// (rather than only checking the trailing block). This matters because LLM
+    /// streaming can interleave `reasoning_content` and answer `content` chunks
+    /// — a text delta in between would otherwise split each subsequent reasoning
+    /// chunk into its own Thinking block, producing a screenful of single-char
+    /// "● 思考" blocks. Consolidating into one Thinking block keeps the display
+    /// coherent regardless of arrival order.
     pub fn append_thinking(&mut self, text: &str) {
-        if let Some(Block::Thinking { text: t }) = self.blocks.last_mut() {
+        if let Some(t) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find_map(|b| match b {
+                Block::Thinking { text } => Some(text),
+                _ => None,
+            })
+        {
             t.push_str(text);
         } else {
             self.blocks.push(Block::Thinking { text: text.into() });
@@ -298,5 +313,78 @@ fn format_args_summary(tool: &str, args: &Value) -> String {
             format!("flow={flow}")
         }
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: assert the turn's block layout matches the expected list of
+    /// (kind, text). `kind` is "answer" or "thinking".
+    fn assert_layout(turn: &AssistantTurn, expected: &[(&str, &str)]) {
+        let actual: Vec<(&str, String)> = turn
+            .blocks
+            .iter()
+            .map(|b| match b {
+                Block::Answer { text } => ("answer", text.clone()),
+                Block::Thinking { text } => ("thinking", text.clone()),
+                _ => ("other", String::new()),
+            })
+            .collect();
+        assert_eq!(
+            turn.blocks.len(),
+            expected.len(),
+            "block count mismatch — got {actual:?}, expected {expected:?}"
+        );
+        for (i, (kind, text)) in expected.iter().enumerate() {
+            assert_eq!(actual[i].0, *kind, "block {i} kind mismatch — got {actual:?}");
+            assert_eq!(actual[i].1, *text, "block {i} text mismatch — got {actual:?}");
+        }
+    }
+
+    #[test]
+    fn thinking_deltas_merge_into_one_block() {
+        let mut t = AssistantTurn::default();
+        t.append_thinking("我");
+        t.append_thinking("需");
+        t.append_thinking("要");
+        assert_layout(&t, &[("thinking", "我需要")]);
+    }
+
+    /// Core regression: LLM streaming interleaves reasoning_content and answer
+    /// content. The reasoning must NOT be fragmented into one block per chunk.
+    #[test]
+    fn interleaved_reasoning_and_text_does_not_fragment() {
+        let mut t = AssistantTurn::default();
+        t.append_thinking("我想"); // Thinking block #1
+        t.append_text(" ");        // trailing is Thinking → new Answer block
+        t.append_thinking("然后"); // must append to Thinking #1, NOT new block
+        t.append_thinking("计算"); // append to Thinking #1
+        assert_layout(
+            &t,
+            &[("thinking", "我想然后计算"), ("answer", " ")],
+        );
+    }
+
+    /// Answer text first, then reasoning — both stay as separate, well-formed
+    /// blocks (order preserved, no cross-contamination).
+    #[test]
+    fn answer_then_thinking_keeps_separate_blocks() {
+        let mut t = AssistantTurn::default();
+        t.append_text("正文");
+        t.append_thinking("思考");
+        assert_layout(&t, &[("answer", "正文"), ("thinking", "思考")]);
+    }
+
+    /// demote_answer_to_thinking (used at tool-call boundaries) stays orthogonal:
+    /// it converts the trailing Answer into the (existing or new) Thinking block.
+    #[test]
+    fn demote_then_append_thinking_consolidates() {
+        let mut t = AssistantTurn::default();
+        t.append_text("推理文本");
+        t.demote_answer_to_thinking(); // Answer → Thinking
+        t.append_thinking("，继续");    // appends to that Thinking block
+        assert_layout(&t, &[("thinking", "推理文本，继续")]);
     }
 }
