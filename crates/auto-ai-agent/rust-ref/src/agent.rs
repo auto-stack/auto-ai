@@ -343,6 +343,8 @@ impl Agent {
         // Track how many times each (tool, args) pair has recurred, for loop
         // detection (ported from AutoForge turn.rs:396-427).
         let mut seen: HashMap<String, usize> = HashMap::new();
+        // PLAN-027 ②: 连续 security error 计数（≥3 → 注入强 hint 短路无效重试）。
+        let mut security_errors: usize = 0;
 
         for turn in 0..hard_limit {
             // Cancel checkpoint 1: stop before starting a new ReAct turn.
@@ -470,16 +472,26 @@ impl Agent {
                         args: tc.input.clone(),
                     });
                     let outcome = match self.tools.execute(&tc.name, &tc.input).await {
-                        Ok(out) => out,
+                        Ok(out) => {
+                            security_errors = 0;  // PLAN-027 ②: 成功 → 归零
+                            out
+                        }
                         Err(e) => {
                             tracing::warn!("agent: tool '{}' failed: {}", tc.name, e);
                             // PLAN-027 ①: SecurityDenied 用专门的 [security denied (...)]
                             // 标记，让 LLM/前端能识别"安全拒绝"而非通用 tool error。
                             match &e {
                                 ToolError::SecurityDenied { kind, path, root, hint } => {
-                                    format!(
+                                    // PLAN-027 ②: 连续计数 + ≥3 注入强 hint（短路无效重试）。
+                                    security_errors += 1;
+                                    let base = format!(
                                         "[security denied ({kind})] '{path}' is outside the workspace root '{root}'. {hint} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)"
-                                    )
+                                    );
+                                    if security_errors >= 3 {
+                                        format!("{base}\n\n⚠ 已连续 {security_errors} 次尝试访问 workspace 外路径被拒。请立即换思路（让用户提供内容，或改用 API），不要再试读 workspace 外文件。")
+                                    } else {
+                                        base
+                                    }
                                 }
                                 _ => format!("[tool error: {}]", e),
                             }
