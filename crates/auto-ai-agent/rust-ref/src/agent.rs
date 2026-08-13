@@ -18,7 +18,7 @@ use auto_ai_client::{
     AiClient, ClientError, CompletionRequest, CompletionResponse, ContentBlock, Message,
 };
 
-use crate::error::AgentError;
+use crate::error::{AgentError, ToolError};
 use crate::memory::Memory;
 use crate::role_def::Role;
 use crate::tool::{tool_to_definition, ToolRegistry};
@@ -473,7 +473,16 @@ impl Agent {
                         Ok(out) => out,
                         Err(e) => {
                             tracing::warn!("agent: tool '{}' failed: {}", tc.name, e);
-                            format!("[tool error: {}]", e)
+                            // PLAN-027 ①: SecurityDenied 用专门的 [security denied (...)]
+                            // 标记，让 LLM/前端能识别"安全拒绝"而非通用 tool error。
+                            match &e {
+                                ToolError::SecurityDenied { kind, path, root, hint } => {
+                                    format!(
+                                        "[security denied ({kind})] '{path}' is outside the workspace root '{root}'. {hint} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)"
+                                    )
+                                }
+                                _ => format!("[tool error: {}]", e),
+                            }
                         }
                     };
                     result.tool_calls.push(ToolCallRecord {

@@ -15,6 +15,15 @@ pub enum ToolError {
     /// The tool ran but failed (e.g. IO error, non-zero exit).
     #[error("tool execution failed: {0}")]
     Exec(String),
+    /// PLAN-027: 工具因安全策略被拒（如路径越界 workspace confinement）。
+    /// 结构化（非纯字符串），让 driver/前端能识别 kind 并友好播报。
+    #[error("security denied ({kind}): '{path}' is outside workspace '{root}'. {hint}")]
+    SecurityDenied {
+        kind: String,
+        path: String,
+        root: String,
+        hint: String,
+    },
 }
 
 /// The unified error type for the agent layer.
