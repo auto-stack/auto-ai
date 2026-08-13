@@ -17,6 +17,9 @@ pub enum ToolError {
     Args(str)
     /// The tool ran but failed (e.g. IO error, non-zero exit).
     Exec(str)
+    /// PLAN-027: 工具因安全策略被拒（如路径越界 workspace confinement）。
+    /// 结构化（非纯字符串），让 driver/前端能识别 kind 并友好播报。
+    SecurityDenied { kind: str, path: str, root: str, hint: str }
 }
 
 ext ToolError {
@@ -24,7 +27,8 @@ ext ToolError {
     pub fn message() str {
         is self {
             ToolError.Args(msg) -> return f"invalid tool arguments: ${msg}",
-            ToolError.Exec(msg) -> return f"tool execution failed: ${msg}"
+            ToolError.Exec(msg) -> return f"tool execution failed: ${msg}",
+            ToolError.SecurityDenied { kind, path, root, hint } -> return f"security denied (${kind}): '${path}' is outside workspace '${root}'. ${hint}"
         }
     }
 }
