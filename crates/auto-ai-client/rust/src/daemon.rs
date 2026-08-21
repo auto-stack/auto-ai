@@ -46,7 +46,7 @@ pub fn ensure_daemon() -> Option<String> {
             }
             
 
-            let deadline: i32 = a2r_std::time::now_ms() + 3000;
+            let deadline: i64 = a2r_std::time::now_ms() + 3000;
             while a2r_std::time::now_ms() < deadline {
                 a2r_std::time::sleep_ms(100 as u64);
                 if is_running() {
@@ -70,7 +70,7 @@ pub fn ensure_daemon_async() -> Option<String> {
             if spawn_daemon(aaid_path.as_str()) == false {
                 return None;
             }
-            let deadline: i32 = a2r_std::time::now_ms() + 10000;
+            let deadline: i64 = a2r_std::time::now_ms() + 10000;
             loop {
                 if is_running_async() {
                     return Some(daemon_url());
