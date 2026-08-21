@@ -28,6 +28,7 @@ pub mod builtin_role_assistant;
 pub mod builtin_role_coder;
 pub mod builtin_role_documenter;
 pub mod builtin_role_gofer;
+pub mod builtin_role_plan_dev;
 pub mod builtin_role_planner;
 pub mod builtin_role_reviewer;
 pub mod builtin_role_runner;

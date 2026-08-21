@@ -85,7 +85,7 @@ fn max_tool_result_chars() -> u32 {
 
 pub fn truncate_tool_result(s: &str) -> String {
     let cap = max_tool_result_chars();
-    let count: u32 = ((s.len() as u32) as u32);
+    let count: u32 = ((s.len() as i64) as u32);
     if count <= cap {
         return s.to_string();
     }
@@ -302,7 +302,7 @@ impl Agent {
     }
     pub fn register_skill_tool(&mut self, tool: SkillTool) {
         let block = tool.available_skills_block();
-        match (block.len() as i32) == 0 {
+        match (block.len() as i64) == 0 {
             true => self.skills_block = None,
             false => self.skills_block = Some(block),
         };

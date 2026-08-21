@@ -165,10 +165,10 @@ done
 #   C: for-in over ReadDir wrongly borrowed                   (396 S2.2)
 #   D: read_to_string(path) moved path                        (396 S2.3)
 #   E: redundant .as_str() on &str                            (396 S2.4)
-# NOTE: full regeneration is currently blocked by two OTHER a2r regressions
-# on auto-lang master (pipeline.rs len() casts u32->i64; tool.at parse failure
-# breaking sibling spec info -> Arc<Tool> loses dyn). Tracked in auto-lang's
-# plans-status-audit-2026-08-20.md backlog.
+# UPDATE 2026-08-20 (batch 4): the two blocking a2r regressions are FIXED
+# upstream (auto-lang plan-fix/b11-regressions: len() partner-type cast;
+# Map<K> / struct-variant patterns / colon enum fields). Full regeneration
+# is GREEN again: retranspile skip=0, cargo check passes.
 
 # Plan 021: a2r (auto-lang Plan 387 §16 aftermath) now renders Auto's
 # `mut eng PipelineEngine` parameter as `&mut PipelineEngine` (borrow inference

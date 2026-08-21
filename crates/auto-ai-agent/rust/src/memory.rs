@@ -55,10 +55,10 @@ impl Memory {
         return self.messages.clone();
     }
     pub fn len(&self) -> u32 {
-        return ((self.messages.len() as i32) as u32);
+        return ((self.messages.len() as i64) as u32);
     }
     pub fn is_empty(&self) -> bool {
-        return (self.messages.len() as i32) == 0;
+        return (self.messages.len() as i64) == 0;
     }
     pub fn non_system_count(&self) -> u32 {
         let mut count: u32 = 0 as u32;
@@ -106,9 +106,9 @@ impl Memory {
             
 
 
-            let mut end: i32 = s + 1;
+            let mut end: i64 = s + 1;
             if self.messages[(s) as usize].clone().role.to_string() == "assistant" {
-                while end < ((self.messages.len() as i32) as i32) && self.messages[(end) as usize].clone().role.to_string() == "user" {
+                while end < ((self.messages.len() as i64) as i64) && self.messages[(end) as usize].clone().role.to_string() == "user" {
                     end = end + 1;
                 }
             }
@@ -116,8 +116,8 @@ impl Memory {
             self.messages = self.remove_range(s, end);
         }
     }
-    pub fn first_non_system_index(&self) -> i32 {
-        let mut i: i32 = 0;
+    pub fn first_non_system_index(&self) -> i64 {
+        let mut i: i64 = 0;
         for m in self.messages.clone() {
             if m.role.to_string() != "system" {
                 return i;
@@ -126,9 +126,9 @@ impl Memory {
         }
         return -1;
     }
-    pub fn remove_range(&self, from: i32, up_to: i32) -> Vec<Message> {
+    pub fn remove_range(&self, from: i64, up_to: i64) -> Vec<Message> {
         let mut out: Vec<Message> = vec![];
-        let mut i: i32 = 0;
+        let mut i: i64 = 0;
         for m in self.messages.clone() {
             
 

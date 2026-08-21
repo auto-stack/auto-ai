@@ -13,11 +13,12 @@ pub use crate::builtin_role_runner::{Runner};
 pub use crate::builtin_role_advisor::{Advisor};
 pub use crate::builtin_role_planner::{Planner};
 pub use crate::builtin_role_gofer::{Gofer};
+pub use crate::builtin_role_plan_dev::{PlanDev};
 pub use crate::builtin_role_super_advisor::{Superadvisor};
 pub use crate::builtin_role_super_coder::{Supercoder};
 pub use crate::builtin_role_super_tester::{Supertester};
 pub fn builtin_names() -> Vec<String> {
-    return vec!["assistant".to_string(), "coder".to_string(), "architect".to_string(), "tester".to_string(), "reviewer".to_string(), "documenter".to_string(), "translator".to_string(), "runner".to_string(), "advisor".to_string(), "planner".to_string(), "gofer".to_string(), "super-advisor".to_string(), "super-coder".to_string(), "super-tester".to_string()];
+    return vec!["assistant".to_string(), "coder".to_string(), "architect".to_string(), "tester".to_string(), "reviewer".to_string(), "documenter".to_string(), "translator".to_string(), "runner".to_string(), "advisor".to_string(), "planner".to_string(), "gofer".to_string(), "plan-dev".to_string(), "super-advisor".to_string(), "super-coder".to_string(), "super-tester".to_string()];
 }
 
 pub fn load_builtin(name: &str) -> Option<Box<dyn Role>> {
@@ -33,6 +34,7 @@ pub fn load_builtin(name: &str) -> Option<Box<dyn Role>> {
         "advisor" => return Some(Box::new(Advisor {})),
         "planner" => return Some(Box::new(Planner {})),
         "gofer" => return Some(Box::new(Gofer {})),
+        "plan-dev" => return Some(Box::new(PlanDev {})),
         "super-advisor" => return Some(Box::new(Superadvisor {})),
         "super-coder" => return Some(Box::new(Supercoder {})),
         "super-tester" => return Some(Box::new(Supertester {})),

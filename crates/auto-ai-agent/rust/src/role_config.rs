@@ -164,7 +164,7 @@ impl RoleConfig {
                     None => {},
                 };
                 for t in &extra {
-                    combined.push(t.clone());
+                    combined.push(t.clone().clone());
                 }
                 r.tools = Some(combined);
             },
@@ -298,7 +298,7 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
                                     let mut tiers: Vec<ModelTier> = vec![];
                                     for nm in &names {
                                         match parse_tier_field(nm.as_str()) {
-                                            Some(t) => tiers.push(t.clone()),
+                                            Some(t) => tiers.push(t.clone().clone()),
                                             None => {},
                                         };
                                     }

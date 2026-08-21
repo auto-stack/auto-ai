@@ -213,7 +213,7 @@ impl PipelineEngine {
             _ => {},
         };
 
-        if self.current_step >= (self.flow.steps.len() as u32) {
+        if self.current_step >= self.flow.steps.len() as u32 {
             self.status = PipelineStatus::Completed;
             return AdvanceResult::Completed;
         }
@@ -321,7 +321,7 @@ impl PipelineEngine {
         for step in self.flow.steps.clone() {
             self.set_loop_counter(step.id.as_str(), 0);
         }
-        if self.current_step < (self.flow.steps.len() as u32) {
+        if self.current_step < self.flow.steps.len() as u32 {
             let step = self.flow.steps[(self.current_step) as usize].clone();
             self.resumed_step_id = Some(step.id);
         }
@@ -333,7 +333,7 @@ impl PipelineEngine {
         if failed == false {
             return None;
         }
-        if self.current_step >= (self.flow.steps.len() as u32) {
+        if self.current_step >= self.flow.steps.len() as u32 {
             return None;
         }
         let step_id = self.flow.steps[(self.current_step) as usize].clone().id;
@@ -344,13 +344,13 @@ impl PipelineEngine {
         return Some(self.advance());
     }
     pub fn current_role_id(&self) -> Option<String> {
-        if self.current_step < (self.flow.steps.len() as u32) {
+        if self.current_step < self.flow.steps.len() as u32 {
             return Some(self.flow.steps[(self.current_step) as usize].clone().role_id);
         }
         return None;
     }
     pub fn current_step_id(&self) -> Option<String> {
-        if self.current_step < ((self.flow.steps.len() as u32) as u32) {
+        if self.current_step < ((self.flow.steps.len() as i64) as u32) {
             return Some(self.flow.steps[(self.current_step) as usize].clone().id);
         }
         return None;
@@ -429,7 +429,7 @@ impl PipelineEngine {
                 return self.advance();
             },
             NextStep::Complete => {
-                self.current_step = ((self.flow.steps.len() as u32) as u32);
+                self.current_step = ((self.flow.steps.len() as i64) as u32);
                 self.status = PipelineStatus::Completed;
                 return AdvanceResult::Completed;
             },
@@ -452,7 +452,7 @@ impl PipelineEngine {
         match exit {
             ExitRouting::Next => {
                 let next: u32 = self.current_step + 1 as u32;
-                if next >= ((self.flow.steps.len() as u32) as u32) {
+                if next >= ((self.flow.steps.len() as i64) as u32) {
                     return NextStep::Complete;
                 }
                 return NextStep::Index(next);
@@ -568,7 +568,7 @@ fn expected_target_role(eng: PipelineEngine, exit: ExitRouting) -> Option<String
     match exit {
         ExitRouting::Next => {
             let next_idx: u32 = eng.current_step + 1;
-            if next_idx < (eng.flow.steps.len() as u32) {
+            if next_idx < eng.flow.steps.len() as u32 {
                 return Some(eng.flow.steps[(next_idx) as usize].clone().role_id);
             }
             return None;

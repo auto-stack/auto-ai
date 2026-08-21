@@ -69,5 +69,5 @@ fn home_dir() -> Option<PathBuf> {
 
 /// Read a file's full contents as a string.
 fn read_file_text(path: &str) -> String {
-    return a2r_std::fs::read_to_string(path);
+    return a2r_std::fs::read_to_string(&path);
 }

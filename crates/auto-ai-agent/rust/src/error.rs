@@ -10,10 +10,13 @@ use crate::auto_ai_client::{ClientError};
 /// Errors raised while executing a tool.
 /// The tool's arguments were missing/invalid.
 /// The tool ran but failed (e.g. IO error, non-zero exit).
+/// PLAN-027: 工具因安全策略被拒（如路径越界 workspace confinement）。
+/// 结构化（非纯字符串），让 driver/前端能识别 kind 并友好播报。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolError {
     Args(String),
     Exec(String),
+    SecurityDenied { kind: String, path: String, root: String, hint: String },
 }
 
 
@@ -22,6 +25,7 @@ impl ToolError {
         match self {
             ToolError::Args(msg) => return format!("invalid tool arguments: {}", msg),
             ToolError::Exec(msg) => return format!("tool execution failed: {}", msg),
+            ToolError::SecurityDenied { kind, path, root, hint } => return format!("security denied ({}): '{}' is outside workspace '{}'. {}", kind, path, root, hint),
         }
     }
 }

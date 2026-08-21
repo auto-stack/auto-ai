@@ -268,10 +268,10 @@ impl RoleRegistry {
         builtin_list.sort_by_key(|s| s.name.clone());
         let mut out: Vec<RoleSummary> = vec![];
         for s in &user_list {
-            out.push(s.clone());
+            out.push(s.clone().clone());
         }
         for s in &builtin_list {
-            out.push(s.clone());
+            out.push(s.clone().clone());
         }
         return out;
     }
@@ -486,7 +486,7 @@ fn resolve_soul(cfg: RoleConfig, at_path: PathBuf) -> SoulResolve {
             match at_path.parent() {
                 Some(d) => {
                     let sidecar = d.join(rel);
-                    match Ok::<String, std::io::Error>(a2r_std::fs::read_to_string(sidecar.to_str().unwrap())) {
+                    match Ok::<String, std::io::Error>(a2r_std::fs::read_to_string(&sidecar.to_str().unwrap())) {
                         Ok(md) => return SoulResolve { markdown: md.to_string(), from_file: true },
                         Err(_e) => {
                             
@@ -497,7 +497,7 @@ fn resolve_soul(cfg: RoleConfig, at_path: PathBuf) -> SoulResolve {
                 },
                 None => {
                     let sidecar = PathBuf::from(rel);
-                    match Ok::<String, std::io::Error>(a2r_std::fs::read_to_string(sidecar.to_str().unwrap())) {
+                    match Ok::<String, std::io::Error>(a2r_std::fs::read_to_string(&sidecar.to_str().unwrap())) {
                         Ok(md) => return SoulResolve { markdown: md.to_string(), from_file: true },
                         Err(_e) => return SoulResolve { markdown: cfg.system_prompt.unwrap_or("".to_string()).to_string(), from_file: false },
                     };

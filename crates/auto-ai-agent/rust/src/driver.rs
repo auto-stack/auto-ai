@@ -413,7 +413,7 @@ fn forward_stream_event(ev: StreamEvent, on_event: fn(PipelineEvent) -> ()) {
 /// Take up to `max` characters from `s` (best-effort; Auto has no char-range
 /// slice, so this is a byte-truncation approximation — adequate for a summary).
 fn truncate_chars(s: &str, max: u32) -> String {
-    let end: u32 = ((s.len() as u32) as u32);
+    let end: u32 = ((s.len() as i64) as u32);
     if end <= max {
         return s.to_string();
     }

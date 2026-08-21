@@ -158,10 +158,10 @@ impl SkillRegistry {
         return out;
     }
     pub fn len(&self) -> u32 {
-        return ((self.names.len() as i32) as u32);
+        return ((self.names.len() as i64) as u32);
     }
     pub fn is_empty(&self) -> bool {
-        return (self.names.len() as i32) == 0;
+        return (self.names.len() as i64) == 0;
     }
 }
 
@@ -295,7 +295,7 @@ fn body_offset(after_open: &str, close_idx: u32) -> u32 {
         if i <= close_idx {
             
 
-            acc = acc + ((line.len() as i32) as u32) + 1;
+            acc = acc + ((line.len() as i64) as u32) + 1;
         }
         i = i + 1;
     }
@@ -305,7 +305,7 @@ fn body_offset(after_open: &str, close_idx: u32) -> u32 {
 /// Return the substring of `s` starting at `start`, leading whitespace trimmed.
 /// Clamped to s length.
 fn slice_and_trim(s: &str, start: u32) -> String {
-    let end: u32 = ((s.len() as u32) as u32);
+    let end: u32 = ((s.len() as i64) as u32);
     let mut lo: u32 = start;
     if lo > end {
         lo = end;
@@ -344,7 +344,7 @@ fn clean_field_value(val: &str) -> String {
 
 /// Remove the first and last character (used after the quote-pair check).
 fn unquote(val: &str) -> String {
-    let end: u32 = ((val.len() as u32) as u32) - 1;
+    let end: u32 = ((val.len() as i64) as u32) - 1;
     return val[1 as usize..end as usize].to_string();
 }
 

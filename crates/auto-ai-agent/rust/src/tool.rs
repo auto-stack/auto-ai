@@ -97,14 +97,14 @@ impl ToolRegistry {
         return self.names.clone();
     }
     pub fn len(&self) -> u32 {
-        return ((self.names.len() as i32) as u32);
+        return ((self.names.len() as i64) as u32);
     }
     pub fn is_empty(&self) -> bool {
-        return (self.names.len() as i32) == 0;
+        return (self.names.len() as i64) == 0;
     }
     pub fn filter(&self, filter: Vec<String>) -> Vec<Arc<dyn Tool>> {
         let mut out: Vec<Arc<dyn Tool>> = vec![];
-        if (filter.len() as i32) == 0 {
+        if (filter.len() as i64) == 0 {
             for n in self.names.clone() {
                 match self.tools.get(n.as_str()) {
                     Some(t) => out.push(t.clone()),
@@ -130,6 +130,7 @@ impl ToolRegistry {
     pub async fn exec_or_msg(&self, name: &str, args: JsonValue) -> String {
         match self.execute(name, args).await {
             Ok(out) => return out,
+            Err(ToolError::SecurityDenied { kind, path, root, hint }) => return format!("[security denied ({})] '{}' is outside the workspace root '{}'. {} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)", kind, path, root, hint),
             Err(e) => return format!("[tool error: {}]", e.message()),
         }
     }
