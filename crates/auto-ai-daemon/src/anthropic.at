@@ -119,6 +119,14 @@ ext AnthropicProvider {
     /// Build the Anthropic Messages API request body.
     pub fn build_body(req CompletionRequest) Value {
         var messages List<Value> = []
+        // PLAN-030 试用修复（zhipu 1214 根因的纵深防御）：Anthropic messages
+        // 首条必须 user——上游若以 assistant 开头（如裁剪后历史），垫一条
+        // 合成 user，避免兼容层直接拒收。
+        if req.messages.length > 0 {
+            if req.messages[0].role != "user" {
+                messages.push({ role: "user", content: [{ type: "text", text: "(continued)" }] })
+            }
+        }
         for m in req.messages {
             let obj = serde_json.Map.new()
             obj.insert("role".to_string(), Value.String(m.role))

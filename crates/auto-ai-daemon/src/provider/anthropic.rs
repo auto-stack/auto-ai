@@ -58,16 +58,24 @@ impl AnthropicProvider {
     }
 
     fn build_body(&self, req: &CompletionRequest) -> serde_json::Value {
-        let messages: Vec<serde_json::Value> = req
-            .messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role,
-                    "content": content_blocks_to_anthropic(&m.content),
-                })
+        // PLAN-030 试用修复（zhipu 1214 根因的纵深防御）：Anthropic messages
+        // 首条必须 user——上游以 assistant 开头（如裁剪后历史）时垫一条
+        // 合成 user。与 anthropic.at 源轨同步，retranspile 时保留。
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        if let Some(first) = req.messages.first() {
+            if first.role != "user" {
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "(continued)" }],
+                }));
+            }
+        }
+        messages.extend(req.messages.iter().map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": content_blocks_to_anthropic(&m.content),
             })
-            .collect();
+        }));
 
         let mut body = serde_json::json!({
             "model": req.model,

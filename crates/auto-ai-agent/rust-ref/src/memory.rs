@@ -122,6 +122,27 @@ impl Memory {
             // Remove [start, end) as one atomic unit.
             self.messages.drain(start..end);
         }
+        // PLAN-030 试用修复（zhipu 1214 根因）：裁剪可能吃掉最开头的 user
+        // 消息，使剩余历史以 assistant 开头——Anthropic messages 规范要求
+        // 首条为 user，兼容层直接拒收（"messages 参数非法"）。补一个合成
+        // user 锚点，保持 wire 合法。
+        if self
+            .messages
+            .iter()
+            .find(|m| m.role != "system")
+            .map(|m| m.role == "assistant")
+            .unwrap_or(false)
+        {
+            let anchor = self
+                .messages
+                .iter()
+                .position(|m| m.role != "system")
+                .unwrap_or(0);
+            self.messages.insert(
+                anchor,
+                Message::user("（更早的对话历史因上下文限制被裁剪，请基于现有上下文继续。）"),
+            );
+        }
     }
 }
 
@@ -164,6 +185,21 @@ mod tests {
         assert!(texts.contains(&"f".to_string())); // newest kept
     }
 
+    /// PLAN-030：裁剪后不得以 assistant 开头（zhipu 1214 根因）。
+    #[test]
+    fn trim_never_leaves_assistant_first() {
+        let mut mem = Memory::new(Some(1));
+        mem.add("user", "task");
+        for i in 0..6 {
+            mem.add("assistant", format!("a{i}"));
+            mem.add("user", format!("u{i}"));
+        }
+        // 触发多轮裁剪后，首条非 system 消息必须是 user
+        let first = mem.messages().iter().find(|m| m.role != "system").unwrap();
+        assert_eq!(first.role, "user");
+        assert!(first.text().contains("裁剪"));
+    }
+
     #[test]
     fn unbounded_never_trims() {
         let mut mem = Memory::new(None);
@@ -200,8 +236,10 @@ mod tests {
         mem.add_message(Message::tool_result("X", "data"));
         mem.add_message(Message::assistant("final answer"));
         // 3 non-system > 2 → must trim the assistant(X)+user(X) unit together,
-        // NOT leave the user(tool_result X) orphaned.
-        assert_eq!(mem.non_system_count(), 1); // only "final answer" remains
+        // NOT leave the user(tool_result X) orphaned. PLAN-030 修复后还会自动
+        // 补一个合成 user 锚点（assistant-first 会被 Anthropic 兼容层拒收）。
+        assert_eq!(mem.non_system_count(), 2); // user 锚点 + "final answer"
+        assert_eq!(mem.messages()[0].role, "user"); // 不以 assistant 开头
 
         // No orphan ToolResult should remain.
         for m in mem.messages() {
@@ -239,7 +277,9 @@ mod tests {
         });
         mem.add_message(Message::tool_result("C", "rc"));
         // 5 non-system > 4 → trim unit 1 (3 messages together).
-        assert_eq!(mem.non_system_count(), 2); // only unit 2 remains
+        // PLAN-030 修复后附带合成 user 锚点 → 2+1 条。
+        assert_eq!(mem.non_system_count(), 3); // user 锚点 + unit 2
+        assert_eq!(mem.messages()[0].role, "user");
         let ids: Vec<_> = mem.messages().iter().flat_map(|m| m.content.iter()).filter_map(|b| {
             if let ContentBlock::ToolResult { tool_use_id, .. } = b { Some(tool_use_id.clone()) } else { None }
         }).collect();
