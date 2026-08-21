@@ -159,29 +159,16 @@ for f in "$RUST"/builtin_role_*.rs; do
     sed -i 's#const SOUL: /\* unknown \*/#const SOUL: \&str#' "$f"
 done
 
-# Plan 019 Phase 2: a2r borrow-reasoning workarounds. These are mechanical
-# post-fixes for 4 classes of a2r transpiler defects (clone emission, ReadDir
-# borrow, path move, redundant as_str). Each targets a specific pattern; when
-# the a2r root cause is fixed upstream these sed rules become no-ops.
-#   B: borrowed loop var field passed to owned param → needs .clone()
-#   C: for-in unconditionally borrows; ReadDir only impl IntoIterator by-value
-#   D: read_to_string(path) moves path; later code reuses it → borrow instead
-#   E: redundant .as_str() inserted on a value already typed &str (E0658)
-for f in "$RUST"/driver.rs "$RUST"/agent.rs "$RUST"/skill.rs "$RUST"/roles.rs; do
-    [ -f "$f" ] || continue
-    # B: driver.rs — extract_path(tc.args) + WorkProduct { .. tc.tool .. }
-    sed -i 's#extract_path(tc\.args)#extract_path(tc.args.clone())#g;
-            s#description: tc\.tool,#description: tc.tool.clone(),#g' "$f"
-    # B: agent.rs — tool_to_definition(t) where t is &Arc
-    sed -i 's#tool_to_definition(t)#tool_to_definition(t.clone())#g' "$f"
-    # C: skill.rs/roles.rs — for entry in &entries → for entry in entries
-    #     (entries is ReadDir from fs::read_dir; &ReadDir is not an iterator)
-    sed -i 's#for entry in &entries {#for entry in entries {#g' "$f"
-    # D: read_to_string(path) → read_to_string(&path) (avoid moving path)
-    sed -i 's#read_to_string(path)#read_to_string(\&path)#g' "$f"
-    # E: skill.rs — after_open.as_str() is redundant (after_open is already &str)
-    sed -i 's#after_open\.as_str()#after_open#g' "$f"
-done
+# Plan 019 Phase 2 (B/C/D/E) — GRADUATED 2026-08-20 (auto-lang Plan 396):
+# all four sed classes verified as no-ops against the fixed a2r and removed.
+#   B: borrowed loopvar field/bare-var -> owned param clone   (396 S2.1)
+#   C: for-in over ReadDir wrongly borrowed                   (396 S2.2)
+#   D: read_to_string(path) moved path                        (396 S2.3)
+#   E: redundant .as_str() on &str                            (396 S2.4)
+# NOTE: full regeneration is currently blocked by two OTHER a2r regressions
+# on auto-lang master (pipeline.rs len() casts u32->i64; tool.at parse failure
+# breaking sibling spec info -> Arc<Tool> loses dyn). Tracked in auto-lang's
+# plans-status-audit-2026-08-20.md backlog.
 
 # Plan 021: a2r (auto-lang Plan 387 §16 aftermath) now renders Auto's
 # `mut eng PipelineEngine` parameter as `&mut PipelineEngine` (borrow inference
