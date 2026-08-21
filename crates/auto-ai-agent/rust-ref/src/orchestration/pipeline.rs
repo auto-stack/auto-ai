@@ -163,6 +163,14 @@ impl PipelineEngine {
         }
     }
 
+    /// PLAN-030 试用修复：显式失败入口。agent 运行错误时 driver 调用——
+    /// 原先错误被包装成 handoff 提交，引擎照常路由到下一相位，导致
+    /// execute 挂掉后 review/document 带着错误空转出"假完成"。
+    pub fn fail(&mut self, error: String) -> AdvanceResult {
+        self.status = PipelineStatus::Failed { error: error.clone() };
+        AdvanceResult::Failed { error }
+    }
+
     /// Advance the pipeline by one logical action.
     pub fn advance(&mut self) -> AdvanceResult {
         match &self.status {
@@ -443,6 +451,16 @@ mod tests {
         assert!(matches!(r, AdvanceResult::WaitForHuman { .. }));
         let r = eng.resolve_gate(GateDecision::Approve);
         assert!(matches!(r, AdvanceResult::ExecuteStep { ref step_id, .. } if step_id == "advise"));
+    }
+
+    #[test]
+    fn fail_sets_terminal_failed() {
+        let mut eng = PipelineEngine::new(two_step_flow(), "run-fail");
+        eng.advance();
+        let r = eng.fail("agent: boom".into());
+        assert!(matches!(r, AdvanceResult::Failed { ref error } if error == "agent: boom"));
+        // 终态：后续 advance 幂等回报 Failed
+        assert!(matches!(eng.advance(), AdvanceResult::Failed { .. }));
     }
 
     #[test]
