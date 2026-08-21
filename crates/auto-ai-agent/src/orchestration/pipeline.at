@@ -220,10 +220,10 @@ ext PipelineEngine {
         is self.status {
             PipelineStatus.Completed -> return AdvanceResult.Completed,
             PipelineStatus.Failed(e) -> return AdvanceResult.Failed(e),
-            PipelineStatus.WaitingForHuman(_sid, _t) -> {
-                return AdvanceResult.Failed(
-                    "Cannot advance while waiting for gate. Call resolve_gate() first."
-                )
+            // PLAN-030 试用修复：停靠 gate 时 advance 幂等回报 WaitForHuman
+            //（原先谎报 Failed——与 rust-ref 轨同步修正）。
+            PipelineStatus.WaitingForHuman(sid, _t) -> {
+                return AdvanceResult.WaitForHuman(sid)
             },
             PipelineStatus.Paused(at) -> {
                 let step = self.flow.steps[at]

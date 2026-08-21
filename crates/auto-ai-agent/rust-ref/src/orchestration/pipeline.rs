@@ -170,10 +170,12 @@ impl PipelineEngine {
             PipelineStatus::Failed { error } => {
                 return AdvanceResult::Failed { error: error.clone() }
             }
-            PipelineStatus::WaitingForHuman { .. } => {
-                return AdvanceResult::Failed {
-                    error: "Cannot advance while waiting for gate. Call resolve_gate() first.".into(),
-                };
+            PipelineStatus::WaitingForHuman { step_id, .. } => {
+                // PLAN-030 试用修复：停靠 gate 时 advance 幂等回报 WaitForHuman
+                // （原先谎报 Failed——driver 在 submit_handoff 停靠后的下一次
+                // advance 必然撞上，向事件流写假 RunFailed，UI 闪"失败"；
+                // 引擎状态本就未变，回报真实状态即可）。
+                return AdvanceResult::WaitForHuman { step_id: step_id.clone() };
             }
             PipelineStatus::Paused { at_step } => {
                 let step = &self.flow.steps[*at_step];
@@ -435,8 +437,10 @@ mod tests {
         let mut eng = PipelineEngine::new(f, "run-2");
         let r = eng.advance();
         assert!(matches!(r, AdvanceResult::WaitForHuman { .. }));
+        // PLAN-030 试用修复后的语义：停靠态再次 advance 幂等回报 WaitForHuman
+        //（原为谎报 Failed，driver 停靠后的一次多余 advance 会写假 RunFailed）。
         let r = eng.advance();
-        assert!(matches!(r, AdvanceResult::Failed { .. }));
+        assert!(matches!(r, AdvanceResult::WaitForHuman { .. }));
         let r = eng.resolve_gate(GateDecision::Approve);
         assert!(matches!(r, AdvanceResult::ExecuteStep { ref step_id, .. } if step_id == "advise"));
     }
