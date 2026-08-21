@@ -21,6 +21,7 @@ use builtin_role_runner: Runner
 use builtin_role_advisor: Advisor
 use builtin_role_planner: Planner
 use builtin_role_gofer: Gofer
+use builtin_role_plan_dev: PlanDev
 use builtin_role_super_advisor: Superadvisor
 use builtin_role_super_coder: Supercoder
 use builtin_role_super_tester: Supertester
@@ -43,6 +44,7 @@ pub fn builtin_names() List<str> {
         "advisor",
         "planner",
         "gofer",
+        "plan-dev",
         "super-advisor",
         "super-coder",
         "super-tester"
@@ -66,6 +68,7 @@ pub fn load_builtin(name str) ?Role {
         "advisor" -> return Some(Advisor()),
         "planner" -> return Some(Planner()),
         "gofer" -> return Some(Gofer()),
+        "plan-dev" -> return Some(PlanDev()),
         "super-advisor" -> return Some(Superadvisor()),
         "super-coder" -> return Some(Supercoder()),
         "super-tester" -> return Some(Supertester()),

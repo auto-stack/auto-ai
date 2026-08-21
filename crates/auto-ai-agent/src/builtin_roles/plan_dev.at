@@ -1,0 +1,21 @@
+""" The Plan-Driven Developer role (PLAN-030).
+
+ Auto-source mirror of rust-ref/src/builtin_roles/plan_dev.rs — one agent
+ carries a feature through plan → execute → review → document, with the plan
+ file as the single handoff artifact.
+"""
+
+use role_def: Role
+use ai_config: ModelTier
+
+""" Soul marker (full soul loaded from resources in Rust original).
+"""
+const SOUL = #{read_text("src/resources/souls/plan-dev.md")}
+
+pub type PlanDev has Role {
+    pub fn name() str { return "plan-dev" }
+    pub fn system_prompt() str { return SOUL.to_string() }
+    pub fn model_tier() ModelTier { return ModelTier.Max }
+    pub fn temperature() float { return 0.3 }
+    pub fn max_turns() uint { return 120 }
+}

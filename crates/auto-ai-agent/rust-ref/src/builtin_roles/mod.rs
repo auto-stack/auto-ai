@@ -15,6 +15,7 @@ pub mod assistant;
 pub mod coder;
 pub mod documenter;
 pub mod gofer;
+pub mod plan_dev;
 pub mod planner;
 pub mod reviewer;
 pub mod runner;
@@ -30,6 +31,7 @@ pub use assistant::Assistant;
 pub use coder::Coder;
 pub use documenter::Documenter;
 pub use gofer::Gofer;
+pub use plan_dev::PlanDev;
 pub use planner::Planner;
 pub use reviewer::Reviewer;
 pub use runner::Runner;
@@ -60,6 +62,7 @@ pub fn load_builtin(name: &str) -> Option<Arc<dyn Role>> {
         "advisor" => Arc::new(Advisor),
         "planner" => Arc::new(Planner),
         "gofer" => Arc::new(Gofer),
+        "plan-dev" => Arc::new(PlanDev),
         "super-advisor" => Arc::new(SuperAdvisor),
         "super-coder" => Arc::new(SuperCoder),
         "super-tester" => Arc::new(SuperTester),
@@ -82,6 +85,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "advisor",
         "planner",
         "gofer",
+        "plan-dev",
         "super-advisor",
         "super-coder",
         "super-tester",
@@ -117,6 +121,7 @@ mod tests {
             ("advisor", "Soul of the Advisor"),
             ("planner", "Soul of the Planner"),
             ("gofer", "Soul of the Gofer"),
+            ("plan-dev", "Soul of the Plan-Driven Developer"),
             ("super-advisor", "Soul of the Super Advisor"),
             ("super-coder", "Soul of the Super Coder"),
             ("super-tester", "Soul of the Super Tester"),
