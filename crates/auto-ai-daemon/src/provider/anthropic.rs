@@ -3,6 +3,27 @@
 //! Uses the Anthropic Messages API (`/v1/messages`) with SSE streaming.
 //! Ported from AutoForge's `provider/claude.rs`.
 
+/// PLAN-030 试用排查：provider 拒绝(4xx)时把请求体原文落盘，供离线定位
+/// "messages 参数非法"(zhipu 1214) 的具体毒物。文件：
+/// ~/.config/autoos/llm-rejects/<epoch_ms>-anthropic-<status>.json
+/// （.at 源轨无 fs/tracing 原语，此为 rust 侧排查插桩——retranspile 时保留。）
+fn dump_rejected_body(body: &serde_json::Value, status: u16) {
+    use std::io::Write;
+    let dir = dirs::home_dir()
+        .map(|h| h.join(".config/autoos/llm-rejects"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&dir);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("{ts}-anthropic-{status}.json"));
+    if let Ok(mut f) = std::fs::File::create(&path) {
+        let _ = serde_json::to_string_pretty(body).map(|s| f.write_all(s.as_bytes()));
+        tracing::error!("anthropic request rejected ({status}); body dumped to {}", path.display());
+    }
+}
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -96,6 +117,7 @@ impl AiProvider for AnthropicProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            dump_rejected_body(&body, status.as_u16());
             return Err(LlmError::from_upstream_status(status, text));
         }
 
@@ -175,6 +197,7 @@ impl AiProvider for AnthropicProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            dump_rejected_body(&body, status.as_u16());
             return Err(LlmError::from_upstream_status(status, text));
         }
 
