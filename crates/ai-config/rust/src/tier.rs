@@ -60,7 +60,7 @@ impl ModelTier {
             ModelTier::Max => return "Ultra-strong: deepest reasoning, research".to_string(),
         }
     }
-    fn order(&self) -> i32 {
+    fn order(&self) -> i64 {
         match self {
             ModelTier::Min => return 0,
             ModelTier::Lite => return 1,
@@ -125,7 +125,7 @@ pub fn all_tiers() -> Vec<ModelTier> {
 }
 
 pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Option<String> {
-    if (models.len() as i32) == 0 {
+    if (models.len() as i64) == 0 {
         return None;
     }
 
@@ -133,7 +133,7 @@ pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Opt
 
 
     let mut best: Option<ModelDefinition> = None;
-    let mut best_key: i32 = 0;
+    let mut best_key: i64 = 0;
     let mut first: bool = true;
     let desired_order = desired.order();
     for m in &models {
@@ -145,7 +145,7 @@ pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Opt
         let m_order = m.tier.order();
         let gap = m_order - desired_order;
         
-        let key: i32 = if gap >= 0 {
+        let key: i64 = if gap >= 0 {
             gap
         } else {
             1000 + 0 - gap

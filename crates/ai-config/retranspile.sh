@@ -84,14 +84,11 @@ fi
 
 # Plan 021 缺口 3 (post-Plan 395): turbofish is now native Auto syntax
 # (`node.deserialize<ClientScalars>()`), so no sed injection is needed.
-# Remaining a2r quirk (Plan 395 调查发现，尚未在 a2r 修复): unit-variant
-# patterns on a qualified enum path render as `auto_val::Value.Nil` (invalid
-# Rust) instead of `Value::Nil`. The tuple-variant arms (Str/String) render
-# fine, so only the three unit arms of kind_prop_is_empty need fixing.
-if [ -f "$RUST/loader.rs" ]; then
-    sed -i 's#auto_val::Value\.Nil#Value::Nil#g; s#auto_val::Value\.Null#Value::Null#g; s#auto_val::Value\.Void#Value::Void#g' "$RUST/loader.rs"
-    echo "  [loader] unit-variant path fix (a2r quirk)"
-fi
+# Plan 396 §2.5 FIXED (auto-lang 2026-08-21): qualified unit-variant patterns
+# (`auto_val.Value.Nil`) now strip the module segment in the parser, so a2r
+# emits `Value::Nil` directly. The former sed rewrite
+# (`auto_val::Value\.Nil → Value::Nil`, ×3 unit arms) verified no-op and was
+# deleted.
 
 # Assemble lib.rs: transpiled crate-root + pub mod decls (no extern shims).
 if [ -f "$SRC/lib.a2r.rs" ]; then

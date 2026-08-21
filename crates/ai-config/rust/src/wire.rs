@@ -193,6 +193,6 @@ impl CompletionResponse {
         return self.error.is_none();
     }
     pub fn wants_tool(&self) -> bool {
-        return (self.tool_calls.len() as i32) > 0;
+        return (self.tool_calls.len() as i64) > 0;
     }
 }

@@ -145,7 +145,7 @@ impl TierRouting {
         return TierRouting { entries: std::collections::HashMap::new(), tier_names: vec![] };
     }
     pub fn is_empty(&self) -> bool {
-        return (self.tier_names.len() as i32) == 0;
+        return (self.tier_names.len() as i64) == 0;
     }
     pub fn candidates(&self, tier: &str) -> Option<Vec<TierRouteCandidate>> {
         if self.entries.contains_key(tier) {
@@ -214,7 +214,7 @@ pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
                             let names = provider_keys(client_node.clone());
                             
 
-                            if (names.len() as i32) == 0 {
+                            if (names.len() as i64) == 0 {
                                 return Err(ConfigError::Parse("no providers configured in client { } block".to_string()));
                             }
                             let dp = if s.default_provider.is_empty() {
@@ -276,7 +276,7 @@ pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
                     cfg.tier_routing = parse_tier_routing(daemon_node.clone());
                     
 
-                    if cfg.default_provider.is_empty() && (cfg.provider_names.len() as i32) > 0 {
+                    if cfg.default_provider.is_empty() && (cfg.provider_names.len() as i64) > 0 {
                         cfg.default_provider = cfg.provider_names[0].clone();
                     }
                     if cfg.default_model.is_empty() {
@@ -285,7 +285,7 @@ pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
 
                             match cfg.providers.get(&cfg.default_provider) {
                                 Some(p) => {
-                                    if (p.models.len() as i32) > 0 {
+                                    if (p.models.len() as i64) > 0 {
                                         cfg.default_model = p.models[0].clone().id.to_string();
                                     }
                                 },
@@ -409,7 +409,7 @@ fn parse_tier_routing(node: Node) -> TierRouting {
 
                         } else {
                             let cands = parse_candidates(tier_val.clone());
-                            if (cands.len() as i32) > 0 {
+                            if (cands.len() as i64) > 0 {
                                 
 
 
