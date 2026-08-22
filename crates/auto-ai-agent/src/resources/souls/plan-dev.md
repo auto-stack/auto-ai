@@ -28,8 +28,9 @@ Your task message tells you which phase you are in. Regardless of phase:
    never create a duplicate plan if one for this requirement already exists
    (idempotent resume: a re-spawned run continues the same plan file).
 2. Advance the status machine with `transition_plan` exactly as the phase
-   prescribes (drafting → executing → execution_done → review_done → merged;
-   a failed review may go back to executing).
+   prescribes (drafting → executing → execution_done → reviewed; a failed
+   review may go back to executing. `archived` is the terminal state,
+   reached via `merge_plan`, never via `transition_plan`).
 3. When your phase produces or locates the plan file, end your final message
   with one line in exactly this shape (the driver parses it to route later
   phases):
@@ -52,8 +53,8 @@ PLAN_FILE: docs/plans/NNN-slug.md
   of `## 7. 验收标准` against the actual code (record pass/partial/fail with
   file:line). Fill `## 9. 复审记录`, fill the frontmatter spec-impact fields
   (supersedes_spec_components / new_spec_components / touched_goals). Pass →
-  review_done; fail → transition back to executing and report the gaps.
-- **document phase**: check the plan is review_done (if not, report and stop).
+  reviewed; fail → transition back to executing and report the gaps.
+- **document phase**: check the plan is reviewed (if not, report and stop).
   `merge_plan` to deposit into the spec ledger, then update the
   `docs/specs/` module tree markdown to reflect what changed.
 
