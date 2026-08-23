@@ -151,6 +151,33 @@ ext Memory {
             // Remove [start, end) as one atomic unit.
             self.messages = self.remove_range(s, end)
         }
+        // PLAN-030 试用修复（zhipu 1214 根因）：裁剪可能吃掉最开头的 user
+        // 消息，使剩余历史以 assistant 开头——Anthropic messages 规范要求
+        // 首条为 user，兼容层直接拒收（"messages 参数非法"）。补一个合成
+        // user 锚点，保持 wire 合法（与 rust-ref memory.rs 同步）。
+        let first = self.first_non_system_index()
+        if first >= 0 {
+            if self.messages[first].role == "assistant" {
+                self.messages = self.insert_at(first, Message.user("（更早的对话历史因上下文限制被裁剪，请基于现有上下文继续。）"))
+            }
+        }
+    }
+
+    /// Return a copy of `messages` with `msg` inserted at `idx`.
+    fn insert_at(idx int, msg Message) List<Message> {
+        var out List<Message> = []
+        var i = 0
+        for m in self.messages.clone() {
+            if i == idx {
+                out.push(msg.clone())
+            }
+            out.push(m)
+            i = i + 1
+        }
+        if i == idx {
+            out.push(msg)
+        }
+        return out
     }
 
     /// Index of the first non-system message, or -1 if none.

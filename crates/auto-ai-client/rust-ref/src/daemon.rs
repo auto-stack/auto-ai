@@ -196,14 +196,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn daemon_url_default() {
-        // Without AAID_URL set, returns default.
+    fn daemon_url_default_and_override() {
+        // One test covering both paths: env-var tests can't run in parallel
+        // threads (the override's set_var races the default's assertion).
         std::env::remove_var("AAID_URL");
         assert_eq!(daemon_url(), DEFAULT_DAEMON_URL);
-    }
-
-    #[test]
-    fn daemon_url_override() {
         std::env::set_var("AAID_URL", "http://localhost:9999");
         assert_eq!(daemon_url(), "http://localhost:9999");
         std::env::remove_var("AAID_URL");

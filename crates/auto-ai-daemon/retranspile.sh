@@ -564,6 +564,32 @@ if [ -f "$RUST/server.rs" ]; then
     # repeat here isn't needed; the fixes live in pool/provider/tier_router.)
 fi
 
+# ── a2r anchor drift + await-drop regression (2026-08-23, auto afe30bf8) ─────
+# Current a2r changed several emission shapes, breaking older sed anchors and
+# dropping explicit `.await` on async delegation. Each rule below targets the
+# NEW emission; the sibling rules above (kept for history) target the old.
+# Remove both halves when a2r regains the old (correct) shapes.
+if [ -f "$RUST/config.rs" ]; then
+    # const inferred as i64 now (was i32); max_concurrency field is usize.
+    sed -i 's#const DEFAULT_CONCURRENCY: i64 = 4;#const DEFAULT_CONCURRENCY: usize = 4;#' "$RUST/config.rs"
+fi
+if [ -f "$RUST/openai.rs" ]; then
+    # openai_content first arg: a2r now clones m.role (String); fn wants &str.
+    sed -i 's|openai_content(m.role.clone(), m.content.clone())|openai_content(m.role.as_str(), m.content.clone())|g' "$RUST/openai.rs"
+fi
+if [ -f "$RUST/anthropic.rs" ]; then
+    # content_blocks_to_anthropic: a2r now emits m.content.clone() at the call.
+    sed -i 's|content_blocks_to_anthropic(m.content.clone())|content_blocks_to_anthropic(\&m.content)|g' "$RUST/anthropic.rs"
+    # tool_to_anthropic: loop var now double-cloned (t.clone().clone()).
+    sed -i 's|tool_to_anthropic(t.clone().clone())|tool_to_anthropic(t)|g' "$RUST/anthropic.rs"
+fi
+if [ -f "$RUST/ollama.rs" ]; then
+    # ollama delegates complete/complete_stream to self.inner — a2r drops the
+    # explicit `.await` from ollama.at:31/39 (same class as L346/L405/L502).
+    sed -i 's|return self.inner.complete(\&req);|return self.inner.complete(\&req).await;|' "$RUST/ollama.rs"
+    sed -i 's|return self.inner.complete_stream(\&req, on_delta, cancel);|return self.inner.complete_stream(\&req, on_delta, cancel).await;|' "$RUST/ollama.rs"
+fi
+
 if [ "${1:-}" = "check" ]; then
     echo "[retranspile] running cargo check..."
     cd "$RUST/.."

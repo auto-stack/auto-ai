@@ -96,6 +96,21 @@ impl AnthropicProvider {
     }
     pub fn build_body(&self, req: CompletionRequest) -> Value {
         let mut messages: Vec<Value> = vec![];
+
+
+
+        if req.messages.is_empty() == false {
+            if req.messages[0].clone().role.to_string() != "user" {
+                let mut anchor = serde_json::Map::new();
+                anchor.insert("role".to_string(), Value::String("user".to_string()));
+                let mut anchor_block = serde_json::Map::new();
+                anchor_block.insert("type".to_string(), Value::String("text".to_string()));
+                anchor_block.insert("text".to_string(), Value::String("(continued)".to_string()));
+                let mut anchor_blocks: Vec<Value> = vec![];
+                anchor_blocks.push(Value::Object(anchor_block));
+                anchor.insert("content".to_string(), Value::Array(anchor_blocks));
+                messages.push(Value::Object(anchor));
+            }        }
         for m in &req.messages {
             let mut obj = serde_json::Map::new();
             obj.insert("role".to_string(), Value::String(m.role.clone()));

@@ -395,18 +395,18 @@ async fn t9_register_skill_tool_registers_tool() {
     );
 }
 
-// ─── T10: load_builtin + builtin_names cover all 14 roles ──────────────────
+// ─── T10: load_builtin + builtin_names cover all 15 roles ──────────────────
 #[test]
 fn t10_builtin_roles_load_and_names_complete() {
     let names = builtin_names();
-    assert_eq!(names.len(), 14, "fourteen built-in roles expected");
+    assert_eq!(names.len(), 15, "fifteen built-in roles expected");
     for name in &names {
         let role = load_builtin(name)
             .unwrap_or_else(|| panic!("load_builtin({}) should return Some", name));
         assert!(!role.name().is_empty(), "role {} has empty name", name);
     }
     // A few canonical names must be present.
-    for must in &["assistant", "coder", "architect", "tester", "translator"] {
+    for must in &["assistant", "coder", "architect", "tester", "translator", "plan-dev"] {
         assert!(
             names.iter().any(|n| n == must),
             "builtin_names must include {}",

@@ -179,6 +179,29 @@ if [ -f "$RUST/pipeline.rs" ]; then
             s#correct_handoff_target(\&mut self.clone(), \&mut h.clone(),#correct_handoff_target(self.clone(), h.clone(),#g' "$RUST/pipeline.rs"
 fi
 
+# a2r await-drop regression (2026-08-23, auto master afe30bf8): calls whose
+# .at source has an explicit `.await` on a self-method / let-binding position
+# are emitted WITHOUT `.await` (agent.rs run→run_inner, driver.rs dispatch /
+# drive_step / resolve_gate_auto / handle_after_submit, tool.rs execute /
+# exec_or_msg). The `.at` sources are correct (agent.at:354, driver.at:211/240,
+# etc.); this sed re-attaches the await the source already declares. Remove
+# when a2r regains explicit-await emission (auto-lang follow-up, same class
+# as the daemon's L346/L405/L502 await seds).
+if [ -f "$RUST/agent.rs" ]; then
+    sed -i 's#return self.run_inner(task_msg, None, discard);#return self.run_inner(task_msg, None, discard).await;#;
+            s#return self.run_inner(task_msg, Some(cancel), sink);#return self.run_inner(task_msg, Some(cancel), sink).await;#' "$RUST/agent.rs"
+fi
+if [ -f "$RUST/driver.rs" ]; then
+    sed -i 's#let outcome = self.dispatch(result, task_msg, last_handoff.clone());#let outcome = self.dispatch(result, task_msg, last_handoff.clone()).await;#;
+            s#match self.drive_step(task_msg, step_id.as_str(), role_id.as_str(), last_handoff) {#match self.drive_step(task_msg, step_id.as_str(), role_id.as_str(), last_handoff).await {#;
+            s#let gr = self.resolve_gate_auto(step_id.as_str());#let gr = self.resolve_gate_auto(step_id.as_str()).await;#g;
+            s#match self.handle_after_submit(submitted) {#match self.handle_after_submit(submitted).await {#' "$RUST/driver.rs"
+fi
+if [ -f "$RUST/tool.rs" ]; then
+    sed -i 's#Some(tool) => return tool.execute(args),#Some(tool) => return tool.execute(args).await,#;
+            s#match self.execute(name, args) {#match self.execute(name, args).await {#' "$RUST/tool.rs"
+fi
+
 # Plan 021 缺口 3 (post-Plan 395): turbofish is now native Auto syntax
 # (`node.deserialize<RoleDecl>()`), so no sed injection is needed.
 

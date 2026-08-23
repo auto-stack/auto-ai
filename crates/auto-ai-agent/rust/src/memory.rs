@@ -115,6 +115,30 @@ impl Memory {
             
             self.messages = self.remove_range(s, end);
         }
+
+
+
+
+        let first = self.first_non_system_index();
+        if first >= 0 {
+            if self.messages[(first) as usize].clone().role.to_string() == "assistant" {
+                self.messages = self.insert_at(first, Message::user("（更早的对话历史因上下文限制被裁剪，请基于现有上下文继续。）"));
+            }        }
+    }
+    pub fn insert_at(&self, idx: i64, msg: Message) -> Vec<Message> {
+        let mut out: Vec<Message> = vec![];
+        let mut i: i64 = 0;
+        for m in self.messages.clone() {
+            if i == idx {
+                out.push(msg.clone());
+            }
+            out.push(m.clone());
+            i = i + 1;
+        }
+        if i == idx {
+            out.push(msg.clone());
+        }
+        return out;
     }
     pub fn first_non_system_index(&self) -> i64 {
         let mut i: i64 = 0;

@@ -80,7 +80,7 @@ impl UsageTracker {
         let names = self.names.lock();
         let mut out: Vec<(String, AppUsage)> = vec![];
         for name in names.iter() {
-            match guard.get(name) {
+            match guard.get(&name.clone()) {
                 Some(u) => out.push((name.clone(), u.clone())),
                 None => {},
             };

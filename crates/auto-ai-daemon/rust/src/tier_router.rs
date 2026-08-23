@@ -89,7 +89,7 @@ impl TierRouter {
         match config.providers.get(&config.default_provider) {
             Some(default) => {
                 for m in &default.models {
-                    ensure_candidate(routing.clone(), m.tier, TierCandidate::new(config.default_provider.as_str(), m.id.as_str()));
+                    ensure_candidate(routing.clone(), m.tier.clone(), TierCandidate::new(config.default_provider.as_str(), m.id.as_str()));
                 }
             },
             None => {},
@@ -104,8 +104,8 @@ impl TierRouter {
                 Some(pc) => {
                     for m in &pc.models {
                         
-                        if has_provider_for_tier(routing.clone(), m.tier, name.as_str()) == false {
-                            ensure_candidate(routing.clone(), m.tier, TierCandidate::new(name.as_str(), m.id.as_str()));
+                        if has_provider_for_tier(routing.clone(), m.tier.clone(), name.as_str()) == false {
+                            ensure_candidate(routing.clone(), m.tier.clone(), TierCandidate::new(name.as_str(), m.id.as_str()));
                         }
                     }
                 },
@@ -136,7 +136,7 @@ impl TierRouter {
 
                     let mut reordered: Vec<TierCandidate> = vec![preferred];
                     for c in &chain {
-                        reordered.push(c.clone());
+                        reordered.push(c.clone().clone());
                     }
                     return reordered;
                 }
@@ -209,8 +209,8 @@ fn has_provider_for_tier(routing: HashMap<ModelTier, Vec<TierCandidate>>, tier: 
 }
 
 /// Index of the first candidate whose provider == `provider`, or -1 if none.
-fn index_of_provider(cands: Vec<TierCandidate>, provider: &str) -> i32 {
-    let mut i: i32 = 0;
+fn index_of_provider(cands: Vec<TierCandidate>, provider: &str) -> i64 {
+    let mut i: i64 = 0;
     for c in &cands {
         if c.provider == provider {
             return i;

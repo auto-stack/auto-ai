@@ -108,9 +108,9 @@ impl ConcurrencyManager {
     pub fn status(&self) -> Vec<(String, usize, usize)> {
         let mut out: Vec<(String, usize, usize)> = vec![];
         for name in &self.names {
-            match self.pools.get(name.as_str()) {
+            match self.pools.get(&name.clone()) {
                 Some(sem) => {
-                    let max = self.limits.get(name.as_str()).copied().unwrap_or(0);
+                    let max = self.limits.get(&name.clone()).copied().unwrap_or(0);
                     out.push((name.clone(), sem.available_permits(), max));
                 },
                 None => {},

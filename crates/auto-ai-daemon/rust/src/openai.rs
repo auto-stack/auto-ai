@@ -153,7 +153,7 @@ impl OpenAiProvider {
             sys_obj.insert("content".to_string(), Value::String(sys));
             all_msgs.push(Value::Object(sys_obj));
             for m in &messages {
-                all_msgs.push(m.clone());
+                all_msgs.push(m.clone().clone());
             }
             body.insert("messages".to_string(), Value::Array(all_msgs));
         } else {

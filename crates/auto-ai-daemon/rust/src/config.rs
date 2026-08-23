@@ -184,7 +184,7 @@ fn home_dir() -> Option<PathBuf> {
 
 /// Read a file's full contents as text ("" if unreadable — a2r-std parity).
 fn read_file_text(path: &str) -> String {
-    return a2r_std::fs::read_to_string(path);
+    return a2r_std::fs::read_to_string(&path);
 }
 
 /// Abort startup with a diagnostic: no provider could be configured. Exits the
