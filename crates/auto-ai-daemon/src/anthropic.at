@@ -122,17 +122,9 @@ ext AnthropicProvider {
         // PLAN-030 试用修复（zhipu 1214 根因的纵深防御）：Anthropic messages
         // 首条必须 user——上游若以 assistant 开头（如裁剪后历史），垫一条
         // 合成 user，避免兼容层直接拒收。
-        if req.messages.is_empty() == false {
+        if req.messages.length > 0 {
             if req.messages[0].role != "user" {
-                let anchor = serde_json.Map.new()
-                anchor.insert("role".to_string(), Value.String("user".to_string()))
-                let anchor_block = serde_json.Map.new()
-                anchor_block.insert("type".to_string(), Value.String("text".to_string()))
-                anchor_block.insert("text".to_string(), Value.String("(continued)".to_string()))
-                var anchor_blocks List<Value> = []
-                anchor_blocks.push(Value.Object(anchor_block))
-                anchor.insert("content".to_string(), Value.Array(anchor_blocks))
-                messages.push(Value.Object(anchor))
+                messages.push({ role: "user", content: [{ type: "text", text: "(continued)" }] })
             }
         }
         for m in req.messages {

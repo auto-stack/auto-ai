@@ -99,17 +99,9 @@ impl AnthropicProvider {
 
 
 
-        if req.messages.is_empty() == false {
+        if req.messages.len() > 0 {
             if req.messages[0].clone().role.to_string() != "user" {
-                let mut anchor = serde_json::Map::new();
-                anchor.insert("role".to_string(), Value::String("user".to_string()));
-                let mut anchor_block = serde_json::Map::new();
-                anchor_block.insert("type".to_string(), Value::String("text".to_string()));
-                anchor_block.insert("text".to_string(), Value::String("(continued)".to_string()));
-                let mut anchor_blocks: Vec<Value> = vec![];
-                anchor_blocks.push(Value::Object(anchor_block));
-                anchor.insert("content".to_string(), Value::Array(anchor_blocks));
-                messages.push(Value::Object(anchor));
+                messages.push(serde_json::json!({"role": "user", "content": [{"type": "text", "text": "(continued)"}]}));
             }        }
         for m in &req.messages {
             let mut obj = serde_json::Map::new();

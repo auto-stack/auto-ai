@@ -23,7 +23,7 @@ use ai_config
 // Default per-provider concurrency cap when a provider doesn't set
 // `max_concurrency`. Untyped const so a2r infers the target field's type
 // (rust-ref's max_concurrency is Option<usize>), avoiding a u32/usize clash.
-const DEFAULT_CONCURRENCY = 4
+const DEFAULT_CONCURRENCY usize = 4
 
 /// Load daemon config from `~/.config/autoos/ai-daemon.at`, else from env.
 ///
