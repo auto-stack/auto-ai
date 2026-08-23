@@ -8,14 +8,14 @@
 //! be driven by the real [`auto_ai_client::AiClient`] in production *or* a
 //! deterministic mock in tests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use auto_ai_client::{
-    AiClient, ClientError, CompletionRequest, CompletionResponse, ContentBlock, Message,
+    AiClient, ClientError, CompletionRequest, CompletionResponse, ContentBlock, Message, Usage,
 };
 
 use crate::error::{AgentError, ToolError};
@@ -88,6 +88,21 @@ impl Client for AiClient {
 /// Events emitted by [`Agent::run_stream`] as the ReAct loop progresses.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StreamEvent {
+    /// A ReAct turn is starting (one LLM call plus its tool batch, if any).
+    /// Emitted before the turn's first Delta/Thinking/ToolStart. Turn numbers
+    /// are 1-based (matching [`AgentResult::turns`]). (Plan 026: pi parity —
+    /// consumers fold display and per-turn usage accounting on this boundary.)
+    TurnStart { turn: u32 },
+    /// A ReAct turn completed normally: its tool results were recorded, or it
+    /// produced the final answer / a follow-up revival. NOT emitted when a
+    /// turn is cut short by cancellation or error. `usage` is this turn's LLM
+    /// usage as reported by the daemon; `tool_count` is the number of tool
+    /// calls executed in this turn.
+    TurnEnd {
+        turn: u32,
+        usage: Option<Usage>,
+        tool_count: u32,
+    },
     /// A chunk of the model's text output.
     Delta { text: String },
     /// A chunk of the model's reasoning/thinking output (emitted by
@@ -158,6 +173,15 @@ pub struct Agent {
     /// to the system prompt so the agent starts with project knowledge.
     /// Set via [`Agent::with_context`].
     context_block: Option<String>,
+    /// Steering queue (Plan 026): user messages injected mid-run. Drained
+    /// after the previous turn's tool batch landed in memory and before the
+    /// next LLM call — never interrupts an in-flight tool batch (pi
+    /// steering semantics).
+    steering: Arc<Mutex<VecDeque<String>>>,
+    /// Follow-up queue (Plan 026): messages that revive a run which was about
+    /// to end naturally (final answer, no pending tools). Drained only at the
+    /// natural end of a run.
+    follow_ups: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl Agent {
@@ -172,6 +196,8 @@ impl Agent {
             client,
             skills_block: None,
             context_block: None,
+            steering: Arc::new(Mutex::new(VecDeque::new())),
+            follow_ups: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -313,6 +339,44 @@ impl Agent {
         self.run_inner(task, noop, None).await
     }
 
+    /// Queue a steering message (Plan 026): injected into the conversation
+    /// after the current tool batch completes, before the next LLM call. It
+    /// never interrupts an in-flight tool — the model sees it on the very next
+    /// turn. Safe to call while the run is in flight (interior mutability).
+    pub fn steer(&self, msg: impl Into<String>) {
+        self.steering.lock().unwrap().push_back(msg.into());
+    }
+
+    /// Queue a follow-up message (Plan 026): when the run is about to end
+    /// naturally (final answer, no pending tools), a non-empty follow-up queue
+    /// revives the loop with the message as a new user turn (counted against
+    /// the turn limits — anti-runaway).
+    pub fn follow_up(&self, msg: impl Into<String>) {
+        self.follow_ups.lock().unwrap().push_back(msg.into());
+    }
+
+    /// Shared handle to the steering queue — for app-layer wiring (e.g. musk's
+    /// axum handlers push into it directly while the run is in flight).
+    pub fn steering_queue(&self) -> Arc<Mutex<VecDeque<String>>> {
+        self.steering.clone()
+    }
+
+    /// Shared handle to the follow-up queue.
+    pub fn follow_up_queue(&self) -> Arc<Mutex<VecDeque<String>>> {
+        self.follow_ups.clone()
+    }
+
+    /// Plan 026: cancel drops any queued steering messages; report the loss so
+    /// the UI can tell the user their mid-run messages were discarded.
+    fn clear_steering_on_cancel(&self, on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>) {
+        let dropped = self.steering.lock().unwrap().drain(..).count();
+        if dropped > 0 {
+            on_event(StreamEvent::Warning {
+                text: format!("cancelled: {dropped} steering message(s) dropped"),
+            });
+        }
+    }
+
     /// Unified ReAct loop backing both [`Self::run`] and [`Self::run_stream`]
     /// (review-003 M4: eliminates the two parallel implementations that had
     /// drifted apart — S3's missing error check was a direct symptom).
@@ -320,8 +384,10 @@ impl Agent {
     /// - `on_event` is always a sink (`run` passes a no-op, `run_stream` the
     ///   real callback) — so the loop body never branches on Option (review-003
     ///   stage 5 W2: previously it took `&Option<...>` on every emit call).
-    /// - `cancel = None` → not cancellable (`run`); `Some` → honor at the 3
-    ///   safe checkpoints (turn boundary, after LLM response, before tools).
+    /// - `cancel = None` → not cancellable (`run`); `Some` → honor at the 5
+    ///   safe checkpoints (new turn, after LLM response, before the tool
+    ///   batch, and at each tool iteration — covering before/after every
+    ///   individual tool; Plan 026).
     async fn run_inner(
         &mut self,
         task: &str,
@@ -350,10 +416,22 @@ impl Agent {
             // Cancel checkpoint 1: stop before starting a new ReAct turn.
             // (Memory is consistent here — the previous turn, if any, is done.)
             if cancelled() {
+                self.clear_steering_on_cancel(&on_event);
                 on_event(StreamEvent::Cancelled { result: result.clone() });
                 return Ok(result);
             }
+
+            // Steering poll (Plan 026): queued user messages land here — after
+            // the previous turn's tool results were recorded, before this
+            // turn's LLM call. The same cancel check above covers the
+            // "before steering injection" checkpoint. Steering turns count
+            // toward the turn limits (anti-runaway).
+            while let Some(msg) = self.steering.lock().unwrap().pop_front() {
+                self.memory.add("user", &msg);
+            }
+
             result.turns = turn + 1;
+            on_event(StreamEvent::TurnStart { turn: turn as u32 + 1 });
 
             // Soft limit warning: when exceeding the role's max_turns, log it
             // but don't stop — the agent may still be making progress.
@@ -405,6 +483,7 @@ impl Agent {
                 if let Some(u) = &resp.usage {
                     result.total_tokens += u.total_tokens() as u64;
                 }
+                self.clear_steering_on_cancel(&on_event);
                 on_event(StreamEvent::Cancelled { result: result.clone() });
                 return Ok(result);
             }
@@ -425,6 +504,7 @@ impl Agent {
                 // ToolUse blocks to memory below, the matching ToolResults must
                 // follow, so we bail out *before* any of that.
                 if cancelled() {
+                    self.clear_steering_on_cancel(&on_event);
                     on_event(StreamEvent::Cancelled { result: result.clone() });
                     return Ok(result);
                 }
@@ -450,7 +530,24 @@ impl Agent {
                 });
 
                 // Execute each tool call and record results.
-                for tc in &resp.tool_calls {
+                for (i, tc) in resp.tool_calls.iter().enumerate() {
+                    // Cancel checkpoints 4/5 (Plan 026): the check at the top
+                    // of each iteration covers both "before tool N" and
+                    // "after tool N-1". The assistant turn (with its ToolUse
+                    // blocks) is already in memory — write placeholder results
+                    // for every unanswered call so the wire stays valid
+                    // (orphan tool_use is a 400 on providers), then stop.
+                    if cancelled() {
+                        for tc in &resp.tool_calls[i..] {
+                            self.memory.add_message(Message::tool_result(
+                                &tc.id,
+                                "[cancelled by user]",
+                            ));
+                        }
+                        self.clear_steering_on_cancel(&on_event);
+                        on_event(StreamEvent::Cancelled { result: result.clone() });
+                        return Ok(result);
+                    }
                     let key = format!("{}::{}", tc.name, tc.input);
                     let count = seen.entry(key.clone()).or_insert(0);
                     *count += 1;
@@ -515,6 +612,13 @@ impl Agent {
                         truncate_tool_result(&outcome),
                     ));
                 }
+                // Turn completed via tool batch (Plan 026): report the turn
+                // boundary with this turn's usage and tool count.
+                on_event(StreamEvent::TurnEnd {
+                    turn: turn as u32 + 1,
+                    usage: resp.usage.clone(),
+                    tool_count: resp.tool_calls.len() as u32,
+                });
                 // Loop continues: ask the model again with the tool results.
                 continue;
             }
@@ -522,6 +626,27 @@ impl Agent {
             // No tool calls → final answer.
             result.output = resp.content.clone();
             self.memory.add("assistant", &resp.content);
+
+            // Follow-up poll (Plan 026): a non-empty follow-up queue revives
+            // the run — the messages become new user turns (counted against
+            // the turn limits). This turn still completes normally.
+            let revived = {
+                let mut q = self.follow_ups.lock().unwrap();
+                let mut any = false;
+                while let Some(msg) = q.pop_front() {
+                    self.memory.add("user", &msg);
+                    any = true;
+                }
+                any
+            };
+            on_event(StreamEvent::TurnEnd {
+                turn: turn as u32 + 1,
+                usage: resp.usage.clone(),
+                tool_count: 0,
+            });
+            if revived {
+                continue;
+            }
             on_event(StreamEvent::Done {
                 result: AgentResult {
                     output: result.output.clone(),

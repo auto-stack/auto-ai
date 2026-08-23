@@ -22,6 +22,7 @@ path = "src/main.rs"
 # short same-repo sibling paths from rust/ (../auto-ai-agent → ../ = crates/).
 # These resolve identically in the main checkout and in a .worktrees/<name>/
 # checkout, since the sibling crates are co-located either way.
+parking_lot = "0.12"
 a2r-std = { path = "../../../../auto-lang/crates/a2r-std" }
 auto-atom = { path = "../../../../auto-lang/crates/auto-atom" }
 auto-val = { path = "../../../../auto-lang/crates/auto-val", features = ["serde"] }

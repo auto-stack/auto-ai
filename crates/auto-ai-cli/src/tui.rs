@@ -507,6 +507,13 @@ fn handle_stream_event(app: &mut App, ev: StreamEvent) {
             // the current turn so it's not mistaken for the model's answer.
             app.chat.add_system(&format!("⚠️ {text}"));
         }
+        // Turn boundaries (Plan 026): TurnStart needs no visual change; TurnEnd
+        // logs a compact per-turn summary (tools + tokens reported this turn).
+        StreamEvent::TurnStart { .. } => {}
+        StreamEvent::TurnEnd { turn, usage, tool_count } => {
+            let u = usage.map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
+            app.chat.add_system(&format!("─ turn {turn} · {tool_count} tool(s) · {u} tokens"));
+        }
         StreamEvent::ToolStart { tool, args } => {
             app.chat.start_tool(&tool, &args);
             app.tool_count += 1;

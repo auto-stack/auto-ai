@@ -1,7 +1,17 @@
 # Plan 026: agent 运行时对齐 pi-agent-core——turn 级事件、Thinking 一等公民、steering/follow-up 队列与应用层取消
 
-> **状态**：📝 drafting（未开工）
-> **仓库**：auto-ai（auto-ai-agent 主改；ai-config wire 小改）+ auto-musk（消费端适配，影响见文末）
+> **状态**：✅ 已实施（2026-08-23，双轨落地，离线两轨对拍全等；live e2e 对拍待 daemon 实跑）
+> **仓库**：auto-ai（auto-ai-agent 主改；ai-config wire 小改）+ auto-musk（消费端适配，影响见文末，**不在本计划内实施**——已确认本计划只改 auto-ai）
+> **实施记录与计划偏差**：
+> 1. `StreamEvent` 实际定义在 auto-ai-agent（agent.rs / agent.at），不在 ai-config wire.at（计划文档笔误）；
+>    `TurnEnd.usage` 复用既有 `ai_config::Usage`，未新建 UsageSummary → ai-config 仅补 rust-ref `Usage` 的 `PartialEq, Eq` derive。
+> 2. TurnEnd 只在 turn 正常完成时发出（工具批落库 / 终答 / follow-up 复活）；取消与错误不发（turn 未完成）。
+> 3. 取消的"每工具前后"检查点实现为工具循环每轮迭代顶部单检查（前=后一等效）；中途取消时为未应答的
+>    tool_use 补写占位 tool_result（"[cancelled by user]"）保 wire 合法——计划原文"结果不再注入记忆"会留
+>    孤儿 tool_use（1214 教训），实现改为占位。
+> 4. steering 计入 turn 上限（按 §5 决策）；取消时清空 steering 并发 Warning 报告丢弃数。
+> 5. 转译轨新增 parking_lot 依赖（.at 的 Mutex 惯例）；`.at` 源码注意 `go` 是保留字（循环变量撞关键字会报
+>    误导性的 "Expected term, got Go"）。
 > **目标**：把 agent 运行时的三个语义缺口补齐——①事件流缺 turn 层；②Thinking 在 .at 轨退化为 Delta；③用户无法中途插话（steering）或叫停（取消）。全部对齐 pi-agent-core 的成熟语义。
 > **参考实现**：pi-mono 本地克隆 `D:\github\pi`（main @ a1f955e9f），`packages/agent/`。
 > **关联计划**：PLAN-027（content/details 分离）、PLAN-028（压缩，消费 turn 边界与 usage）；auto-musk PLAN-039/040（消费端）。

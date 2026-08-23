@@ -7,6 +7,7 @@ use a2r_std::*;
 use crate::error::ToolError;
 
 use std::sync::Arc;
+use parking_lot::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::future::Future;
@@ -19,7 +20,7 @@ use crate::error::{AgentError};
 use crate::memory::{Memory};
 use crate::role_def::{Role};
 use crate::skill::{SkillTool};
-use crate::ai_config::{ModelTier};
+use crate::ai_config::{ModelTier, Usage};
 use crate::tool::{ToolRegistry, tool_to_definition, Tool};
 use crate::wire::{ContentBlock, JsonValue, ToolDefinition};
 /// The autonomous agent (Layer 3 core).
@@ -58,13 +59,13 @@ use crate::wire::{ContentBlock, JsonValue, ToolDefinition};
 /// Other Auto-side adaptations (none affect behavior):
 /// - generic `fn new<P: Role>(role P, ...)` → `new_shared(role Role, ...)` with
 /// a spec-typed field (Auto `spec` is auto-dyn, equivalent to Arc<dyn Role>).
-/// - `StreamEvent.Thinking` (rust-ref's reasoning-event variant) is NOT yet
-/// ported — the cb currently forwards all text as Delta (Plan 022 §6.1
-/// conservative increment; reasoning distinction is a follow-up).
 /// 
 /// VARIANT NOTE: StreamEvent's struct-style variants are modeled as tuple
 /// variants (plan 013 gotcha B3). Field order:
+/// - StreamEvent.TurnStart(turn)                       (Plan 026)
+/// - StreamEvent.TurnEnd(turn, usage, tool_count)      (Plan 026)
 /// - StreamEvent.Delta(text)
+/// - StreamEvent.Thinking(text)                        (Plan 026, was degraded to Delta)
 /// - StreamEvent.ToolStart(tool, args)
 /// - StreamEvent.Warning(text)
 /// - StreamEvent.Tool(tool, args, result)
@@ -121,7 +122,16 @@ pub trait Client: Send + Sync {
 /// accumulated full response on success.
 /// Events emitted by Agent.run_stream as the ReAct loop progresses.
 /// Tuple variants (plan 013 gotcha B3) — see file header for field order.
+/// A ReAct turn is starting (one LLM call plus its tool batch, if any).
+/// 1-based, matching AgentResult.turns. (turn) — Plan 026 pi parity.
+/// A ReAct turn completed normally (tool batch recorded, or final answer /
+/// follow-up revival). NOT emitted on cancel/error. (turn, usage,
+/// tool_count) — Plan 026.
 /// A chunk of the model's text output. (text)
+/// A chunk of the model's reasoning/thinking output (reasoning-capable
+/// models, typically before the Delta answer). (text) — Plan 026: the .at
+/// track previously degraded reasoning to Delta; now a first-class variant
+/// matching rust-ref.
 /// A tool is about to be executed. (tool, args)
 /// A non-fatal advisory message (e.g. the near-turn-cap warning). (text)
 /// A tool was called and produced a result. (tool, args, result)
@@ -130,7 +140,10 @@ pub trait Client: Send + Sync {
 /// The loop failed. (message)
 #[derive(Clone, Debug, PartialEq)]
 pub enum StreamEvent {
+    TurnStart(u32),
+    TurnEnd(u32, Option<Usage>, u32),
     Delta(String),
+    Thinking(String),
     ToolStart(String, JsonValue),
     Warning(String),
     Tool(String, JsonValue, String),
@@ -171,7 +184,10 @@ impl EventSink {
 
                 (self.cb)(ev.clone());
                 match ev {
+                    StreamEvent::TurnStart(turn) => self.log = format!("{}TURNS:{};", self.log, turn),
+                    StreamEvent::TurnEnd(turn, _usage, _tools) => self.log = format!("{}TURNE:{};", self.log, turn),
                     StreamEvent::Delta(text) => self.log = format!("{}D:{};", self.log, text),
+                    StreamEvent::Thinking(text) => self.log = format!("{}TH:{};", self.log, text),
                     StreamEvent::ToolStart(tool, _args) => self.log = format!("{}TS:{};", self.log, tool),
                     StreamEvent::Warning(text) => self.log = format!("{}W:{};", self.log, text),
                     StreamEvent::Tool(tool, _args, _result) => self.log = format!("{}T:{};", self.log, tool),
@@ -281,12 +297,14 @@ pub struct Agent {
     pub client: Box<dyn Client>,
     pub skills_block: Option<String>,
     pub context_block: Option<String>,
+    pub steering: Arc<Mutex<Vec<String>>>,
+    pub follow_ups: Arc<Mutex<Vec<String>>>,
 }
 
 impl Agent {
     pub fn new_shared(role: Box<dyn Role>, client: Box<dyn Client>) -> Agent {
         let limit = role.memory_limit();
-        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None };
+        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])) };
     }
     pub fn with_context(&mut self, context: &str) {
         let ctx = context.trim().to_string();
@@ -322,6 +340,34 @@ impl Agent {
         let discard = spawn_event_sink();
         return self.run_inner(task_msg, None, discard).await;
     }
+    pub fn steer(&self, msg: &str) {
+        let mut guard = self.steering.lock();
+        guard.push(msg.to_string());
+    }
+    pub fn follow_up(&self, msg: &str) {
+        let mut guard = self.follow_ups.lock();
+        guard.push(msg.to_string());
+    }
+    pub fn steering_queue(&self) -> Arc<Mutex<Vec<String>>> {
+        return self.steering.clone();
+    }
+    pub fn follow_up_queue(&self) -> Arc<Mutex<Vec<String>>> {
+        return self.follow_ups.clone();
+    }
+    pub fn drop_steering_on_cancel(&self, sink: a2r_std::task::TaskRef<StreamEvent>) {
+        let mut n: u32 = 0 as u32;
+        let mut draining: bool = true;
+        while draining {
+            match pop_front(self.steering.clone()) {
+                Some(_m) => n = n + 1,
+                None => draining = false,
+            };
+        }
+        if n > 0 {
+            let w = StreamEvent::Warning(format!("cancelled: {} steering messages dropped", n));
+            sink.send(w);
+        }
+    }
     pub async fn run_stream(&mut self, task_msg: &str, cancel: Arc<AtomicBool>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
         return self.run_inner(task_msg, Some(cancel), sink).await;
     }
@@ -338,12 +384,33 @@ impl Agent {
         while turn < hard_limit {
             
             if is_cancelled(cancel.clone()) {
+                self.drop_steering_on_cancel(sink.clone());
                 let ce = cancelled_event(result.clone());
                 sink.send(ce);
                 return Ok(result);
             }
+            
+
+
+
+
+
+            let mut injected: bool = true;
+            while injected {
+                injected = false;
+                match pop_front(self.steering.clone()) {
+                    Some(msg) => {
+                        self.memory.add("user", msg.as_str());
+                        injected = true;
+                    },
+                    None => {},
+                };
+            }
+            
             turn = turn + 1;
             result.turns = turn;
+            let ts = StreamEvent::TurnStart(turn);
+            sink.send(ts);
             
 
             let remaining: u32 = hard_limit - turn;
@@ -367,6 +434,7 @@ impl Agent {
 
             if is_cancelled(cancel.clone()) {
                 result.total_tokens = record_usage(result.clone(), resp.clone());
+                self.drop_steering_on_cancel(sink.clone());
                 let ce = cancelled_event(result.clone());
                 sink.send(ce);
                 return Ok(result);
@@ -389,6 +457,7 @@ impl Agent {
                 
 
                 if is_cancelled(cancel.clone()) {
+                    self.drop_steering_on_cancel(sink.clone());
                     let ce = cancelled_event(result.clone());
                     sink.send(ce);
                     return Ok(result);
@@ -416,8 +485,29 @@ impl Agent {
 
 
 
-                let mut keep_going: bool = true;
-                for tc in resp.tool_calls.clone() {
+
+
+
+
+                let mut tcs = resp.tool_calls.clone();
+                let mut idx: u32 = 0 as u32;
+                while idx < tcs.len() as u32 {
+                    if is_cancelled(cancel.clone()) {
+                        let mut j: u32 = idx;
+                        while j < tcs.len() as u32 {
+                            let un = tcs[(j) as usize].clone();
+                            let pr = Message::tool_result(un.id, "[cancelled by user]");
+                            self.memory.add_message(pr);
+                            j = j + 1;
+                        }
+                        self.drop_steering_on_cancel(sink.clone());
+                        let ce = cancelled_event(result.clone());
+                        sink.send(ce);
+                        return Ok(result);
+                    }
+                    
+
+                    let tc = tcs[(idx) as usize].clone();
                     let key: String = format!("{}::{}", tc.name, tc.input);
                     let count = bump_seen(seen.clone(), seen_names.clone(), key.as_str());
                     if count >= loop_detect_threshold() {
@@ -426,8 +516,8 @@ impl Agent {
                         return Err(AgentError::LoopDetected(tc.name));
                     }
                     
-                    let ts = StreamEvent::ToolStart(tc.name.clone(), tc.input.clone());
-                    sink.send(ts);
+                    let tse = StreamEvent::ToolStart(tc.name.clone(), tc.input.clone());
+                    sink.send(tse);
                     
                     let outcome = self.tools.exec_or_msg(tc.name.as_str(), tc.input.clone()).await;
                     let rec = ToolCallRecord { tool: tc.name.clone().to_string(), args: tc.input.clone(), result: outcome.clone().to_string() };
@@ -438,7 +528,13 @@ impl Agent {
 
                     let tr = Message::tool_result(tc.id, truncate_tool_result(outcome.as_str()));
                     self.memory.add_message(tr);
+                    idx = idx + 1;
                 }
+                
+
+
+                let tend = StreamEvent::TurnEnd(turn, resp.usage.clone(), ((resp.tool_calls.len() as i64) as u32));
+                sink.send(tend);
                 
 
             } else {
@@ -448,9 +544,34 @@ impl Agent {
                 
 
                 self.memory.add("assistant", resp.content.as_str());
-                let done = StreamEvent::Done(clone_result(result.clone()));
-                sink.send(done);
-                return Ok(result);
+                
+
+
+
+
+                let mut revived: bool = false;
+                let mut pump: bool = true;
+                while pump {
+                    match pop_front(self.follow_ups.clone()) {
+                        Some(msg) => {
+                            self.memory.add("user", msg.as_str());
+                            revived = true;
+                        },
+                        None => pump = false,
+                    };
+                }
+                
+
+                let fend = StreamEvent::TurnEnd(turn, resp.usage.clone(), 0);
+                sink.send(fend);
+                if revived {
+                    
+
+                } else {
+                    let done = StreamEvent::Done(clone_result(result.clone()));
+                    sink.send(done);
+                    return Ok(result);
+                }
             }
 
         }
@@ -484,6 +605,11 @@ impl Agent {
 /// register_skill_tool.
 /// Project context (e.g. contents of .musk.md / CLAUDE.md). Prepended to
 /// the system prompt so the agent starts with project knowledge.
+/// Steering queue (Plan 026): user messages injected mid-run, after the
+/// previous tool batch lands in memory and before the next LLM call.
+/// Shared handle so app layers (musk) can push while the run is in flight.
+/// Follow-up queue (Plan 026): revives a run that was about to end
+/// naturally (final answer, nothing pending).
 /// Build a new agent from an already-shared Role + Client spec value, and
 /// the Role's memory-limit preference. (Non-generic substitute for Rust's
 /// `new<P: Role>(role P, client)`.)
@@ -507,6 +633,17 @@ impl Agent {
 /// Non-streaming, non-cancellable (delegates to run_inner with cancel=None
 /// and a throwaway EventSink that consumes the events — nothing observable).
 /// `mut fn`: the loop mutates self.memory/tools.
+/// Queue a steering message (Plan 026): injected into the conversation
+/// after the current tool batch completes, before the next LLM call —
+/// never interrupts an in-flight tool. Safe to call mid-run.
+/// Queue a follow-up message (Plan 026): revives the run when it was about
+/// to end naturally (final answer, no pending tools); counted against the
+/// turn limits (anti-runaway).
+/// Shared handle to the steering queue (app-layer wiring, e.g. musk's
+/// axum handlers pushing directly mid-run).
+/// Shared handle to the follow-up queue.
+/// Plan 026: cancel drops queued steering messages; report the loss so the
+/// UI can tell the user their mid-run messages were discarded.
 /// Like run, but honors a cancellation flag at the turn boundaries AND
 /// streams every ReAct event to `sink` (Plan 021 缺口 1). The Rust original
 /// takes an `Arc<dyn Fn(StreamEvent)>` callback; the Auto port takes a
@@ -573,22 +710,45 @@ fn cancelled_event(result: AgentResult) -> StreamEvent {
 }
 
 /// Forward one SSE event (from Client.complete_stream's callback) to the
-/// EventSink as a StreamEvent.Delta. Conservative (Plan 022 §6.1): every text
-/// chunk becomes Delta; the reasoning→Thinking distinction is a follow-up.
+/// EventSink. Reasoning-aware (Plan 026): a `{"type":"reasoning","text":…}`
+/// chunk forwards as StreamEvent.Thinking, everything else with text as
+/// StreamEvent.Delta — matching rust-ref agent.rs (the .at track previously
+/// degraded all text to Delta; Plan 022 §6.1 conservative increment retired).
 /// Extracted as a free fn so the run_inner closure stays a single-expression
 /// arrow closure (a2r parses `(ev) => expr`, not block-body move closures).
 /// `@TaskRef` (by ref): TaskRef is not Clone; send takes &self, so a borrow
 /// suffices and avoids a2r's move-reuse clone inference (Plan 019 class D).
 fn forward_sse_delta(ev: JsonValue, sink: &a2r_std::task::TaskRef<StreamEvent>) {
+    let mut ty: String = "".to_string();
+    match ev.get("type") {
+        Some(t) => ty = t.as_str().unwrap_or_default().to_string(),
+        None => {},
+    };
     match ev.get("text") {
         Some(t) => {
             let text = t.as_str().unwrap_or_default();
             if text.is_empty() == false {
-                sink.send(StreamEvent::Delta(text.to_string()));
+                if ty == "reasoning" {
+                    sink.send(StreamEvent::Thinking(text.to_string()));
+                } else {
+                    sink.send(StreamEvent::Delta(text.to_string()));
+                }
             }
         },
         None => {},
     };
+}
+
+/// Pop the front element of a shared string queue (Plan 026 steering /
+/// follow-up), or None when empty. The guard is released when this fn returns,
+/// so callers can safely mutate agent memory right after.
+fn pop_front(q: Arc<Mutex<Vec<String>>>) -> Option<String> {
+    let mut guard = q.lock();
+    if (guard.len() as i64) > 0 {
+        let msg = guard.remove(0);
+        return Some(msg);
+    }
+    return None;
 }
 
 /// Copy an AgentResult (used for event payloads, so the returned result stays

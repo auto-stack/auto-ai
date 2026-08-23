@@ -563,3 +563,232 @@ async fn t15_complete_stream_forwards_deltas() {
         }).collect::<Vec<_>>()
     );
 }
+
+// ─── T16-T19: Plan 026 parity — turn events / thinking / steering / follow-up ─
+
+/// A Client whose complete_stream emits a scripted list of SSE events (raw
+/// JSON values), captures every request, and can run a hook after a given
+/// response (deterministic mid-run steering injection). Plan 026 parity
+/// counterpart of the rust-ref harness's enhanced ScriptedClient. Clone shares
+/// the inner state so tests can keep a handle for assertions after the agent
+/// takes ownership of one clone.
+struct SseScriptedClient {
+    inner: Arc<SseScriptedInner>,
+}
+
+struct SseScriptedInner {
+    responses: Mutex<Vec<CompletionResponse>>,
+    /// Per-response SSE events to emit while streaming.
+    events: Mutex<std::collections::VecDeque<Vec<Value>>>,
+    requests: Mutex<Vec<CompletionRequest>>,
+    /// (index, hook): called right after response `index` was streamed.
+    after_response: Option<Box<dyn Fn() + Send + Sync>>,
+    hook_index: usize,
+}
+
+impl Clone for SseScriptedClient {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+}
+
+impl SseScriptedClient {
+    fn new(responses: Vec<CompletionResponse>, events: Vec<Vec<Value>>) -> Self {
+        Self {
+            inner: Arc::new(SseScriptedInner {
+                responses: Mutex::new(responses),
+                events: Mutex::new(events.into()),
+                requests: Mutex::new(Vec::new()),
+                after_response: None,
+                hook_index: 0,
+            }),
+        }
+    }
+    /// Call `f` right after response `idx` was streamed (mid-run hook).
+    fn with_after_response(mut self, idx: usize, f: Box<dyn Fn() + Send + Sync>) -> Self {
+        let inner = Arc::get_mut(&mut self.inner).expect("hook set before cloning");
+        inner.after_response = Some(f);
+        inner.hook_index = idx;
+        self
+    }
+    fn requests(&self) -> Vec<CompletionRequest> {
+        self.inner.requests.lock().unwrap().clone()
+    }
+    fn next_response(&self) -> CompletionResponse {
+        let mut q = self.inner.responses.lock().unwrap();
+        if q.is_empty() {
+            text_response("(no more scripted responses)")
+        } else {
+            q.remove(0)
+        }
+    }
+}
+
+#[async_trait]
+impl Client for SseScriptedClient {
+    async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, ClientError> {
+        Ok(self.next_response())
+    }
+    async fn complete_stream(
+        &self,
+        req: CompletionRequest,
+        on_event: Arc<dyn Fn(JsonValue) + Send + Sync>,
+    ) -> Result<CompletionResponse, ClientError> {
+        self.inner.requests.lock().unwrap().push(req);
+        let served = self.inner.requests.lock().unwrap().len() - 1;
+        let resp = self.next_response();
+        let evs = self.inner.events.lock().unwrap().pop_front().unwrap_or_default();
+        for e in evs {
+            on_event(e);
+        }
+        if let Some(f) = &self.inner.after_response {
+            if self.inner.hook_index == served {
+                f();
+            }
+        }
+        Ok(resp)
+    }
+}
+
+/// Compact tag for one StreamEvent (sequence assertions).
+fn ptag(ev: &StreamEvent) -> String {
+    match ev {
+        StreamEvent::TurnStart(turn) => format!("TS{}", turn),
+        StreamEvent::TurnEnd(turn, usage, tool_count) => {
+            let u = usage
+                .as_ref()
+                .map(|u| u.input_tokens + u.output_tokens)
+                .unwrap_or(0);
+            format!("TE{}/{}+{}", turn, u, tool_count)
+        }
+        StreamEvent::Delta(_) => "D".into(),
+        StreamEvent::Thinking(_) => "TH".into(),
+        StreamEvent::ToolStart(tool, _) => format!("TS:{}", tool),
+        StreamEvent::Tool(tool, _, _) => format!("T:{}", tool),
+        StreamEvent::Warning(_) => "W".into(),
+        StreamEvent::Done(_) => "DONE".into(),
+        StreamEvent::Cancelled(_) => "CANCEL".into(),
+        StreamEvent::Error(_) => "E".into(),
+    }
+}
+
+/// Parity of rust-ref harness_turn_events_sequence: a 2-turn run (tool call →
+/// final answer) emits the turn-annotated sequence; each TurnEnd carries that
+/// turn's usage and tool count.
+#[tokio::test]
+async fn t16_turn_event_sequence() {
+    use auto_ai_agent_a2r::auto_ai_client::Usage;
+    let mut r1 = tool_call_response("echo", json!({"word": "hi"}));
+    r1.usage = Some(Usage { input_tokens: 10, output_tokens: 5 });
+    let mut r2 = text_response("done");
+    r2.usage = Some(Usage { input_tokens: 20, output_tokens: 7 });
+    let client = SseScriptedClient::new(vec![r1, r2], vec![vec![], vec![]]);
+
+    let collected: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(vec![]));
+    let cb = collected.clone();
+    let sink = spawn_event_sink_with(
+        String::new(),
+        Box::new(move |ev: StreamEvent| cb.lock().unwrap().push(ev)),
+    );
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client));
+    agent.register_tool(Box::new(EchoTool));
+    let result = agent.run_stream("task", cancel, sink).await.unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(result.turns, 2);
+    a2r_std::task::drain_all().await;
+    let got: Vec<String> = collected.lock().unwrap().iter().map(ptag).collect();
+    assert_eq!(
+        got.join(","),
+        "TS1,TS:echo,T:echo,TE1/15+1,TS2,TE2/27+0,DONE",
+        "turn-annotated sequence mismatch: {:?}",
+        got
+    );
+}
+
+/// Parity of harness_reasoning_streams_as_thinking: a `{"type":"reasoning"}`
+/// SSE event forwards as Thinking (not Delta) — the .at track previously
+/// degraded reasoning to Delta (Plan 026 fix in forward_sse_delta).
+#[tokio::test]
+async fn t17_reasoning_maps_to_thinking() {
+    let client = SseScriptedClient::new(
+        vec![text_response("answer")],
+        vec![vec![
+            json!({"type": "reasoning", "text": "hmm"}),
+            json!({"type": "delta", "text": "answer"}),
+        ]],
+    );
+    let collected: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(vec![]));
+    let cb = collected.clone();
+    let sink = spawn_event_sink_with(
+        String::new(),
+        Box::new(move |ev: StreamEvent| cb.lock().unwrap().push(ev)),
+    );
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client));
+    agent.run_stream("task", cancel, sink).await.unwrap();
+    a2r_std::task::drain_all().await;
+
+    let got: Vec<String> = collected.lock().unwrap().iter().map(ptag).collect();
+    assert_eq!(got.join(","), "TS1,TH,D,TE1/0+0,DONE", "got {:?}", got);
+}
+
+/// Parity of harness_follow_up_revives_run: a queued follow-up keeps a
+/// naturally-ending run going; the follow-up message becomes a new user turn.
+#[tokio::test]
+async fn t18_follow_up_revives_run() {
+    let client = SseScriptedClient::new(
+        vec![text_response("first answer"), text_response("second answer")],
+        vec![vec![], vec![]],
+    );
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client.clone()));
+    agent.follow_up("go deeper");
+    let result = agent.run("start").await.unwrap();
+
+    assert_eq!(result.output, "second answer");
+    assert_eq!(result.turns, 2);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let msgs = &reqs[1].messages;
+    assert_eq!(msgs.len(), 3, "second request should carry the follow-up");
+    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[2].role, "user");
+}
+
+/// Parity of harness_steering_injected_between_tool_and_next_llm: a steering
+/// message queued mid-run lands AFTER the tool result and BEFORE the next LLM
+/// request (asserted via captured request order).
+#[tokio::test]
+async fn t19_steering_injected_before_next_llm() {
+    // The agent's queue handle is Arc<parking_lot::Mutex<Vec<String>>>; the
+    // slot indirection breaks the client↔agent construction cycle.
+    use parking_lot::Mutex as PlMutex;
+    type Q = Arc<PlMutex<Vec<String>>>;
+    let slot: Arc<Mutex<Option<Q>>> = Arc::new(Mutex::new(None));
+    let hook_slot = slot.clone();
+    let client = SseScriptedClient::new(
+        vec![
+            tool_call_response("echo", json!({"word": "a"})),
+            text_response("ok"),
+        ],
+        vec![vec![], vec![]],
+    )
+    .with_after_response(0, Box::new(move || {
+        if let Some(q) = hook_slot.lock().unwrap().as_ref() {
+            q.lock().push("steer me".into());
+        }
+    }));
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client.clone()));
+    agent.register_tool(Box::new(EchoTool));
+    *slot.lock().unwrap() = Some(agent.steering_queue());
+
+    let result = agent.run("go").await.unwrap();
+    assert_eq!(result.output, "ok");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[0].messages.len(), 1, "first request: just the task");
+    let msgs = &reqs[1].messages;
+    assert_eq!(msgs.len(), 4, "steering message missing");
+    assert_eq!(msgs[3].role, "user", "steering message should be last");
+}

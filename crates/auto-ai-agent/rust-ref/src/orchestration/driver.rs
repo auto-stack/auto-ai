@@ -154,6 +154,16 @@ impl<F: AgentFactory> PipelineDriver<F> {
                             }
                             // ToolStart is a "running" hint — no result yet, skip.
                             StreamEvent::ToolStart { .. } => {}
+                            // Turn boundaries (Plan 026): no PipelineEvent
+                            // equivalent (pipeline consumers see Delta/Tool);
+                            // log the turn-end usage for observability.
+                            StreamEvent::TurnStart { .. } => {}
+                            StreamEvent::TurnEnd { turn, usage, tool_count } => {
+                                tracing::debug!(
+                                    "agent turn {} ended (tools: {}, usage: {:?})",
+                                    turn, tool_count, usage
+                                );
+                            }
                             StreamEvent::Tool { tool, result, .. } => {
                                 tc_clone.lock().unwrap().push((tool.clone(), result.clone()));
                                 event_cb(PipelineEvent::Tool { tool, result });

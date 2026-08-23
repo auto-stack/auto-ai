@@ -11,44 +11,165 @@
 //! 4. plan — FlowSpec → PipelineDriver → verify step/handoff events
 //! 5. spec — Client/Role dynamic dispatch (Box<dyn>) + ReAct loop runs
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use auto_ai_agent::{
-    Agent, Client, Role, Tool, ToolError,
+    Agent, Client, Role, StreamEvent, Tool, ToolError,
 };
 use auto_ai_agent::orchestration::{
     FlowSpec, FlowStep, PipelineDriver, PipelineEvent, AgentFactory,
 };
-use auto_ai_client::{CompletionRequest, CompletionResponse, ClientError, ToolCall};
+use auto_ai_client::{CompletionRequest, CompletionResponse, ClientError, ToolCall, Usage};
 
 // ── Test mocks ─────────────────────────────────────────────────────────────
 
 /// Mock client that returns a scripted sequence of responses.
+///
+/// Plan 026 test infra: `complete_stream` is overridden to simulate real
+/// streaming — optional per-response reasoning (thinking) prefixes, delta
+/// chunking (`with_chunk_size`), programmable abort injection
+/// (`with_abort_after`: sets a cancel flag after the Nth streamed delta), and
+/// request capture (`requests()` records every CompletionRequest seen, in
+/// order, so tests can assert message ordering across turns).
 struct ScriptedClient {
     responses: Mutex<Vec<CompletionResponse>>,
+    total: usize,
+    /// Per-response reasoning prefix (emitted as {"type":"reasoning"} events).
+    thinking: Vec<Option<String>>,
+    /// Delta chunk size in chars; 0 = one delta per text.
+    chunk: usize,
+    /// When Some((n, flag)): set flag after the n-th streamed delta.
+    abort: Option<(usize, Arc<AtomicBool>)>,
+    /// When Some((i, f)): call f after streaming response i's deltas — used
+    /// to inject mid-run actions (e.g. queue a steering message exactly after
+    /// turn i's LLM response, deterministically).
+    after_response: Option<(usize, Box<dyn Fn() + Send + Sync>)>,
+    emitted: Mutex<usize>,
+    served: Mutex<usize>,
+    requests: Mutex<Vec<CompletionRequest>>,
 }
 
 impl ScriptedClient {
     fn new(responses: Vec<CompletionResponse>) -> Self {
-        Self { responses: Mutex::new(responses) }
+        let total = responses.len();
+        Self {
+            responses: Mutex::new(responses),
+            total,
+            thinking: vec![None; total],
+            chunk: 0,
+            abort: None,
+            after_response: None,
+            emitted: Mutex::new(0),
+            served: Mutex::new(0),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn with_chunk_size(mut self, n: usize) -> Self {
+        self.chunk = n;
+        self
+    }
+
+    /// Give response `idx` a reasoning prefix (emitted as thinking events).
+    fn with_thinking(mut self, idx: usize, text: &str) -> Self {
+        self.thinking[idx] = Some(text.into());
+        self
+    }
+
+    /// Set `flag` after the n-th streamed delta (abort simulation).
+    fn with_abort_after(mut self, n: usize, flag: Arc<AtomicBool>) -> Self {
+        self.abort = Some((n, flag));
+        self
+    }
+
+    /// Call `f` after streaming response `idx`'s deltas (mid-run hook).
+    fn with_after_response(mut self, idx: usize, f: Box<dyn Fn() + Send + Sync>) -> Self {
+        self.after_response = Some((idx, f));
+        self
+    }
+
+    /// Every CompletionRequest seen, in order.
+    fn requests(&self) -> Vec<CompletionRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// Emit one SSE event, counting deltas and firing the abort injection.
+    fn emit(&self, cb: &Arc<dyn Fn(Value) + Send + Sync>, v: Value) {
+        let mut n = self.emitted.lock().unwrap();
+        *n += 1;
+        if let Some((m, flag)) = &self.abort {
+            if *n >= *m {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+        cb(v);
+    }
+
+    /// Split `s` into chunks of `chunk` chars (whole string when chunk == 0;
+    /// empty string → no chunks — the daemon never emits empty deltas).
+    fn chunks(&self, s: &str) -> Vec<String> {
+        if s.is_empty() {
+            return vec![];
+        }
+        if self.chunk == 0 {
+            return vec![s.to_string()];
+        }
+        s.chars()
+            .collect::<Vec<_>>()
+            .chunks(self.chunk)
+            .map(|c| c.iter().collect())
+            .collect()
+    }
+
+    fn next_response(&self) -> CompletionResponse {
+        let mut q = self.responses.lock().unwrap();
+        if q.is_empty() {
+            CompletionResponse {
+                content: "(empty)".into(), tool_calls: vec![],
+                stop_reason: Some("end_turn".into()), usage: None,
+                model: "mock".into(), error: None,
+            }
+        } else {
+            q.remove(0)
+        }
     }
 }
 
 #[async_trait]
 impl Client for ScriptedClient {
     async fn complete(&self, _req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
-        let mut q = self.responses.lock().unwrap();
-        if q.is_empty() {
-            Ok(CompletionResponse {
-                content: "(empty)".into(), tool_calls: vec![],
-                stop_reason: Some("end_turn".into()), usage: None,
-                model: "mock".into(), error: None,
-            })
-        } else {
-            Ok(q.remove(0))
+        Ok(self.next_response())
+    }
+
+    async fn complete_stream(
+        &self,
+        req: &CompletionRequest,
+        on_event: Arc<dyn Fn(Value) + Send + Sync>,
+    ) -> Result<CompletionResponse, ClientError> {
+        self.requests.lock().unwrap().push(req.clone());
+        let i = {
+            let mut s = self.served.lock().unwrap();
+            *s += 1;
+            *s - 1
+        };
+        let resp = self.next_response();
+        if let Some(Some(th)) = self.thinking.get(i) {
+            for c in self.chunks(th) {
+                self.emit(&on_event, json!({"type": "reasoning", "text": c}));
+            }
         }
+        for c in self.chunks(&resp.content) {
+            self.emit(&on_event, json!({"type": "delta", "text": c}));
+        }
+        if let Some((hi, f)) = &self.after_response {
+            if *hi == i {
+                f();
+            }
+        }
+        Ok(resp)
     }
 }
 
@@ -66,6 +187,22 @@ fn tool_call_response(text: &str, tool_name: &str, args: Value) -> CompletionRes
         tool_calls: vec![ToolCall {
             id: "call_1".into(), name: tool_name.into(), input: args,
         }],
+        stop_reason: Some("tool_use".into()), usage: None,
+        model: "mock".into(), error: None,
+    }
+}
+
+/// Attach usage to a scripted response (TurnEnd assertions read this).
+fn with_usage(mut r: CompletionResponse, input: u32, output: u32) -> CompletionResponse {
+    r.usage = Some(Usage { input_tokens: input, output_tokens: output });
+    r
+}
+
+/// A response requesting several tool calls in one batch.
+fn multi_tool_response(calls: Vec<ToolCall>) -> CompletionResponse {
+    CompletionResponse {
+        content: String::new(),
+        tool_calls: calls,
         stop_reason: Some("tool_use".into()), usage: None,
         model: "mock".into(), error: None,
     }
@@ -250,4 +387,224 @@ async fn harness_spec_dynamic_dispatch_react_runs() {
     // (TestRole) + dyn Tool (EchoTool) and produced a result.
     assert_eq!(result.output, "dynamic dispatch works");
     assert!(result.turns >= 1, "agent should have run at least 1 turn");
+}
+
+// ── Harness 6: Plan 026 — turn events / steering / follow-up / cancel ───────
+
+/// Compact tag for one StreamEvent (sequence assertions read better this way).
+fn tag(ev: &StreamEvent) -> String {
+    match ev {
+        StreamEvent::TurnStart { turn } => format!("TS{turn}"),
+        StreamEvent::TurnEnd { turn, usage, tool_count } => {
+            let u = usage.as_ref()
+                .map(|u| u.input_tokens + u.output_tokens)
+                .unwrap_or(0);
+            format!("TE{turn}/{u}+{tool_count}")
+        }
+        StreamEvent::Delta { .. } => "D".into(),
+        StreamEvent::Thinking { .. } => "TH".into(),
+        StreamEvent::ToolStart { tool, .. } => format!("TS:{tool}"),
+        StreamEvent::Tool { tool, .. } => format!("T:{tool}"),
+        StreamEvent::Warning { .. } => "W".into(),
+        StreamEvent::Done { .. } => "DONE".into(),
+        StreamEvent::Cancelled { .. } => "CANCEL".into(),
+        StreamEvent::Error { .. } => "E".into(),
+    }
+}
+
+fn collect_events() -> (Arc<Mutex<Vec<StreamEvent>>>, Arc<dyn Fn(StreamEvent) + Send + Sync>) {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let cb: Arc<dyn Fn(StreamEvent) + Send + Sync> =
+        Arc::new(move |ev| sink.lock().unwrap().push(ev));
+    (events, cb)
+}
+
+/// A 2-turn run (tool call → final answer) emits the full turn-annotated
+/// sequence, and each TurnEnd carries that turn's usage and tool count.
+#[tokio::test]
+async fn harness_turn_events_sequence() {
+    let client = Arc::new(ScriptedClient::new(vec![
+        with_usage(tool_call_response("", "echo", json!({"word": "hi"})), 10, 5),
+        with_usage(text_response("done"), 20, 7),
+    ]).with_chunk_size(2));
+    let mut agent = Agent::new(TestRole, client);
+    agent.register_tool(EchoTool);
+
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = agent.run_stream("task", cb, cancel).await.unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(result.turns, 2);
+    let got: Vec<String> = events.lock().unwrap().iter().map(tag).collect();
+    // "done" with chunk size 2 → two Delta events; turn1 usage 15 (10+5) with
+    // 1 tool, turn2 usage 27 (20+7) with 0 tools.
+    assert_eq!(
+        got.join(","),
+        "TS1,TS:echo,T:echo,TE1/15+1,TS2,D,D,TE2/27+0,DONE",
+        "turn-annotated event sequence mismatch: {:?}",
+        got
+    );
+}
+
+/// Reasoning deltas stream out as Thinking (not Delta) — Plan 026 pi parity.
+#[tokio::test]
+async fn harness_reasoning_streams_as_thinking() {
+    let client = Arc::new(ScriptedClient::new(vec![text_response("answer")])
+        .with_thinking(0, "hmm"));
+    let mut agent = Agent::new(TestRole, client);
+
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    agent.run_stream("task", cb, cancel).await.unwrap();
+
+    let got: Vec<String> = events.lock().unwrap().iter().map(tag).collect();
+    assert_eq!(got.join(","), "TS1,TH,D,TE1/0+0,DONE");
+}
+
+/// A steering message queued mid-run (here: right after turn 1's LLM response,
+/// via the client hook — deterministic) enters the context AFTER turn 1's tool
+/// result and BEFORE turn 2's LLM request.
+#[tokio::test]
+async fn harness_steering_injected_between_tool_and_next_llm() {
+    // The hook fires right after turn 1's response was streamed — the same
+    // instant a UI "steer" button would fire mid-run. A slot breaks the
+    // client↔agent cycle: the hook is registered before the agent exists,
+    // then the slot is filled with the agent's steering-queue handle.
+    let slot: Arc<Mutex<Option<Arc<Mutex<std::collections::VecDeque<String>>>>>> =
+        Arc::new(Mutex::new(None));
+    let hook_slot = slot.clone();
+    let client = Arc::new(ScriptedClient::new(vec![
+        tool_call_response("", "echo", json!({"word": "a"})),
+        text_response("ok"),
+    ])
+    .with_after_response(0, Box::new(move || {
+        if let Some(q) = hook_slot.lock().unwrap().as_ref() {
+            q.lock().unwrap().push_back("steer me".into());
+        }
+    })));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.register_tool(EchoTool);
+    *slot.lock().unwrap() = Some(agent.steering_queue());
+
+    let result = agent.run("go").await.unwrap();
+    assert_eq!(result.output, "ok");
+
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2, "expected 2 LLM requests");
+    // Request 1 saw no steering message.
+    assert_eq!(reqs[0].messages.len(), 1, "first request should be just the task");
+    // Request 2: [user task, assistant tool_use, user tool_result, user steer].
+    let msgs = &reqs[1].messages;
+    assert_eq!(msgs.len(), 4, "second request missing steering message: {:?}", msgs);
+    assert_eq!(msgs[2].role, "user");
+    assert!(matches!(&msgs[2].content[0], auto_ai_client::ContentBlock::ToolResult { .. }),
+        "message before steering should be the tool result");
+    assert_eq!(msgs[3].role, "user");
+    assert!(matches!(&msgs[3].content[0], auto_ai_client::ContentBlock::Text { text } if text.contains("steer me")),
+        "steering message should be last: {:?}", msgs[3].content);
+}
+
+/// A queued follow-up revives a run that was about to end naturally.
+#[tokio::test]
+async fn harness_follow_up_revives_run() {
+    let client = Arc::new(ScriptedClient::new(vec![
+        text_response("first answer"),
+        text_response("second answer"),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.follow_up("go deeper");
+
+    let result = agent.run("start").await.unwrap();
+
+    // The run did NOT end at "first answer" — the follow-up kept it going.
+    assert_eq!(result.output, "second answer");
+    assert_eq!(result.turns, 2);
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let msgs = &reqs[1].messages;
+    // [user "start", assistant "first answer", user "go deeper"]
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[1].role, "assistant");
+    assert!(matches!(&msgs[2].content[0], auto_ai_client::ContentBlock::Text { text } if text == "go deeper"));
+}
+
+/// A tool whose execution requests cancellation (deterministic mid-batch abort).
+struct FlagTool { flag: Arc<AtomicBool> }
+#[async_trait]
+impl Tool for FlagTool {
+    fn name(&self) -> &str { "flag" }
+    fn description(&self) -> &str { "Sets the cancel flag." }
+    fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
+    async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
+        self.flag.store(true, Ordering::SeqCst);
+        Ok("flagged".into())
+    }
+}
+
+/// Cancelling mid tool-batch: the in-flight batch's unanswered tool calls get
+/// placeholder results (wire stays valid), queued steering is dropped with a
+/// Warning, and the run ends with Cancelled.
+#[tokio::test]
+async fn harness_cancel_mid_batch_keeps_wire_and_drops_steering() {
+    let cancel = Arc::new(AtomicBool::new(false));
+    // Queue the steering message mid-run (after turn 1's response streams) —
+    // if it were queued before the run, turn 1's steering poll would consume
+    // it into memory and there'd be nothing to drop at cancel time.
+    let slot: Arc<Mutex<Option<Arc<Mutex<std::collections::VecDeque<String>>>>>> =
+        Arc::new(Mutex::new(None));
+    let hook_slot = slot.clone();
+    let client = Arc::new(ScriptedClient::new(vec![multi_tool_response(vec![
+        ToolCall { id: "call_1".into(), name: "flag".into(), input: json!({}) },
+        ToolCall { id: "call_2".into(), name: "echo".into(), input: json!({"word": "b"}) },
+    ])])
+    .with_after_response(0, Box::new(move || {
+        if let Some(q) = hook_slot.lock().unwrap().as_ref() {
+            q.lock().unwrap().push_back("never lands".into());
+        }
+    })));
+    let mut agent = Agent::new(TestRole, client);
+    agent.register_tool(FlagTool { flag: cancel.clone() });
+    agent.register_tool(EchoTool);
+    *slot.lock().unwrap() = Some(agent.steering_queue());
+
+    let (events, cb) = collect_events();
+    let result = agent.run_stream("go", cb, cancel).await.unwrap();
+
+    // Only the first tool ran; the second was cut at its pre-execution checkpoint.
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].tool, "flag");
+
+    let evs = events.lock().unwrap();
+    let tags: Vec<String> = evs.iter().map(tag).collect();
+    assert!(tags.contains(&"CANCEL".to_string()), "missing Cancelled: {tags:?}");
+    assert!(
+        evs.iter().any(|e| matches!(e, StreamEvent::Warning { text } if text.contains("1 steering message(s) dropped"))),
+        "missing steering-dropped warning: {:?}",
+        tags
+    );
+
+    // Wire validity: every ToolUse id has a matching ToolResult, and the
+    // cancelled call's result is the placeholder.
+    let msgs = agent.memory_messages();
+    let mut use_ids = Vec::new();
+    let mut tool_results = Vec::new();
+    for m in msgs.iter() {
+        for b in &m.content {
+            match b {
+                auto_ai_client::ContentBlock::ToolUse { id, .. } => use_ids.push(id.clone()),
+                auto_ai_client::ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                    tool_results.push((tool_use_id.clone(), content.clone()));
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(use_ids.len(), 2, "expected 2 tool_use blocks: {:?}", use_ids);
+    for id in &use_ids {
+        assert!(tool_results.iter().any(|(rid, _)| rid == id), "tool_use {} unanswered", id);
+    }
+    let cancelled = tool_results.iter().find(|(rid, _)| rid == "call_2").unwrap();
+    assert_eq!(cancelled.1, "[cancelled by user]");
 }

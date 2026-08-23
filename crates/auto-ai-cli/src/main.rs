@@ -400,6 +400,17 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                     // visually distinct from the model's answer.
                     println!("\n  \x1b[2m⚠️ {text}\x1b[0m");
                 }
+                // Turn boundaries (Plan 026): per-turn marker with the usage
+                // the daemon reported for that turn.
+                StreamEvent::TurnStart { turn } => {
+                    if turn > 1 {
+                        println!();
+                    }
+                }
+                StreamEvent::TurnEnd { turn, usage, tool_count } => {
+                    let u = usage.map(|u| u.input_tokens + u.output_tokens).unwrap_or(0);
+                    println!("\n  \x1b[2m── turn {turn} · {tool_count} tool(s) · {u} tokens ──\x1b[0m");
+                }
                 StreamEvent::ToolStart { tool, args } => {
                     let hint = match tool.as_str() {
                         "run_command" => args.get("cmd").and_then(|c| c.as_str())
