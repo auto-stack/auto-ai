@@ -200,12 +200,16 @@ impl PipelineEngine {
     pub fn with_budget(flow: FlowSpec, run_id: &str, run_budget: TokenBudget) -> PipelineEngine {
         return PipelineEngine { flow: flow, current_step: 0, status: PipelineStatus::Idle, run_id: run_id.to_string(), step_history: vec![], loop_counters: std::collections::HashMap::new(), loop_counter_names: vec![], pending_gate: None, gate_feedback: std::collections::HashMap::new(), gate_feedback_names: vec![], gate_resolved_for_step: None, resumed_step_id: None, cumulative_tokens: 0, budget_tracker: BudgetTracker::new(run_budget), mode: PipelineMode::Auto };
     }
+    pub fn fail(&mut self, error: &str) -> AdvanceResult {
+        self.status = PipelineStatus::Failed(error.to_string());
+        return AdvanceResult::Failed(error.to_string());
+    }
     pub fn advance(&mut self) -> AdvanceResult {
 
         match self.status.clone() {
             PipelineStatus::Completed => return AdvanceResult::Completed,
             PipelineStatus::Failed(e) => return AdvanceResult::Failed(e),
-            PipelineStatus::WaitingForHuman(_sid, _t) => return AdvanceResult::Failed("Cannot advance while waiting for gate. Call resolve_gate() first.".to_string()),
+            PipelineStatus::WaitingForHuman(sid, _t) => return AdvanceResult::WaitForHuman(sid),
             PipelineStatus::Paused(at) => {
                 let mut step = self.flow.steps[(at) as usize].clone();
                 return AdvanceResult::Paused(step.id.clone(), format!("Paused at '{}'. Call resume() to continue.", step.id));
@@ -471,6 +475,7 @@ impl PipelineEngine {
     }
 }
 
+/// PLAN-030 试用修复：显式失败入口（与 rust-ref 轨同步）。
 /// Advance the pipeline by one logical action.
 /// Submit the result of an agent turn to continue the pipeline.
 /// Resolve a pending human gate.
