@@ -286,7 +286,7 @@ fn parse_usage(value: JsonValue) -> Option<Usage> {
     if u.is_null() {
         return None;
     }
-    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32 });
+    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32, cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_tokens")) as u32, cache_write_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_write_tokens")) as u32 });
 }
 
 /// Decode a response body byte array to a string (UTF-8, lossy).

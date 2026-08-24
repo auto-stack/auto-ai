@@ -17,7 +17,7 @@
 /// symbols into the crate root so `use ai-config: ModelTier` etc. resolve.
 
 // tier: ModelTier, ModelDefinition, all_tiers, resolve_model_id
-use tier: ModelTier, ModelDefinition, all_tiers, resolve_model_id
+use tier: ModelTier, ModelDefinition, CostPerMtok, ModelCapabilities, all_tiers, resolve_model_id
 // wire: all canonical wire types (Rust uses `pub use wire::*`)
 use wire: Message, ContentBlock, ToolDefinition, ToolCall, CompletionRequest, CompletionResponse, Usage
 // provider: ProviderConfig

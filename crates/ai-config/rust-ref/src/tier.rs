@@ -81,6 +81,26 @@ impl ModelTier {
     }
 }
 
+/// Cost per million tokens in micro-USD (Plan 028 model metadata). Integer
+/// units keep the Eq/Ord derives the transpiled track auto-generates;
+/// 3_000_000 = $3.00/Mtok.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CostPerMtok {
+    pub input: u64,
+    pub output: u64,
+    /// Cached prompt-token read price (0 when the provider has no cache).
+    #[serde(default)]
+    pub cache_read: u64,
+}
+
+/// Input capabilities (Plan 028 model metadata).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ModelCapabilities {
+    pub vision: bool,
+    /// Reasoning/thinking-capable model (emits reasoning deltas).
+    pub thinking: bool,
+}
+
 /// A concrete model entry in a provider's config, tagged with its tier.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelDefinition {
@@ -91,6 +111,18 @@ pub struct ModelDefinition {
     pub name: String,
     /// This model's capability tier.
     pub tier: ModelTier,
+    /// Context window in tokens (Plan 028). None = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Max output tokens (Plan 028). None = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// USD per million tokens (Plan 028).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_mtok: Option<CostPerMtok>,
+    /// Input capabilities (Plan 028).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelCapabilities>,
 }
 
 impl ModelDefinition {
@@ -99,6 +131,10 @@ impl ModelDefinition {
             id: id.into(),
             name: String::new(),
             tier,
+            context_window: None,
+            max_output_tokens: None,
+            cost_per_mtok: None,
+            capabilities: None,
         }
     }
 }

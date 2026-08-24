@@ -7,7 +7,7 @@ pub mod tier;
 pub mod validate;
 pub mod wire;
 
-pub use crate::tier::{ModelTier, ModelDefinition, all_tiers, resolve_model_id};
+pub use crate::tier::{ModelTier, ModelDefinition, CostPerMtok, ModelCapabilities, all_tiers, resolve_model_id};
 pub use crate::wire::{Message, ContentBlock, ToolDefinition, ToolCall, CompletionRequest, CompletionResponse, Usage};
 pub use crate::provider::{ProviderConfig};
 pub use crate::loader::{ClientConfig, DaemonConfig, ConfigError, parse_client_config, parse_daemon_config};

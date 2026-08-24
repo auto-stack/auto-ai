@@ -56,6 +56,24 @@ pub enum LlmError {
 }
 
 impl LlmError {
+    /// Plan 028: quota/billing exhaustion — switching provider candidates
+    /// won't help, so the fallback loop must NOT consume the chain on these.
+    pub fn is_quota_exhausted(&self) -> bool {
+        match self {
+            LlmError::Upstream { status, message, .. } => {
+                if *status == 402 {
+                    return true;
+                }
+                let lower = message.to_lowercase();
+                lower.contains("insufficient_quota")
+                    || lower.contains("quota_exceeded")
+                    || lower.contains("billing")
+                    || lower.contains("exceeded your current quota")
+            }
+            _ => false,
+        }
+    }
+
     /// Whether falling back to another provider candidate is reasonable.
     pub fn is_retryable(&self) -> bool {
         match self {

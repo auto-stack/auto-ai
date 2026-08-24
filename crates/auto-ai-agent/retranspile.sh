@@ -187,6 +187,12 @@ fi
 # same-module before). The previous sed (forcing register_shared param single-
 # wrap) is removed — a2r renders `Arc<dyn Tool>` natively now.
 
+# Plan 028: a2r clones spec-typed args at call sites (Box<dyn Client> isn't
+# Clone) and doesn't borrow the model String — fix the compact() call shape.
+if [ -f "$RUST/agent.rs" ]; then
+    sed -i 's#match compact(self.memory.clone(), self.client.clone(), model, self.compaction.clone()).await {#match compact(self.memory.clone(), \&self.client, model.as_str(), self.compaction.clone()).await {#' "$RUST/agent.rs"
+fi
+
 # Clean up .a2r.rs intermediates
 find "$SRC" -name "*.a2r.rs" -delete
 

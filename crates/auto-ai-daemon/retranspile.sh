@@ -125,6 +125,11 @@ find "$SRC" -name "*.a2r.rs" -delete
 
 # ── config.rs ───────────────────────────────────────────────────────────────
 if [ -f "$RUST/config.rs" ]; then
+    # Plan 028: a2r renders cross-crate struct literals as positional tuple
+    # ctors (same class as the ProviderConfig fixup above) — rewrite the
+    # model_meta return into a true struct literal. Cost u32 -> u64 widens.
+    sed -i 's#return ai_config::ModelDefinition(id, "", tier, Some(window), Some(max_out), Some(ai_config::CostPerMtok(cost_in, cost_out, cache_read)), Some(ai_config::ModelCapabilities(vision, thinking)));#return ai_config::ModelDefinition { id: id.to_string(), name: String::new(), tier: tier, context_window: Some(window), max_output_tokens: Some(max_out), cost_per_mtok: Some(ai_config::CostPerMtok { input: cost_in as u64, output: cost_out as u64, cache_read: cache_read as u64 }), capabilities: Some(ai_config::ModelCapabilities { vision: vision, thinking: thinking }) };#' "$RUST/config.rs"
+
     # a2r spurious `impl` keyword on struct return types.
     sed -i 's/-> impl DaemonConfig/-> DaemonConfig/g' "$RUST/config.rs"
     # Bare `DaemonConfig` (return types) not in scope — inject a use after the
@@ -429,6 +434,20 @@ if [ -f "$RUST/anthropic.rs" ]; then
 fi
 
 # ── ollama.rs (Phase 4) ─────────────────────────────────────────────────────
+# Plan 028: cache-dimension parses need the same as u32 widening as the
+# input/output tokens above, and the quota classifier's status compare needs a
+# deref (match bindings are references).
+if [ -f "$RUST/anthropic.rs" ]; then
+    sed -i 's#cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_input_tokens"))#cache_read_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "cache_read_input_tokens")) as u32#;
+            s#cache_write_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_creation_input_tokens"))#cache_write_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "cache_creation_input_tokens")) as u32#' "$RUST/anthropic.rs"
+fi
+if [ -f "$RUST/openai.rs" ]; then
+    sed -i 's#cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&a2r_std::json::get(&u, "prompt_tokens_details"), "cached_tokens")),#cache_read_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&a2r_std::json::get(\&u, "prompt_tokens_details"), "cached_tokens")) as u32,#' "$RUST/openai.rs"
+fi
+if [ -f "$RUST/error.rs" ]; then
+    sed -i 's#if status == 402 {#if *status == 402 {#' "$RUST/error.rs"
+fi
+
 if [ -f "$RUST/ollama.rs" ]; then
     fix_provider_impl "$RUST/ollama.rs"
     # ollama delegates complete/complete_stream to self.inner — pass &req to

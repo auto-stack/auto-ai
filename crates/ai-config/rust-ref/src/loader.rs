@@ -33,6 +33,7 @@ use std::collections::HashMap;
 
 use auto_atom::{Atom, AtomParser};
 use auto_val::{Kid, Node, Value};
+use crate::tier::{CostPerMtok, ModelCapabilities};
 use serde::Deserialize;
 
 use crate::provider::ProviderConfig;
@@ -333,7 +334,19 @@ fn opt_models(node: &Node, key: &str) -> Vec<ModelDefinition> {
                         Some(Value::Str(s)) => parse_tier(s.as_str()),
                         _ => ModelTier::Mid,
                     };
-                    Some(ModelDefinition { id, name, tier })
+                    // Plan 028 model metadata (all optional).
+                    let context_window = o.get("context_window").map(|v| v.as_uint());
+                    let max_output_tokens = o.get("max_output_tokens").map(|v| v.as_uint());
+                    let cost_per_mtok = o.get("cost_per_mtok").map(|c| CostPerMtok {
+                        input: c.as_obj().get("input").map(|v| v.as_uint()).unwrap_or(0) as u64,
+                        output: c.as_obj().get("output").map(|v| v.as_uint()).unwrap_or(0) as u64,
+                        cache_read: c.as_obj().get("cache_read").map(|v| v.as_uint()).unwrap_or(0) as u64,
+                    });
+                    let capabilities = o.get("capabilities").map(|c| ModelCapabilities {
+                        vision: c.as_obj().get("vision").map(|v| v.as_bool()).unwrap_or(false),
+                        thinking: c.as_obj().get("thinking").map(|v| v.as_bool()).unwrap_or(false),
+                    });
+                    Some(ModelDefinition { id, name, tier, context_window, max_output_tokens, cost_per_mtok, capabilities })
                 }
                 // bare string: "glm-5.2" → Mid default
                 Value::Str(s) => Some(ModelDefinition::new(s.to_string(), ModelTier::Mid)),

@@ -126,6 +126,8 @@ pub struct ToolCall {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
 }
 
 impl Usage {
@@ -134,6 +136,9 @@ impl Usage {
     }
 }
 
+/// Prompt tokens served from the provider's cache (Plan 028; 0 when the
+/// provider doesn't report caching).
+/// Prompt tokens written into the cache this request (Plan 028).
 /// Sum of input + output tokens.
 /// A completion request (provider-agnostic).
 #[derive(Clone, Debug, PartialEq)]

@@ -70,13 +70,21 @@ fn load_from_file() -> Option<DaemonConfig> {
 /// Exits the process if no provider can be built — a daemon with zero providers
 /// would just fail every request with NoProvider at runtime, so failing fast at
 /// startup is clearer (startup-time exit is acceptable per our conventions).
+/// Plan 028 model metadata helper: build a ModelDefinition with window /
+/// output cap / cost (micro-USD per Mtok) / capabilities. A dedicated fn (not
+/// an inline array literal) because a2r needs the typed return position to
+/// emit a struct literal instead of a positional tuple constructor.
+fn model_meta(id: &str, tier: ai_config::ModelTier, window: u32, max_out: u32, cost_in: u32, cost_out: u32, cache_read: u32, vision: bool, thinking: bool) -> ai_config::ModelDefinition {
+    return ai_config::ModelDefinition { id: id.to_string(), name: String::new(), tier: tier, context_window: Some(window), max_output_tokens: Some(max_out), cost_per_mtok: Some(ai_config::CostPerMtok { input: cost_in as u64, output: cost_out as u64, cache_read: cache_read as u64 }), capabilities: Some(ai_config::ModelCapabilities { vision: vision, thinking: thinking }) };
+}
+
 fn load_from_env() -> DaemonConfig {
     let mut providers: std::collections::HashMap<String, ai_config::ProviderConfig> = std::collections::HashMap::new();
 
 
     let zhipu_key = a2r_std::env::get("ZHIPU_API_KEY");
     if zhipu_key.is_empty() == false {
-        let models = vec![ai_config::ModelDefinition::new("glm-4.6", ai_config::ModelTier::Mid), ai_config::ModelDefinition::new("glm-4-flash", ai_config::ModelTier::Min)];
+        let models = vec![model_meta("glm-4.6", ai_config::ModelTier::Mid, 200000, 32768, 800000, 3200000, 0, false, true), model_meta("glm-4-flash", ai_config::ModelTier::Min, 128000, 8192, 0, 0, 0, false, false)];
         providers.insert("zhipu".to_string(), provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", zhipu_key.as_str(), models));
     }
 
@@ -87,7 +95,7 @@ fn load_from_env() -> DaemonConfig {
     let key = first_non_empty(anthropic_key.as_str(), anthropic_token.as_str());
     if key.is_empty() == false {
         let base = first_non_empty(anthropic_base.as_str(), "https://api.anthropic.com");
-        let models = vec![ai_config::ModelDefinition::new("claude-3-5-sonnet-20241022", ai_config::ModelTier::Mid)];
+        let models = vec![model_meta("claude-3-5-sonnet-20241022", ai_config::ModelTier::Mid, 200000, 8192, 3000000, 15000000, 300000, true, true)];
         providers.insert("anthropic".to_string(), provider_env("anthropic", base.as_str(), key.as_str(), models));
     }
 
@@ -96,7 +104,7 @@ fn load_from_env() -> DaemonConfig {
     let openai_base = a2r_std::env::get("OPENAI_BASE_URL");
     if openai_key.is_empty() == false {
         let base = first_non_empty(openai_base.as_str(), "https://api.openai.com/v1");
-        let models = vec![ai_config::ModelDefinition::new("gpt-4o", ai_config::ModelTier::Mid)];
+        let models = vec![model_meta("gpt-4o", ai_config::ModelTier::Mid, 128000, 16384, 2500000, 10000000, 1250000, true, false)];
         providers.insert("openai".to_string(), provider_env("openai", base.as_str(), openai_key.as_str(), models));
     }
 

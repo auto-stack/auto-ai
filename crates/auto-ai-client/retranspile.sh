@@ -109,6 +109,8 @@ if [ -f "$RUST/lib.rs" ]; then
     sed -i 's#\.as_array();#.as_array().cloned().unwrap_or_default();#g' "$RUST/lib.rs"
     # E0308: as_int returns i64 but Usage fields are u32 (a2r narrowing-conversion gap).
     sed -i 's#as_int(&a2r_std::json::get(&u, "input_tokens"))#as_int(\&a2r_std::json::get(\&u, "input_tokens")) as u32#g; s#as_int(&a2r_std::json::get(&u, "output_tokens"))#as_int(\&a2r_std::json::get(\&u, "output_tokens")) as u32#g' "$RUST/lib.rs"
+    # Plan 028: cache dimensions need the same u32 widening.
+    sed -i 's#as_int(&a2r_std::json::get(&u, "cache_read_tokens"))#as_int(\&a2r_std::json::get(\&u, "cache_read_tokens")) as u32#g; s#as_int(&a2r_std::json::get(&u, "cache_write_tokens"))#as_int(\&a2r_std::json::get(\&u, "cache_write_tokens")) as u32#g' "$RUST/lib.rs"
     # E0507: str_find(self.buf, ...) moves the owned field — borrow instead (Plan 019 D-class).
     sed -i 's#a2r_std::str_find(self\.buf,#a2r_std::str_find(\&self.buf,#g' "$RUST/lib.rs"
 fi

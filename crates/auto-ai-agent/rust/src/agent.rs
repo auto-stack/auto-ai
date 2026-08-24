@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::auto_ai_client::{ClientError, CompletionRequest, CompletionResponse, Message};
 use crate::error::{AgentError};
 use crate::memory::{Memory};
+use crate::compaction::{CompactionSettings, default_compaction_settings, should_compact, estimate_tokens, compact};
 use crate::role_def::{Role};
 use crate::skill::{SkillTool};
 use crate::ai_config::{ModelTier, Usage};
@@ -301,12 +302,15 @@ pub struct Agent {
     pub context_block: Option<String>,
     pub steering: Arc<Mutex<Vec<String>>>,
     pub follow_ups: Arc<Mutex<Vec<String>>>,
+    pub last_usage: Option<Usage>,
+    pub compaction: CompactionSettings,
+    pub compaction_on: bool,
 }
 
 impl Agent {
     pub fn new_shared(role: Box<dyn Role>, client: Box<dyn Client>) -> Agent {
         let limit = role.memory_limit();
-        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])) };
+        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])), last_usage: None, compaction: default_compaction_settings(), compaction_on: true };
     }
     pub fn with_context(&mut self, context: &str) {
         let ctx = context.trim().to_string();
@@ -374,6 +378,24 @@ impl Agent {
         return self.run_inner(task_msg, Some(cancel), sink).await;
     }
     pub async fn run_inner(&mut self, task_msg: &str, cancel: Option<Arc<AtomicBool>>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
+
+
+        if self.compaction_on {
+            let est = estimate_tokens(self.memory.messages(), self.last_usage.clone());
+            if should_compact(est, self.compaction.clone()) {
+                let model = build_model_id(self.role.model().as_str(), self.role.model_tier());
+                match compact(self.memory.clone(), &self.client, model.as_str(), self.compaction.clone()).await {
+                    Ok(next) => {
+                        self.memory = next;
+                        let w = StreamEvent::Warning(format!("context compacted (estimated {} tokens)", est));
+                        sink.send(w);
+                    },
+                    Err(e) => {
+                        let w = StreamEvent::Warning(format!("compaction skipped: {}", e.message()));
+                        sink.send(w);
+                    },
+                };
+            }        }
         self.memory.add("user", task_msg);
         let soft_limit = self.role.max_turns();
         let hard_limit: u32 = soft_limit * 5;
@@ -454,6 +476,7 @@ impl Agent {
                 None => {},
             };
             result.total_tokens = record_usage(result.clone(), resp.clone());
+            self.last_usage = resp.usage.clone();
             
             if resp.wants_tool() {
                 
@@ -614,6 +637,10 @@ impl Agent {
 /// Shared handle so app layers (musk) can push while the run is in flight.
 /// Follow-up queue (Plan 026): revives a run that was about to end
 /// naturally (final answer, nothing pending).
+/// Most recent assistant usage report (Plan 028: real token data for the
+/// compaction estimator).
+/// Compaction thresholds (Plan 028).
+/// Kill switch for auto-compaction (on by default).
 /// Build a new agent from an already-shared Role + Client spec value, and
 /// the Role's memory-limit preference. (Non-generic substitute for Rust's
 /// `new<P: Role>(role P, client)`.)

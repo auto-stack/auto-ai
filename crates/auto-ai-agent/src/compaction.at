@@ -1,0 +1,224 @@
+/// Context compaction (Plan 028, pi parity): when a conversation nears the
+/// context window, replace the oldest turns with a structured LLM summary
+/// instead of dropping them (the ring-buffer trim loses them forever).
+///
+/// Auto port of rust-ref compaction.rs. Adaptations:
+/// - CompactionSettings defaults via [default_compaction_settings] (Auto has
+///   no Default trait / field defaults).
+/// - `is`-pattern branches over ContentBlock follow the format.at precedent.
+
+use auto_ai_client: ClientError, CompletionRequest, ContentBlock, Message, Usage
+use error: AgentError
+use memory: Memory
+use agent: Client
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CompactionSettings
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Compaction thresholds. Defaults follow pi's DEFAULT_COMPACTION_SETTINGS.
+pub type CompactionSettings {
+    /// The model's context window in tokens.
+    context_window uint
+    /// Keep this many tokens of headroom for the answer (pi: 16384).
+    reserve_tokens uint
+    /// Never compact away the most recent tokens (pi: 20000).
+    keep_recent_tokens uint
+}
+
+/// The default settings (pi parity: 128k window / 16384 reserve / 20000 keep).
+pub fn default_compaction_settings() CompactionSettings {
+    return CompactionSettings(
+        context_window: 128000, reserve_tokens: 16384, keep_recent_tokens: 20000
+    )
+}
+
+/// True when the estimated context has crossed the compaction threshold.
+pub fn should_compact(tokens uint, s CompactionSettings) bool {
+    if tokens > s.context_window - s.reserve_tokens {
+        return true
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// token estimation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Rough token count: the most recent assistant usage (real accounting, when
+/// available) plus a chars/4 estimate of the message list (pi heuristic).
+pub fn estimate_tokens(messages List<Message>, last_usage ?Usage) uint {
+    var base uint = 0
+    is last_usage {
+        Some(u) -> base = u.total_tokens(),
+        None -> {}
+    }
+    var total uint = base
+    for m in messages {
+        total = total + message_cost(m) / 4u
+    }
+    return total
+}
+
+/// Rough char cost of one message (role + content blocks).
+fn message_cost(m Message) uint {
+    var chars uint = m.role.len() as uint
+    for block in m.content {
+        is block {
+            ContentBlock.Text(text) -> chars = chars + text.len() as uint,
+            ContentBlock.ToolUse(name, _id, input) -> {
+                chars = chars + name.len() as uint
+                chars = chars + input.to_string().len() as uint
+            },
+            ContentBlock.ToolResult(_tool_use_id, content, _is_error) -> {
+                chars = chars + content.len() as uint
+            }
+        }
+    }
+    return chars
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// cut-point selection
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A human turn boundary: a user message whose first block is plain text
+/// (ToolResult users belong to the previous assistant turn's unit).
+fn is_turn_boundary(m Message) bool {
+    if m.role != "user" {
+        return false
+    }
+    if m.content.is_empty() {
+        return false
+    }
+    let first = m.content[0]
+    is first {
+        ContentBlock.Text(_t) -> return true,
+        _ -> return false
+    }
+}
+
+/// The index at which to cut so the kept tail fits keep_recent_tokens,
+/// adjusted to the nearest human-turn boundary (never splits a
+/// ToolUse/ToolResult pair). -1 when the memory is too short to compact.
+pub fn find_cut_point(messages List<Message>, keep_recent_tokens uint) int {
+    if messages.len() < 2 {
+        return -1
+    }
+    // Smallest tail that still fits the keep-recent budget.
+    var acc uint = 0
+    var start int = messages.len() as int - 1
+    var settled = false
+    for start >= 0 && settled == false {
+        acc = acc + message_cost(messages[start]) / 4u
+        if acc > keep_recent_tokens {
+            start = start + 1
+            settled = true
+        } else {
+            if start == 0 {
+                return -1
+            }
+            start = start - 1
+        }
+    }
+    if settled == false {
+        return -1
+    }
+    // Walk forward to the nearest turn boundary (keeps the tail ≤ budget).
+    var cut int = start
+    for cut < messages.len() as int && is_turn_boundary(messages[cut]) == false {
+        cut = cut + 1
+    }
+    if cut >= messages.len() as int {
+        // No boundary ahead: fall back to the previous boundary — a
+        // slightly-over-budget tail is safer than refusing to compact.
+        cut = start
+        if cut >= messages.len() as int {
+            cut = messages.len() as int - 1
+        }
+        for cut > 1 && is_turn_boundary(messages[cut]) == false {
+            cut = cut - 1
+        }
+    }
+    if cut <= 1 || cut >= messages.len() as int {
+        return -1
+    }
+    return cut
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// compact
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// System prompt for the summarizer (pi's structured template).
+fn summary_system_prompt() str {
+    return "You compress a coding-agent conversation history. Produce a terse markdown summary with exactly these sections:\n## Goal\n## Progress\n## Key Decisions\n## Next Steps\nThen a final section '## Files' listing every file path that was read, written, or edited (one per line). Never invent facts; omit sections with no content."
+}
+
+/// Compact the memory: the pre-cut turns are summarized by an independent LLM
+/// request (isolated from the main conversation), and the new Memory keeps
+/// [system messages, summary anchor, recent tail]. On failure the original
+/// memory is preserved (an error is returned; the caller falls back to trim).
+pub fn compact(memory Memory, client @Client, model str, settings CompactionSettings) ~Result<Memory, AgentError> {
+    let msgs = memory.messages()
+    let cut = find_cut_point(msgs.clone(), settings.keep_recent_tokens)
+    if cut < 1 {
+        return Err(AgentError.Config("memory too short to compact"))
+    }
+    var transcript = ""
+    var i int = 0
+    for i < cut {
+        let m = msgs[i]
+        transcript = transcript + f"[${m.role}] "
+        for block in m.content {
+            is block {
+                ContentBlock.Text(text) -> transcript = transcript + text + "\n",
+                ContentBlock.ToolUse(name, _id, input) -> {
+                    transcript = transcript + f"(tool_use ${name} ${input.to_string()})\n"
+                },
+                ContentBlock.ToolResult(_tool_use_id, content, _is_error) -> {
+                    transcript = transcript + f"(tool_result ${content})\n"
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    var blocks List<ContentBlock> = []
+    let tb = ContentBlock.Text(f"Summarize this conversation history for continuation:\n\n${transcript}")
+    blocks.push(tb)
+    let req = CompletionRequest(
+        model: model.to_string(),
+        messages: [Message(role: "user", content: blocks)],
+        max_tokens: None,
+        temperature: Some(0.0),
+        system_prompt: Some(summary_system_prompt()),
+        tools: [],
+        stream: false,
+        preferred_provider: None
+    )
+    let resp = client.complete(req).await.?
+    is resp.error {
+        Some(err) -> return Err(AgentError.Config(f"compaction summary error: ${err}")),
+        None -> {}
+    }
+
+    // Rebuild: system messages from the prefix, the summary as a user anchor,
+    // then the kept tail verbatim.
+    var mut_memory = Memory.new(memory.limit())
+    var j int = 0
+    for j < cut {
+        let m = msgs[j]
+        if m.role == "system" {
+            mut_memory.add_message(m)
+        }
+        j = j + 1
+    }
+    mut_memory.add("user", f"[Compacted conversation summary — older turns were summarized to save context]\n\n${resp.content}".as_str())
+    var k int = cut
+    for k < msgs.len() as int {
+        mut_memory.add_message(msgs[k])
+        k = k + 1
+    }
+    return Ok(mut_memory)
+}

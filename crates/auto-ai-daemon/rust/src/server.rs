@@ -104,6 +104,30 @@ pub async fn models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             let mut entry = serde_json::Map::new();
             entry.insert("provider".to_string(), Value::String(name.clone()));
             entry.insert("model".to_string(), Value::String(m.id.to_string()));
+            
+
+
+            if m.context_window.is_some() {
+                entry.insert("context_window".to_string(), Value::Number(serde_json::Number::from(m.context_window.clone().unwrap())));
+            }
+            if m.max_output_tokens.is_some() {
+                entry.insert("max_output_tokens".to_string(), Value::Number(serde_json::Number::from(m.max_output_tokens.clone().unwrap())));
+            }
+            if m.cost_per_mtok.is_some() {
+                let c = m.cost_per_mtok.clone().unwrap();
+                let mut cost = serde_json::Map::new();
+                cost.insert("input".to_string(), Value::Number(serde_json::Number::from(c.input)));
+                cost.insert("output".to_string(), Value::Number(serde_json::Number::from(c.output)));
+                cost.insert("cache_read".to_string(), Value::Number(serde_json::Number::from(c.cache_read)));
+                entry.insert("cost_per_mtok".to_string(), Value::Object(cost));
+            }
+            if m.capabilities.is_some() {
+                let c = m.capabilities.clone().unwrap();
+                let mut caps = serde_json::Map::new();
+                caps.insert("vision".to_string(), Value::Bool(c.vision));
+                caps.insert("thinking".to_string(), Value::Bool(c.thinking));
+                entry.insert("capabilities".to_string(), Value::Object(caps));
+            }
             out.push(Value::Object(entry));
         }
     }
@@ -121,6 +145,9 @@ pub async fn usage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         entry.insert("output_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_output_tokens)));
         entry.insert("total_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_tokens())));
         entry.insert("requests".to_string(), Value::Number(serde_json::Number::from(u.request_count)));
+        
+        entry.insert("cache_read_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_cache_read_tokens)));
+        entry.insert("cache_write_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_cache_write_tokens)));
         apps.push(Value::Object(entry));
     }
     let mut root = serde_json::Map::new();
@@ -242,12 +269,19 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
                         match provider.complete(&req).await {
                             Ok(resp) => {
                                 match &resp.usage {
-                                    Some(u) => state.tracker.record(app_name.as_str(), u.input_tokens, u.output_tokens),
+                                    Some(u) => state.tracker.record_full(app_name.as_str(), u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens),
                                     None => {},
                                 };
                                 return ok_response(resp);
                             },
                             Err(e) => {
+                                
+
+
+
+                                if e.is_quota_exhausted() {
+                                    return error_response(StatusCode::PAYMENT_REQUIRED, format!("{}{}", "quota/billing exhausted: ", e.message()).as_str());
+                                }
                                 let retryable = e.is_retryable();
                                 last_error = Some(e.message());
                                 if retryable {

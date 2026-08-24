@@ -60,6 +60,7 @@ use.rust serde_json
 use auto_ai_client: ClientError, CompletionRequest, CompletionResponse, Message
 use error: AgentError
 use memory: Memory
+use compaction: CompactionSettings, default_compaction_settings, should_compact, estimate_tokens, compact
 use role_def: Role
 use skill: SkillTool
 use ai_config: ModelTier, Usage
@@ -287,6 +288,13 @@ pub type Agent {
     /// Follow-up queue (Plan 026): revives a run that was about to end
     /// naturally (final answer, nothing pending).
     follow_ups Arc<Mutex<List<str>>>
+    /// Most recent assistant usage report (Plan 028: real token data for the
+    /// compaction estimator).
+    last_usage ?Usage
+    /// Compaction thresholds (Plan 028).
+    compaction CompactionSettings
+    /// Kill switch for auto-compaction (on by default).
+    compaction_on bool
 }
 
 ext Agent {
@@ -303,7 +311,10 @@ ext Agent {
             skills_block: None,
             context_block: None,
             steering: Arc(Mutex.new([])),
-            follow_ups: Arc(Mutex.new([]))
+            follow_ups: Arc(Mutex.new([])),
+            last_usage: None,
+            compaction: default_compaction_settings(),
+            compaction_on: true
         )
     }
 
@@ -453,6 +464,25 @@ ext Agent {
     /// still making progress; the hard cap is 5x the soft target.
     /// `mut fn`: mutates self.memory (add/add_message) + self.tools.
     pub mut fn run_inner(task_msg str, cancel ?Arc<AtomicBool>, sink TaskRef<StreamEvent>) ~Result<AgentResult, AgentError> {
+        // Plan 028: auto-compact before the run starts (never mid-run). A
+        // failure is non-fatal — the ring-buffer trim still guards the limit.
+        if self.compaction_on {
+            let est = estimate_tokens(self.memory.messages(), self.last_usage.clone())
+            if should_compact(est, self.compaction.clone()) {
+                let model = build_model_id(self.role.model().as_str(), self.role.model_tier())
+                is compact(self.memory.clone(), self.client, model, self.compaction.clone()).await {
+                    Ok(next) -> {
+                        self.memory = next
+                        let w = StreamEvent.Warning(f"context compacted (estimated ${est} tokens)")
+                        sink.send(w)
+                    },
+                    Err(e) -> {
+                        let w = StreamEvent.Warning(f"compaction skipped: ${e.message()}")
+                        sink.send(w)
+                    }
+                }
+            }
+        }
         self.memory.add("user", task_msg)
         let soft_limit = self.role.max_turns()
         let hard_limit = soft_limit * 5u
@@ -533,6 +563,7 @@ ext Agent {
                 None -> {}
             }
             result.total_tokens = record_usage(result, resp)
+            self.last_usage = resp.usage.clone()
 
             if resp.wants_tool() {
                 // Cancel checkpoint 3: before recording/executing tool calls.

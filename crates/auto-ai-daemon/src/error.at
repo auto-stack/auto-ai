@@ -54,6 +54,36 @@ ext LlmError {
         return false
     }
 
+    /// Plan 028: quota/billing exhaustion — switching provider candidates
+    /// won't help (the account itself is dead), so the fallback loop must NOT
+    /// consume the chain on these. Matches 402 plus the common provider
+    /// wordings (OpenAI insufficient_quota, Anthropic billing, generic
+    /// credit/quota_exceeded), case-insensitively.
+    pub fn is_quota_exhausted() bool {
+        is self {
+            LlmError.Upstream(status, message, _retryable) -> {
+                if status == 402 {
+                    return true
+                }
+                let lower = message.to_lowercase()
+                if lower.contains("insufficient_quota") {
+                    return true
+                }
+                if lower.contains("quota_exceeded") {
+                    return true
+                }
+                if lower.contains("billing") {
+                    return true
+                }
+                if lower.contains("exceeded your current quota") {
+                    return true
+                }
+                return false
+            },
+            _ -> return false
+        }
+    }
+
     /// Classify an upstream non-success HTTP status into the right variant:
     /// 429 → RateLimited; 5xx → retryable Upstream; other 4xx → non-retryable
     /// Upstream. Used by both providers' status-check path.

@@ -85,11 +85,35 @@ ext ModelTier {
 // ModelDefinition
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Cost per million tokens in micro-USD (Plan 028 model metadata). Integer
+/// units keep the Eq/Ord derives a2r auto-generates; 3000000 = $3.00/Mtok.
+pub type CostPerMtok {
+    input uint
+    output uint
+    /// Cached prompt-token read price (0 when the provider has no cache).
+    cache_read uint
+}
+
+/// Input capabilities (Plan 028 model metadata).
+pub type ModelCapabilities {
+    vision bool
+    /// Reasoning/thinking-capable model (emits reasoning deltas).
+    thinking bool
+}
+
 /// A concrete model entry in a provider's config, tagged with its tier.
 pub type ModelDefinition {
     id str
     name str
     tier ModelTier
+    /// Context window in tokens (Plan 028). None = unknown.
+    context_window ?uint
+    /// Max output tokens (Plan 028). None = provider default.
+    max_output_tokens ?uint
+    /// USD per million tokens (Plan 028).
+    cost_per_mtok ?CostPerMtok
+    /// Input capabilities (Plan 028).
+    capabilities ?ModelCapabilities
 }
 
 ext ModelDefinition {
@@ -98,7 +122,7 @@ ext ModelDefinition {
     /// `name: String::new()`). Use [display_name] to get a user-facing name
     /// that falls back to the id when name is empty.
     pub static fn new(id str, tier ModelTier) ModelDefinition {
-        return ModelDefinition(id: id, name: "", tier: tier)
+        return ModelDefinition(id: id, name: "", tier: tier, context_window: None, max_output_tokens: None, cost_per_mtok: None, capabilities: None)
     }
 
     /// The display name (falls back to the id if name is empty). Convenience

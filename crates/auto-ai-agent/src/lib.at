@@ -22,6 +22,7 @@ use agent: Agent, AgentResult, Client, StreamEvent, ToolCallRecord
 use config: load_role, parse_at_role, parse_tier_field, serialize_at_role, ConfigRole, RoleConfig, config_role_new, config_role_with_base
 use error: AgentError, ToolError
 use memory: Memory
+use compaction: CompactionSettings, default_compaction_settings, should_compact, estimate_tokens, find_cut_point, compact
 use role_def: Role
 // Re-export ModelTier so downstream crates can name the tier type without
 // depending on ai_config directly.

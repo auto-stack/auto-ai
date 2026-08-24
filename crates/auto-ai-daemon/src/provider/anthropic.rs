@@ -165,6 +165,8 @@ impl AiProvider for AnthropicProvider {
         let usage = json.get("usage").map(|u| Usage {
             input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
             output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_write_tokens: u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32,
         });
 
         let model = json["model"]
@@ -279,9 +281,15 @@ impl AiProvider for AnthropicProvider {
                 "message_start" => {
                     // Anthropic reports input_tokens in the initial message_start.
                     if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
+                        let (cr, cw) = (
+                            u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32,
+                            u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32,
+                        );
                         *usage = Some(Usage {
                             input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
                             output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
+                            cache_read_tokens: cr,
+                            cache_write_tokens: cw,
                         });
                     }
                 }
@@ -294,7 +302,7 @@ impl AiProvider for AnthropicProvider {
                         let out = u["output_tokens"].as_u64().unwrap_or(0) as u32;
                         match usage {
                             Some(prev) => prev.output_tokens = out,
-                            None => *usage = Some(Usage { input_tokens: 0, output_tokens: out }),
+                            None => *usage = Some(Usage { input_tokens: 0, output_tokens: out, cache_read_tokens: 0, cache_write_tokens: 0 }),
                         }
                     }
                 }

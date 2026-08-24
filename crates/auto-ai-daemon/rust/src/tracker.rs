@@ -20,17 +20,21 @@ pub struct AppUsage {
     pub total_input_tokens: u32,
     pub total_output_tokens: u32,
     pub request_count: u32,
+    pub total_cache_read_tokens: u32,
+    pub total_cache_write_tokens: u32,
 }
 
 impl AppUsage {
     pub fn new() -> AppUsage {
-        return AppUsage { total_input_tokens: 0, total_output_tokens: 0, request_count: 0 };
+        return AppUsage { total_input_tokens: 0, total_output_tokens: 0, request_count: 0, total_cache_read_tokens: 0, total_cache_write_tokens: 0 };
     }
     pub fn total_tokens(&self) -> u32 {
         return self.total_input_tokens + self.total_output_tokens;
     }
 }
 
+/// Plan 028: cache-hit accounting (prompt tokens served from cache).
+/// Plan 028: prompt tokens written into the cache.
 /// Total tokens consumed (input + output).
 /// Thread-safe usage tracker. Records per-app token consumption.
 #[derive(Debug)]
@@ -44,6 +48,11 @@ impl UsageTracker {
         return UsageTracker { apps: Mutex::new(std::collections::HashMap::new()), names: Mutex::new(vec![]) };
     }
     pub fn record(&self, app: &str, input: u32, output: u32) {
+
+
+        self.record_full(app, input, output, 0, 0);
+    }
+    pub fn record_full(&self, app: &str, input: u32, output: u32, cache_read: u32, cache_write: u32) {
         let mut guard = self.apps.lock();
         match guard.get(app) {
             Some(entry) => {
@@ -55,6 +64,8 @@ impl UsageTracker {
                 updated.total_input_tokens = entry.total_input_tokens + input;
                 updated.total_output_tokens = entry.total_output_tokens + output;
                 updated.request_count = entry.request_count + 1;
+                updated.total_cache_read_tokens = entry.total_cache_read_tokens + cache_read;
+                updated.total_cache_write_tokens = entry.total_cache_write_tokens + cache_write;
                 guard.insert(app.to_string(), updated);
             },
             None => {
@@ -62,6 +73,8 @@ impl UsageTracker {
                 e.total_input_tokens = input;
                 e.total_output_tokens = output;
                 e.request_count = 1;
+                e.total_cache_read_tokens = cache_read;
+                e.total_cache_write_tokens = cache_write;
                 guard.insert(app.to_string(), e);
                 self.names.lock().push(app.to_string());
             },

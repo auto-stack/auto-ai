@@ -184,6 +184,8 @@ pub async fn openai_complete_stream(
                     usage = Some(ai_config::Usage {
                         input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                         output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                        cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
+                        cache_write_tokens: 0,
                     });
                 }
                 if let Some(tcs) = json["choices"][0]["delta"]["tool_calls"].as_array() {
@@ -221,6 +223,8 @@ pub async fn openai_complete_stream(
                 usage = Some(ai_config::Usage {
                     input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                     output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                    cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
+                    cache_write_tokens: 0,
                 });
             }
         }
@@ -358,6 +362,8 @@ pub async fn anthropic_complete_stream(
                             usage = Some(ai_config::Usage {
                                 input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
                                 output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
+                                cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32,
+                                cache_write_tokens: u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32,
                             });
                         }
                     }
@@ -373,6 +379,8 @@ pub async fn anthropic_complete_stream(
                                     usage = Some(ai_config::Usage {
                                         input_tokens: 0,
                                         output_tokens: out,
+                                        cache_read_tokens: 0,
+                                        cache_write_tokens: 0,
                                     })
                                 }
                             }

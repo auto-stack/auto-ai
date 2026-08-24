@@ -100,17 +100,39 @@ impl ModelTier {
 /// instead of maintaining its own match table (review-003 M8).
 /// Accepted aliases (beyond the snake_case enum names):
 /// "light" → Lite, "large" → Pro, "heavy" → Max.
+/// Cost per million tokens in micro-USD (Plan 028 model metadata). Integer
+/// units keep the Eq/Ord derives a2r auto-generates; 3000000 = $3.00/Mtok.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CostPerMtok {
+    pub input: u32,
+    pub output: u32,
+    pub cache_read: u32,
+}
+
+/// Cached prompt-token read price (0 when the provider has no cache).
+/// Input capabilities (Plan 028 model metadata).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModelCapabilities {
+    pub vision: bool,
+    pub thinking: bool,
+}
+
+/// Reasoning/thinking-capable model (emits reasoning deltas).
 /// A concrete model entry in a provider's config, tagged with its tier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModelDefinition {
     pub id: String,
     pub name: String,
     pub tier: ModelTier,
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub cost_per_mtok: Option<CostPerMtok>,
+    pub capabilities: Option<ModelCapabilities>,
 }
 
 impl ModelDefinition {
     pub fn new(id: &str, tier: ModelTier) -> ModelDefinition {
-        return ModelDefinition { id: id.to_string(), name: "".to_string(), tier: tier };
+        return ModelDefinition { id: id.to_string(), name: "".to_string(), tier: tier, context_window: None, max_output_tokens: None, cost_per_mtok: None, capabilities: None };
     }
     pub fn display_name(&self) -> String {
         if self.name.is_empty() {

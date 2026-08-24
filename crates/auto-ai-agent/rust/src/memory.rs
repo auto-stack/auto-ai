@@ -48,6 +48,9 @@ impl Memory {
             self.add(pair.0.as_str(), pair.1.as_str());
         }
     }
+    pub fn limit(&self) -> Option<u32> {
+        return self.limit.clone();
+    }
     pub fn messages(&self) -> Vec<Message> {
         return self.messages.clone();
     }

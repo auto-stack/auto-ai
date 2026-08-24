@@ -65,6 +65,11 @@ ext Memory {
     }
 
     /// All messages currently held (in order).
+    /// The configured turn limit (Plan 028: compaction preserves it).
+    pub fn limit() ?uint {
+        return self.limit.clone()
+    }
+
     pub fn messages() List<Message> {
         return self.messages
     }

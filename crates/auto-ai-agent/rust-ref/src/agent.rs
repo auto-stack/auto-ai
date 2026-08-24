@@ -18,6 +18,7 @@ use auto_ai_client::{
     AiClient, ClientError, CompletionRequest, CompletionResponse, ContentBlock, Message, Usage,
 };
 
+use crate::compaction::{self, CompactionSettings};
 use crate::error::{AgentError, ToolError};
 use crate::memory::Memory;
 use crate::role_def::Role;
@@ -185,6 +186,15 @@ pub struct Agent {
     /// to end naturally (final answer, no pending tools). Drained only at the
     /// natural end of a run.
     follow_ups: Arc<Mutex<VecDeque<String>>>,
+    /// The most recent assistant usage report (Plan 028: real token data for
+    /// the compaction estimator; also refreshed every turn).
+    last_usage: Option<Usage>,
+    /// Compaction thresholds (Plan 028). Auto-compact runs before a run
+    /// starts when the estimated context crosses the threshold; failures are
+    /// non-fatal (a Warning is emitted and the run proceeds).
+    compaction: CompactionSettings,
+    /// Kill switch for auto-compaction (tests / explicit control).
+    compaction_enabled: bool,
 }
 
 impl Agent {
@@ -201,6 +211,9 @@ impl Agent {
             context_block: None,
             steering: Arc::new(Mutex::new(VecDeque::new())),
             follow_ups: Arc::new(Mutex::new(VecDeque::new())),
+            last_usage: None,
+            compaction: CompactionSettings::default(),
+            compaction_enabled: true,
         }
     }
 
@@ -369,6 +382,16 @@ impl Agent {
         self.follow_ups.clone()
     }
 
+    /// Override the compaction settings (Plan 028).
+    pub fn set_compaction_settings(&mut self, s: CompactionSettings) {
+        self.compaction = s;
+    }
+
+    /// Enable/disable auto-compaction (Plan 028; on by default).
+    pub fn set_compaction_enabled(&mut self, on: bool) {
+        self.compaction_enabled = on;
+    }
+
     /// Plan 026: cancel drops any queued steering messages; report the loss so
     /// the UI can tell the user their mid-run messages were discarded.
     fn clear_steering_on_cancel(&self, on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>) {
@@ -404,6 +427,42 @@ impl Agent {
                 .map(|c| c.load(Ordering::SeqCst))
                 .unwrap_or(false)
         };
+
+        // Plan 028: auto-compact before the run starts (never mid-run). A
+        // failure is non-fatal — the ring-buffer trim still guards the limit.
+        if self.compaction_enabled {
+            let est = compaction::estimate_tokens(
+                &self.memory.messages(),
+                self.last_usage.as_ref(),
+            );
+            if compaction::should_compact(est, &self.compaction) {
+                let model = {
+                    let pinned = self.role.model();
+                    if !pinned.is_empty() {
+                        pinned.to_string()
+                    } else {
+                        format!(
+                            "tier:{}",
+                            self.role.model_tier().display_name().to_ascii_lowercase()
+                        )
+                    }
+                };
+                match compaction::compact(&self.memory, &self.client, &model, &self.compaction).await {
+                    Ok(next) => {
+                        self.memory = next;
+                        on_event(StreamEvent::Warning {
+                            text: format!("context compacted (estimated {est} tokens)"),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("compaction failed, continuing: {e}");
+                        on_event(StreamEvent::Warning {
+                            text: format!("compaction skipped: {e}"),
+                        });
+                    }
+                }
+            }
+        }
 
         self.memory.add("user", task);
         let soft_limit = self.role.max_turns();
@@ -499,6 +558,7 @@ impl Agent {
             }
             if let Some(u) = &resp.usage {
                 result.total_tokens += u.total_tokens() as u64;
+                self.last_usage = Some(u.clone());
             }
 
             if resp.wants_tool() {

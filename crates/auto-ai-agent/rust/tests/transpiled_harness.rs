@@ -626,7 +626,10 @@ impl SseScriptedClient {
 
 #[async_trait]
 impl Client for SseScriptedClient {
-    async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, ClientError> {
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, ClientError> {
+        // Plan 028: compaction's summary requests go through complete() —
+        // capture them too.
+        self.inner.requests.lock().unwrap().push(req);
         Ok(self.next_response())
     }
     async fn complete_stream(
@@ -679,9 +682,9 @@ fn ptag(ev: &StreamEvent) -> String {
 async fn t16_turn_event_sequence() {
     use auto_ai_agent_a2r::auto_ai_client::Usage;
     let mut r1 = tool_call_response("echo", json!({"word": "hi"}));
-    r1.usage = Some(Usage { input_tokens: 10, output_tokens: 5 });
+    r1.usage = Some(Usage { input_tokens: 10, output_tokens: 5, ..Default::default() });
     let mut r2 = text_response("done");
-    r2.usage = Some(Usage { input_tokens: 20, output_tokens: 7 });
+    r2.usage = Some(Usage { input_tokens: 20, output_tokens: 7, ..Default::default() });
     let client = SseScriptedClient::new(vec![r1, r2], vec![vec![], vec![]]);
 
     let collected: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(vec![]));
@@ -863,4 +866,58 @@ async fn t20_tool_details_events_not_llm() {
         "ToolResult content missing from the LLM request");
     assert!(!body.contains("stub.patch") && !body.contains("@@ -1 +1 @@"),
         "details leaked into the LLM request: {body}");
+}
+
+// ─── T21: Plan 028 parity — compaction summarizes prefix, keeps the tail ────
+
+#[tokio::test]
+async fn t21_compact_summarizes_prefix_keeps_tail() {
+    use auto_ai_agent_a2r::{Memory, compact, default_compaction_settings, CompactionSettings};
+    use auto_ai_agent_a2r::compaction::find_cut_point;
+    use auto_ai_client_a2r::ContentBlock;
+
+    // 50 turns × ~800 chars (~200 tokens each) ≈ 20k tokens.
+    let mut mem = Memory::new(None);
+    for i in 0..50 {
+        mem.add("user", &format!("turn {}: {}", i, "x".repeat(800)));
+        mem.add("assistant", &"y".repeat(800));
+    }
+
+    let client = SseScriptedClient::new(
+        vec![text_response("## Goal
+fix the bug
+
+## Files
+- src/main.rs")],
+        vec![vec![]],
+    );
+    let settings = CompactionSettings {
+        context_window: 10_000,
+        reserve_tokens: 1_000,
+        keep_recent_tokens: 2_000,
+    };
+    let boxed: Box<dyn Client> = Box::new(client.clone());
+    let next = compact(mem, &boxed, "tier:mid", settings).await.unwrap();
+
+    // Exactly one isolated summary request.
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 1, "summary must be a single isolated request");
+    assert!(reqs[0].system_prompt.as_deref().unwrap_or("").contains("compress"));
+
+    // Summary anchor leads the rebuilt memory, with the Files list intact.
+    let msgs = next.messages();
+    assert!(msgs.len() < 20, "compacted memory must be much smaller: {}", msgs.len());
+    assert_eq!(msgs[0].role, "user");
+    match &msgs[0].content[0] {
+        ContentBlock::Text { text } => {
+            assert!(text.contains("Compacted conversation summary"));
+            assert!(text.contains("## Files"));
+            assert!(text.contains("src/main.rs"));
+        }
+        other => panic!("summary anchor should be text, got {:?}", other),
+    }
+    // The kept tail is verbatim recent turns.
+    assert_eq!(msgs.last().unwrap().role, "assistant");
+    // Cut-point sanity (parity with rust-ref unit tests).
+    let _ = find_cut_point(msgs.clone(), 2_000);
 }
