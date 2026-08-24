@@ -1,6 +1,7 @@
 # Plan 029: auto-ai-cli 交互形态重构——线性输出 + 尾部动态（主屏 inline viewport + 按需模态）
 
 > **状态**：✅ 已实施（2026-08-24，Phase 1/2/3/5/6 落地；Phase 6.5 /tree 挂起（前置条件缺失）、Phase 6.6 人工验证清单待做）
+> **finish-plan 复审（2026-08-25）**：代码逐项核验通过（15 单测 + clippy 基线一致，本会话重跑）；Phase 6.5 延期项已登记 KNOWN-DEBT；**归档前置条件 = Phase 6.6 人工验证清单完成**（三终端原生复制/resize/IME//clear 重锚/流式性能体感，自动化覆盖不到）。
 > **仓库**：auto-ai（auto-ai-cli 主改；agent / ai-config / daemon / musk 零改动——本计划是 PLAN-026 事件模型的消费端）
 > **实施记录与计划偏差**（finish-plan 复审 2026-08-24，复审后以 Phase 6 补全）：
 > 1. ~~follow_up 未接线~~ → **Phase 6.1 已补**：终答流式期（无运行工具且 active_answer 非空）Enter → `follow_up()`（回合自然结束后复活），其余流式期 → `steer()`（工具批后注入）；标记 `⇢`/`↪` 区分。
@@ -182,7 +183,7 @@ src/
 2. **/expand 引用式追加**：Tool 事件登记 tool_log（自增 id），摘要行显示 `#N`；`/expand N` 把全文以暗色块提交追加进线性流（引用式追加语义，替代重型模态）；
 3. **/roles 原地选择器**：尾部换渲染（预览+编辑器区合并为列表，无需重建 Terminal/变高），↑↓ 导航、Enter 确认、Esc 取消；确认后 `SetRole` → 先保存旧记忆再按新角色重建 agent（`-c` 历史不丢）；
 4. **/clear 清屏**：`Clear(Purge)` 清回滚区 + 重建 Terminal 重锚 inline viewport + 清空 session 文件；
-5. **/tree 重型模态：挂起**——前置条件缺失：CLI 会话是线性的，没有分支树可展示（pi 的 /tree 导航的是分支会话）。待会话分支功能落地后再评估；过渡期 `--mode fullscreen` 是全屏逃生门；
+5. **/tree 重型模态：挂起**——前置条件缺失：CLI 会话是线性的，没有分支树可展示（pi 的 /tree 导航的是分支会话）。待会话分支功能落地后再评估；过渡期 `--mode fullscreen` 是全屏逃生门（2026-08-25 finish-plan 复审：已登记 KNOWN-DEBT 延期项）；
 6. **人工验证清单（不可自动化）**：三终端（Windows Terminal / tmux / VSCode）鼠标原生复制（含 CJK）、resize 行为、Windows IME、/clear 清屏后 viewport 重锚、流式性能体感。
 
 ## 4. 验收标准
