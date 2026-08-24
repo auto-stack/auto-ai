@@ -255,6 +255,7 @@ pub async fn openai_complete_stream(
         usage,
         model: req.model.clone(),
         error: None,
+        model_meta: None,
     })
 }
 
@@ -430,5 +431,6 @@ pub async fn anthropic_complete_stream(
         usage,
         model: req.model.clone(),
         error: None,
+        model_meta: None,
     })
 }

@@ -17,8 +17,9 @@ pub enum ClientError {
 }
 
 ext ClientError {
-    /// Human-readable message (mirrors Rust's `Display` impl).
-    fn message() str {
+    /// Human-readable message (mirrors Rust's `Display` impl). Public since
+    /// Plan 031: the agent's overflow-recovery path classifies by message text.
+    pub fn message() str {
         is self {
             ClientError.DaemonUnavailable -> return "daemon unavailable",
             ClientError.Http(e) -> return f"HTTP error: ${e}",

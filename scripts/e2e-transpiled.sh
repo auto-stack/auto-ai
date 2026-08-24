@@ -141,6 +141,31 @@ else
     cat "$DAEMON_LOG.react2" >&2
 fi
 
+
+# ── 断言（Plan 031，闭环 026 任务 8）：事件序列 ──────────────────────────────
+# REPL 现在在 stderr 输出事件标记（[event] turn N start/end、[event] thinking）。
+# 每个 turn 必须以 TurnStart 开场；thinking 标记（若服务模型输出 reasoning）
+# 必须出现在 turn start 之后、答案文本之前。
+if grep -q '\[event\] turn 1 start' "$DAEMON_LOG.react"; then
+    echo "[e2e] ✅ 事件序列断言通过（TurnStart 标记存在）"
+else
+    echo "❌ 事件序列断言失败：stderr 无 '[event] turn 1 start' 标记" >&2
+    cat "$DAEMON_LOG.react" >&2
+    exit 1
+fi
+if grep -q '\[event\] thinking' "$DAEMON_LOG.react"; then
+    first_turn=$(grep -n -m1 '\[event\] turn 1 start' "$DAEMON_LOG.react" | cut -d: -f1)
+    first_think=$(grep -n -m1 '\[event\] thinking' "$DAEMON_LOG.react" | cut -d: -f1)
+    if [ -n "$first_turn" ] && [ -n "$first_think" ] && [ "$first_think" -gt "$first_turn" ]; then
+        echo "[e2e] ✅ thinking 标记位于 turn start 之后（顺序正确）"
+    else
+        echo "❌ 事件顺序错误：thinking 标记出现在 turn start 之前" >&2
+        exit 1
+    fi
+else
+    echo "[e2e] （服务模型未输出 thinking —— 顺序断言跳过，属可接受波动）"
+fi
+
 rm -f "$DAEMON_LOG.react" "$DAEMON_LOG.react2"
 
 # ── 6. 成功 ──────────────────────────────────────────────────────────────────

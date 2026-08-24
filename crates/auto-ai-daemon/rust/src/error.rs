@@ -67,6 +67,53 @@ impl LlmError {
             _ => return false,
         }
     }
+    pub fn is_context_overflow(&self) -> bool {
+        let mut message: String = "".to_string();
+        match self {
+            LlmError::Upstream { status: _status, message: msg, retryable: _retryable } => message = msg.to_string(),
+            LlmError::Api(msg) => message = msg.to_string(),
+            LlmError::Http(msg) => message = msg.to_string(),
+            LlmError::Timeout(msg) => message = msg.to_string(),
+            _ => return false,
+        };
+        let lower = message.to_lowercase();
+
+        if lower.contains("rate limit") {
+            return false;
+        }
+        if lower.contains("too many requests") {
+            return false;
+        }
+        if lower.contains("throttling") {
+            return false;
+        }
+
+        if lower.contains("prompt is too long") {
+            return true;
+        }
+        if lower.contains("request_too_large") {
+            return true;
+        }
+        if lower.contains("exceeds the context window") {
+            return true;
+        }
+        if lower.contains("maximum context length") {
+            return true;
+        }
+        if lower.contains("context_length_exceeded") {
+            return true;
+        }
+        if lower.contains("exceeds the available context size") {
+            return true;
+        }
+        if lower.contains("exceeded max context length") {
+            return true;
+        }
+        if lower.contains("greater than the context length") {
+            return true;
+        }
+        return false;
+    }
     pub fn from_upstream_status(status: StatusCode, body: &str) -> LlmError {
         let code = status.as_u16();
         if code == 429 {

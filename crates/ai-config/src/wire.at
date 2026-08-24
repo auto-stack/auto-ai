@@ -225,6 +225,21 @@ ext CompletionRequest {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A completion response.
+/// Metadata about the model that actually served a response (Plan 031).
+///
+/// The daemon embeds this in every completion response (non-streaming body
+/// and the SSE done tail frame) so consumers can adapt to the ACTUAL model —
+/// which may differ from the requested one after tier fallback. Old daemons
+/// / old clients that don't know the field simply ignore it.
+pub type ModelMeta {
+    /// The concrete model id that served the response.
+    id str
+    /// The model's context window in tokens.
+    context_window uint
+    /// The model's max output tokens, when the daemon's config declares one.
+    max_output_tokens ?uint
+}
+
 pub type CompletionResponse {
     /// The full text response (all chunks joined for streaming).
     content str
@@ -238,6 +253,9 @@ pub type CompletionResponse {
     model str
     /// Error message (if any). Content may still be partial.
     error ?str
+    /// Metadata of the model that actually served the response (Plan 031:
+    /// follows tier fallback; None when the daemon doesn't provide it).
+    model_meta ?ModelMeta
 }
 
 ext CompletionResponse {

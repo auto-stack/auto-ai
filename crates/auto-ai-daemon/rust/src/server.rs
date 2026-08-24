@@ -10,7 +10,7 @@ use axum::Json;
 use serde_json;
 use serde_json::Value;
 
-use crate::ai_config::{DaemonConfig, CompletionRequest, CompletionResponse, ModelTier};
+use crate::ai_config::{DaemonConfig, CompletionRequest, CompletionResponse, ModelMeta, ModelTier};
 use crate::pool::{ConcurrencyManager};
 use crate::provider::{ProviderRegistry, AiProvider};
 use crate::tracker::{UsageTracker};
@@ -201,6 +201,36 @@ fn resolve_tier_model(token: &str, config: &DaemonConfig) -> Option<String> {
     return None;
 }
 
+/// Plan 031: metadata of the model that actually served a request, looked up
+/// from the daemon config by (provider, model id). None when the config
+/// doesn't declare a context window for the model — we never guess a window,
+/// so consumers keep their own default rather than trusting a fabricated one.
+fn model_meta_for(config: DaemonConfig, provider: &str, model_id: &str) -> Option<ModelMeta> {
+    match config.providers.get(provider) {
+        Some(pc) => {
+            for m in &pc.models {
+                if m.id == model_id {
+                    match m.context_window {
+                        Some(window) => return Some(ModelMeta { id: model_id.to_string(), context_window: window, max_output_tokens: m.max_output_tokens.clone() }),
+                        None => return None,
+                    };
+                }
+            }
+            return None;
+        },
+        None => return None,
+    };
+    return None;
+}
+
+/// Plan 031 helper: serving-model meta via a fn-scoped config read (the
+/// RwLockReadGuard's Drop would otherwise keep the state borrow alive past
+/// the streaming branch's move of `state` into streaming_response).
+fn state_model_meta(state: &AppState, provider: &str, model_id: &str) -> Option<ModelMeta> {
+    let cfg = state.cfg();
+    return model_meta_for(cfg.clone(), provider, model_id);
+}
+
 pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(req): Json<CompletionRequest>) -> impl IntoResponse {
 
     let app_name = header_or(headers.clone(), "x-app-name", "unknown");
@@ -252,7 +282,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
     for entry in &candidates {
         let provider_name = entry.0.clone();
         let model_id = entry.1.clone();
-        req.model = model_id;
+        req.model = model_id.clone();
         
 
         match state.pool.acquire_with_timeout(provider_name.as_str(), Duration::from_secs(30)).await {
@@ -261,8 +291,11 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
                     Some(provider) => {
                         
 
+
+
                         if req.stream {
-                            return crate::server_glue::streaming_response(state, app_name, provider, req, permit).await;
+                            let meta = state_model_meta(&state, provider_name.as_str(), model_id.as_str());
+                            return crate::server_glue::streaming_response(state, app_name, provider, req, permit, meta).await;
                         }
                         
 
@@ -272,7 +305,13 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
                                     Some(u) => state.tracker.record_full(app_name.as_str(), u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens),
                                     None => {},
                                 };
-                                return ok_response(resp);
+                                
+
+
+
+                                let mut resp2 = resp;
+                                resp2.model_meta = state_model_meta(&state, provider_name.as_str(), model_id.as_str());
+                                return ok_response(resp2.clone());
                             },
                             Err(e) => {
                                 

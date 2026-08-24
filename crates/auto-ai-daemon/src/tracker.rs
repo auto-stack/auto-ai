@@ -80,6 +80,24 @@ mod tests {
     }
 
     #[test]
+    fn record_full_accumulates_cache_dimensions() {
+        // Plan 028 debt: record_full (the /v1/chat/completions path) and the
+        // record() wrapper must land in the same per-app buckets.
+        let tracker = UsageTracker::new();
+        tracker.record_full("app", 1000, 200, 700, 250);
+        tracker.record_full("app", 500, 100, 0, 0);
+        tracker.record("app", 10, 5); // record() == record_full(.., 0, 0)
+        let u = tracker.get("app");
+        assert_eq!(u.total_input_tokens, 1510);
+        assert_eq!(u.total_output_tokens, 305);
+        assert_eq!(u.total_cache_read_tokens, 700);
+        assert_eq!(u.total_cache_write_tokens, 250);
+        assert_eq!(u.request_count, 3);
+        // The /v1/usage projection reads exactly these fields.
+        assert_eq!(u.total_tokens(), 1510 + 305);
+    }
+
+    #[test]
     fn unknown_app_zero() {
         let tracker = UsageTracker::new();
         let usage = tracker.get("nonexistent");

@@ -18,7 +18,7 @@ use a2r_std::*;
 
 pub use std::sync::Arc;
 pub use crate::error::{ClientError};
-pub use crate::ai_config::{CompletionRequest, CompletionResponse, ContentBlock, Message, ToolCall, ToolDefinition, Usage};
+pub use crate::ai_config::{CompletionRequest, CompletionResponse, ContentBlock, Message, ModelMeta, ToolCall, ToolDefinition, Usage};
 /// AutoOS AI client — a thin daemon HTTP client.
 /// 
 /// This client sends **canonical** [CompletionRequest]s to the `aaid` daemon
@@ -115,6 +115,7 @@ impl AiClient {
         let mut stop_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
         let mut model: String = "".to_string();
+        let mut model_meta: Option<ModelMeta> = None;
         let mut error_msg: Option<String> = None;
 
 
@@ -134,6 +135,7 @@ impl AiClient {
                                     tool_calls = parse_tool_calls(value.clone());
                                     stop_reason = opt_str_field(value.clone(), "stop_reason");
                                     model = value.get("model").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                                    model_meta = parse_model_meta(value.clone());
                                     usage = parse_usage(value.clone());
                                 },
                                 _ => {},
@@ -156,6 +158,7 @@ impl AiClient {
                             tool_calls = parse_tool_calls(value.clone());
                             stop_reason = opt_str_field(value.clone(), "stop_reason");
                             model = value.get("model").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                            model_meta = parse_model_meta(value.clone());
                             usage = parse_usage(value.clone());
                         },
                         _ => {},
@@ -166,7 +169,7 @@ impl AiClient {
             };
         }
 
-        return Ok(CompletionResponse { content: full, tool_calls: tool_calls, stop_reason: stop_reason, usage: usage, model: model, error: error_msg });
+        return Ok(CompletionResponse { content: full, tool_calls: tool_calls, stop_reason: stop_reason, usage: usage, model: model, error: error_msg, model_meta: model_meta });
     }
 }
 
@@ -178,6 +181,10 @@ impl AiClient {
 /// Mirrors Rust's `impl Default for AiClient` (lib.rs:210-216).
 /// The daemon URL this client talks to.
 /// Always true (the client is daemon-only).
+/// Metadata passthrough note (Plan 031): unlike the rust-ref track, the
+/// Auto track keeps no client-level last_model_meta cache — the agent
+/// consumes CompletionResponse.model_meta directly on every turn, which
+/// is the load-bearing path; the rust-ref cache is a convenience API.
 /// Send a canonical completion request, receive a canonical response.
 /// 
 /// Async per the plan's `async fn → fn … ~T` mapping.
@@ -287,6 +294,20 @@ fn parse_usage(value: JsonValue) -> Option<Usage> {
         return None;
     }
     return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32, cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_tokens")) as u32, cache_write_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_write_tokens")) as u32 });
+}
+
+/// Parse `model_meta` object from a done event, or None if absent (Plan 031).
+fn parse_model_meta(value: JsonValue) -> Option<ModelMeta> {
+    let m = a2r_std::json::get(&value, "model_meta");
+    if m.is_null() {
+        return None;
+    }
+    let mut max_out: Option<u32> = None;
+    let raw_max = a2r_std::json::get(&m, "max_output_tokens");
+    if raw_max.is_null() == false {
+        max_out = Some((a2r_std::json::as_int(&raw_max) as u32));
+    }
+    return Some(ModelMeta { id: a2r_std::json::get_str(&m, "id"), context_window: (a2r_std::json::as_int(&a2r_std::json::get(&m, "context_window")) as u32), max_output_tokens: max_out });
 }
 
 /// Decode a response body byte array to a string (UTF-8, lossy).

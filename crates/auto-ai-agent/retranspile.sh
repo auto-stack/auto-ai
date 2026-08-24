@@ -187,10 +187,30 @@ fi
 # same-module before). The previous sed (forcing register_shared param single-
 # wrap) is removed — a2r renders `Arc<dyn Tool>` natively now.
 
-# Plan 028: a2r clones spec-typed args at call sites (Box<dyn Client> isn't
-# Clone) and doesn't borrow the model String — fix the compact() call shape.
+# Plan 028/031: a2r clones spec-typed args at call sites (Box<dyn Client>
+# isn't Clone) and doesn't borrow the model String — fix the compact() call
+# shape (Plan 031 added the previous_summary arg; the call now lives in
+# try_compact).
 if [ -f "$RUST/agent.rs" ]; then
-    sed -i 's#match compact(self.memory.clone(), self.client.clone(), model, self.compaction.clone()).await {#match compact(self.memory.clone(), \&self.client, model.as_str(), self.compaction.clone()).await {#' "$RUST/agent.rs"
+    sed -i 's#compact(self.memory.clone(), self.client.clone(), model, self.compaction.clone(), self.last_summary.clone())#compact(self.memory.clone(), \&self.client, model.as_str(), self.compaction.clone(), self.last_summary.clone())#' "$RUST/agent.rs"
+    # Plan 031: 'static-str literal .as_str() hits unstable str_as_str; the
+    # fn takes &str and a literal is already one.
+    sed -i 's#"overflow"\.as_str()#"overflow"#g; s#"threshold"\.as_str()#"threshold"#g' "$RUST/agent.rs"
+    # Plan 031: is_context_overflow(&str) called with String locals.
+    sed -i 's#is_context_overflow(e.message())#is_context_overflow(\&e.message())#; s#is_context_overflow(err)#is_context_overflow(\&err)#' "$RUST/agent.rs"
+    # Plan 031: the retry loop re-uses req after the by-value complete_stream.
+    sed -i 's#self.client.complete_stream(req, Arc::new#self.client.complete_stream(req.clone(), Arc::new#' "$RUST/agent.rs"
+    # Plan 031: borrow model_meta instead of moving it out of resp (resp is
+    # returned after the window refresh).
+    sed -i 's#match resp.model_meta {#match \&resp.model_meta {#' "$RUST/agent.rs"
+fi
+
+# Plan 031 (compaction.at a2r defects):
+if [ -f "$RUST/compaction.rs" ]; then
+    # list_has already takes the list by ref — a2r adds a second &.
+    sed -i 's#for x in \&list {#for x in list {#' "$RUST/compaction.rs"
+    # sort_by_key returning the borrowed key trips NLL — clone the key.
+    sed -i 's#\.sort_by_key(|f| f)#.sort_by_key(|f| f.clone())#g' "$RUST/compaction.rs"
 fi
 
 # Clean up .a2r.rs intermediates

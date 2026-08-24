@@ -195,6 +195,14 @@ pub struct Agent {
     compaction: CompactionSettings,
     /// Kill switch for auto-compaction (tests / explicit control).
     compaction_enabled: bool,
+    /// Plan 031: `set_compaction_settings` was called — the window no longer
+    /// follows response metadata (explicit settings win, so tests and special
+    /// scenarios can pin the thresholds).
+    compaction_window_pinned: bool,
+    /// Plan 031: the summary produced by the most recent compaction (seed for
+    /// the incremental UPDATE template on the next compaction). Cleared when
+    /// a fresh (non-incremental) summary is produced.
+    last_summary: Option<String>,
 }
 
 impl Agent {
@@ -214,6 +222,8 @@ impl Agent {
             last_usage: None,
             compaction: CompactionSettings::default(),
             compaction_enabled: true,
+            compaction_window_pinned: false,
+            last_summary: None,
         }
     }
 
@@ -382,9 +392,18 @@ impl Agent {
         self.follow_ups.clone()
     }
 
-    /// Override the compaction settings (Plan 028).
+    /// Override the compaction settings (Plan 028). Plan 031: an explicit
+    /// override also pins `context_window` — later response metadata no
+    /// longer adjusts it.
     pub fn set_compaction_settings(&mut self, s: CompactionSettings) {
         self.compaction = s;
+        self.compaction_window_pinned = true;
+    }
+
+    /// The current compaction settings (Plan 031: the window may have been
+    /// refreshed from response metadata — tests assert on the live value).
+    pub fn compaction_settings(&self) -> &CompactionSettings {
+        &self.compaction
     }
 
     /// Enable/disable auto-compaction (Plan 028; on by default).
@@ -400,6 +419,135 @@ impl Agent {
             on_event(StreamEvent::Warning {
                 text: format!("cancelled: {dropped} steering message(s) dropped"),
             });
+        }
+    }
+
+    /// Compact now and report via a Warning (Plan 031: shared by the pre-run
+    /// threshold check and the overflow-recovery path). Updates `last_summary`
+    /// so the next compaction can use the incremental UPDATE template.
+    /// Returns false when compaction failed (caller keeps the original
+    /// memory).
+    async fn try_compact(
+        &mut self,
+        on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+        reason: &str,
+    ) -> bool {
+        let model = {
+            let pinned = self.role.model();
+            if !pinned.is_empty() {
+                pinned.to_string()
+            } else {
+                format!(
+                    "tier:{}",
+                    self.role.model_tier().display_name().to_ascii_lowercase()
+                )
+            }
+        };
+        let est = compaction::estimate_tokens(
+            &self.memory.messages(),
+            self.last_usage.as_ref(),
+        );
+        match compaction::compact(
+            &self.memory,
+            &self.client,
+            &model,
+            &self.compaction,
+            self.last_summary.as_deref(),
+        )
+        .await
+        {
+            Ok((next, summary)) => {
+                self.memory = next;
+                self.last_summary = Some(summary);
+                let text = if reason == "overflow" {
+                    format!("context overflow recovered, compacted and retried (was ~{est} tokens)")
+                } else {
+                    format!("context compacted (estimated {est} tokens)")
+                };
+                on_event(StreamEvent::Warning { text });
+                true
+            }
+            Err(e) => {
+                tracing::warn!("compaction failed, continuing: {e}");
+                on_event(StreamEvent::Warning {
+                    text: format!("compaction skipped: {e}"),
+                });
+                false
+            }
+        }
+    }
+
+    /// Issue this turn's LLM request with overflow recovery (Plan 031): when
+    /// the call fails with a context-overflow error — either as a transport
+    /// error or in-band as `resp.error` — compact the memory and retry this
+    /// turn's request **once** against the compacted history (bounded, no
+    /// loop). A second overflow propagates as an error.
+    async fn request_with_recovery(
+        &mut self,
+        on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
+    ) -> Result<CompletionResponse, AgentError> {
+        let mut req = self.build_request();
+        let mut retried = false;
+        loop {
+            let resp = {
+                let on_delta = on_event.clone();
+                self.client
+                    .complete_stream(&req, Arc::new(move |ev| {
+                        let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
+                            match ty {
+                                "reasoning" => {
+                                    on_delta(StreamEvent::Thinking { text: t.to_string() });
+                                }
+                                _ => {
+                                    on_delta(StreamEvent::Delta { text: t.to_string() });
+                                }
+                            }
+                        }
+                    }))
+                    .await
+            };
+            match resp {
+                Err(e) => {
+                    let text = e.to_string();
+                    if !retried
+                        && self.compaction_enabled
+                        && compaction::is_context_overflow(&text)
+                    {
+                        if self.try_compact(on_event, "overflow").await {
+                            retried = true;
+                            req = self.build_request();
+                            continue;
+                        }
+                    }
+                    return Err(AgentError::from(e));
+                }
+                Ok(resp) => {
+                    if let Some(err) = &resp.error {
+                        if !retried
+                            && self.compaction_enabled
+                            && compaction::is_context_overflow(err)
+                        {
+                            if self.try_compact(on_event, "overflow").await {
+                                retried = true;
+                                req = self.build_request();
+                                continue;
+                            }
+                        }
+                        on_event(StreamEvent::Error { message: err.clone() });
+                        return Err(AgentError::Config(err.clone()));
+                    }
+                    // Plan 031: refresh the compaction window from the model
+                    // that actually served this response (tier fallback may
+                    // swap in a different-window model between turns).
+                    if let Some(meta) = &resp.model_meta {
+                        if !self.compaction_window_pinned {
+                            self.compaction.context_window = meta.context_window as usize;
+                        }
+                    }
+                    return Ok(resp);
+                }
+            }
         }
     }
 
@@ -436,31 +584,7 @@ impl Agent {
                 self.last_usage.as_ref(),
             );
             if compaction::should_compact(est, &self.compaction) {
-                let model = {
-                    let pinned = self.role.model();
-                    if !pinned.is_empty() {
-                        pinned.to_string()
-                    } else {
-                        format!(
-                            "tier:{}",
-                            self.role.model_tier().display_name().to_ascii_lowercase()
-                        )
-                    }
-                };
-                match compaction::compact(&self.memory, &self.client, &model, &self.compaction).await {
-                    Ok(next) => {
-                        self.memory = next;
-                        on_event(StreamEvent::Warning {
-                            text: format!("context compacted (estimated {est} tokens)"),
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!("compaction failed, continuing: {e}");
-                        on_event(StreamEvent::Warning {
-                            text: format!("compaction skipped: {e}"),
-                        });
-                    }
-                }
+                self.try_compact(&on_event, "threshold").await;
             }
         }
 
@@ -515,28 +639,11 @@ impl Agent {
                 });
             }
 
-            let req = self.build_request();
-
             // Single streaming request — text deltas + tool_calls both surface
-            // from the daemon's SSE stream (Plan 006). No more double request.
-            // In the non-streaming path the per-chunk delta is discarded.
-            let on_delta = on_event.clone();
-            let resp = self
-                .client
-                .complete_stream(&req, Arc::new(move |ev| {
-                    let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
-                        match ty {
-                            "reasoning" => {
-                                on_delta(StreamEvent::Thinking { text: t.to_string() });
-                            }
-                            _ => {
-                                on_delta(StreamEvent::Delta { text: t.to_string() });
-                            }
-                        }
-                    }
-                }))
-                .await?;
+            // from the daemon's SSE stream (Plan 006). In the non-streaming
+            // path the per-chunk delta is discarded. Plan 031: wrapped in
+            // overflow recovery (compact + one retry) inside the helper.
+            let resp = self.request_with_recovery(&on_event).await?;
 
             // Cancel checkpoint 2: stop after the LLM responded, before
             // consuming it. (The response was fully received — no partial
@@ -550,12 +657,6 @@ impl Agent {
                 return Ok(result);
             }
 
-            // Propagate a business-level error carried in a 200 response
-            // (review-003 S3: previously only run_stream checked this).
-            if let Some(err) = &resp.error {
-                on_event(StreamEvent::Error { message: err.clone() });
-                return Err(AgentError::Config(err.clone()));
-            }
             if let Some(u) = &resp.usage {
                 result.total_tokens += u.total_tokens() as u64;
                 self.last_usage = Some(u.clone());
@@ -906,6 +1007,7 @@ mod tests {
                     usage: None,
                     model: "mock".into(),
                     error: None,
+                    model_meta: None,
                 });
             }
             Ok(q.remove(0))
@@ -926,6 +1028,7 @@ mod tests {
             usage: None,
             model: "mock".into(),
             error: None,
+            model_meta: None,
         }
     }
 
@@ -941,6 +1044,7 @@ mod tests {
             usage: None,
             model: "mock".into(),
             error: None,
+            model_meta: None,
         }
     }
 

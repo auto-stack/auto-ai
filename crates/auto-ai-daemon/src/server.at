@@ -36,7 +36,7 @@ use.rust axum::Json
 use.rust serde_json
 use.rust serde_json::Value
 
-use ai_config: DaemonConfig, CompletionRequest, CompletionResponse, ModelTier
+use ai_config: DaemonConfig, CompletionRequest, CompletionResponse, ModelMeta, ModelTier
 use pool: ConcurrencyManager
 use provider: ProviderRegistry, AiProvider
 use tracker: UsageTracker
@@ -215,6 +215,42 @@ fn resolve_tier_model(token str, config DaemonConfig) ?str {
     return None
 }
 
+/// Plan 031: metadata of the model that actually served a request, looked up
+/// from the daemon config by (provider, model id). None when the config
+/// doesn't declare a context window for the model — we never guess a window,
+/// so consumers keep their own default rather than trusting a fabricated one.
+fn model_meta_for(config DaemonConfig, provider str, model_id str) ?ModelMeta {
+    is config.providers.get(provider) {
+        Some(pc) -> {
+            for m in pc.models {
+                if m.id == model_id {
+                    is m.context_window {
+                        Some(window) -> {
+                            return Some(ModelMeta(
+                                id: model_id.to_string(),
+                                context_window: window,
+                                max_output_tokens: m.max_output_tokens
+                            ))
+                        },
+                        None -> return None
+                    }
+                }
+            }
+            return None
+        },
+        None -> return None
+    }
+    return None
+}
+
+/// Plan 031 helper: serving-model meta via a fn-scoped config read (the
+/// RwLockReadGuard's Drop would otherwise keep the state borrow alive past
+/// the streaming branch's move of `state` into streaming_response).
+fn state_model_meta(state @AppState, provider str, model_id str) ?ModelMeta {
+    let cfg = state.cfg()
+    return model_meta_for(cfg, provider, model_id)
+}
+
 /// `POST /v1/chat/completions` — receive a canonical request, resolve a
 /// provider (with tier fallback across the candidate chain), call upstream,
 /// return a canonical response.
@@ -280,7 +316,7 @@ pub fn chat_completions(
     for entry in candidates {
         let provider_name = entry.0
         let model_id = entry.1
-        req.model = model_id
+        req.model = model_id.clone()
 
         // Acquire a permit (bounded wait so a saturated provider fails fast).
         is state.pool.acquire_with_timeout(provider_name, Duration.from_secs(30)).await {
@@ -288,8 +324,11 @@ pub fn chat_completions(
                 is state.registry.get(provider_name) {
                     Some(provider) -> {
                         // Streaming: delegate to the glue SSE bridge (Phase 3.6).
+                        // Plan 031: metadata travels with the ACTUAL serving
+                        // model, in the SSE done tail frame.
                         if req.stream {
-                            return server_glue.streaming_response(state, app_name, provider, req, permit)
+                            let meta = state_model_meta(state, provider_name, model_id)
+                            return server_glue.streaming_response(state, app_name, provider, req, permit, meta)
                         }
                         // Non-streaming: try the call, fall back on retryable.
                         is provider.complete(req).await {
@@ -298,7 +337,12 @@ pub fn chat_completions(
                                     Some(u) -> state.tracker.record_full(app_name.as_str(), u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens),
                                     None -> {}
                                 }
-                                return ok_response(resp)
+                                // Plan 031: embed the serving model's metadata
+                                // so the client can adapt its context-window
+                                // math (tier fallback may have swapped models).
+                                var resp2 = resp
+                                resp2.model_meta = state_model_meta(state, provider_name, model_id)
+                                return ok_response(resp2)
                             },
                             Err(e) -> {
                                 // Plan 028: quota/billing exhaustion is

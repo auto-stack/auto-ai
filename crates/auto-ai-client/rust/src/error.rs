@@ -20,7 +20,7 @@ pub enum ClientError {
 
 
 impl ClientError {
-    fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             ClientError::DaemonUnavailable => return "daemon unavailable".to_string(),
             ClientError::Http(e) => return format!("HTTP error: {}", e),

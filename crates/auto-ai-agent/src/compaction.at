@@ -41,6 +41,62 @@ pub fn should_compact(tokens uint, s CompactionSettings) bool {
     return false
 }
 
+/// True when an LLM error message indicates the request overflowed the
+/// model's context window (Plan 031, pi's OVERFLOW_PATTERNS — cut down to
+/// the three provider families we speak + generic error-code forms).
+/// Deliberately conservative: an unknown error returns false (the run fails,
+/// same as today); a false positive only costs one extra compaction attempt.
+/// Rate limiting / throttling look-alikes never count (pi's NON_OVERFLOW).
+pub fn is_context_overflow(message str) bool {
+    let lower = message.to_lowercase()
+    if lower.contains("rate limit") {
+        return false
+    }
+    if lower.contains("too many requests") {
+        return false
+    }
+    if lower.contains("throttling") {
+        return false
+    }
+    // Anthropic.
+    if lower.contains("prompt is too long") {
+        return true
+    }
+    if lower.contains("request_too_large") {
+        return true
+    }
+    // OpenAI + OpenAI-compatible proxies (LiteLLM, vLLM, ...).
+    if lower.contains("exceeds the context window") {
+        return true
+    }
+    if lower.contains("exceeds the model's maximum context length") {
+        return true
+    }
+    if lower.contains("exceeds model's maximum context length") {
+        return true
+    }
+    if lower.contains("maximum context length") {
+        return true
+    }
+    if lower.contains("context_length_exceeded") {
+        return true
+    }
+    // Ollama / llama.cpp / LM Studio.
+    if lower.contains("exceeds the available context size") {
+        return true
+    }
+    if lower.contains("exceeded max context length") {
+        return true
+    }
+    if lower.contains("exceeds the context length") {
+        return true
+    }
+    if lower.contains("greater than the context length") {
+        return true
+    }
+    return false
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // token estimation
 // ═══════════════════════════════════════════════════════════════════════════
@@ -147,19 +203,176 @@ pub fn find_cut_point(messages List<Message>, keep_recent_tokens uint) int {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// machine file manifest (Plan 031)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// File paths touched by the conversation (pi's FileOperations — mechanically
+/// extracted from the wire's tool_use blocks, never from LLM output).
+/// Auto has no Set, so each bucket is a dedup'd List<str>.
+pub type FileOps {
+    /// Files read but not modified.
+    read List<str>
+    /// Files replaced by full writes.
+    written List<str>
+    /// Files modified by targeted edits.
+    edited List<str>
+}
+
+/// True when the list already holds the path (manual dedup — Auto's List has
+/// no contains).
+fn list_has(list @List<str>, item str) bool {
+    for x in list {
+        if x == item {
+            return true
+        }
+    }
+    return false
+}
+
+/// Extract file operations from wire messages by mechanically scanning
+/// assistant tool_use blocks (pi's extractFileOpsFromMessage + computeFileLists).
+/// Tool names match loosely ("read"/"write"/"edit"/"patch" substrings) and the
+/// path comes from the path / file_path / notebook_path argument fields. A
+/// file both read and modified counts as modified only.
+pub fn extract_file_ops(messages List<Message>) FileOps {
+    var ops = FileOps(read: [], written: [], edited: [])
+    for m in messages {
+        if m.role == "assistant" {
+            for block in m.content {
+                is block {
+                    ContentBlock.ToolUse(name, _id, input) -> {
+                        var path = json.get_str(input, "path")
+                        if path.is_empty() {
+                            path = json.get_str(input, "file_path")
+                        }
+                        if path.is_empty() {
+                            path = json.get_str(input, "notebook_path")
+                        }
+                        if path.is_empty() == false {
+                            let lower = name.to_lowercase()
+                            if lower.contains("read") {
+                                if list_has(ops.read, path) == false {
+                                    ops.read.push(path.to_string())
+                                }
+                            } else {
+                                if lower.contains("edit") || lower.contains("patch") {
+                                    if list_has(ops.edited, path) == false {
+                                        ops.edited.push(path.to_string())
+                                    }
+                                } else {
+                                    if lower.contains("write") {
+                                        if list_has(ops.written, path) == false {
+                                            ops.written.push(path.to_string())
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    _ -> {}
+                }
+            }
+        }
+    }
+    // A file that was also modified is not "read-only" — drop it from read.
+    var kept List<str> = []
+    for f in ops.read {
+        var modified = false
+        for m2 in ops.edited {
+            if m2 == f {
+                modified = true
+            }
+        }
+        for m3 in ops.written {
+            if m3 == f {
+                modified = true
+            }
+        }
+        if modified == false {
+            kept.push(f)
+        }
+    }
+    ops.read = kept
+    return ops
+}
+
+/// Render the machine-extracted file manifest (pi's formatFileOperations):
+/// read-files / modified-files blocks, empty string when nothing was touched.
+/// This is spliced into the summary anchor verbatim — the LLM's own file list
+/// is at best a paraphrase of this ground truth.
+pub fn format_file_operations(ops FileOps) str {
+    var reads = ops.read
+    reads.sort_by_key((f) => f)
+    var edited = ops.edited
+    edited.sort_by_key((f) => f)
+    var written = ops.written
+    written.sort_by_key((f) => f)
+    var modified List<str> = []
+    for e in edited {
+        modified.push(e)
+    }
+    for w in written {
+        modified.push(w)
+    }
+    modified.sort_by_key((f) => f)
+    var sections List<str> = []
+    if reads.is_empty() == false {
+        var block = "<read-files>
+"
+        for f in reads {
+            block = block + f + "
+"
+        }
+        sections.push(block + "</read-files>")
+    }
+    if modified.is_empty() == false {
+        var mblock = "<modified-files>
+"
+        for f2 in modified {
+            mblock = mblock + f2 + "
+"
+        }
+        sections.push(mblock + "</modified-files>")
+    }
+    if sections.is_empty() {
+        return ""
+    }
+    var out = ""
+    var first = true
+    for sec in sections {
+        if first {
+            first = false
+        } else {
+            out = out + "
+
+"
+        }
+        out = out + sec
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // compact
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// System prompt for the summarizer (pi's structured template).
 fn summary_system_prompt() str {
-    return "You compress a coding-agent conversation history. Produce a terse markdown summary with exactly these sections:\n## Goal\n## Progress\n## Key Decisions\n## Next Steps\nThen a final section '## Files' listing every file path that was read, written, or edited (one per line). Never invent facts; omit sections with no content."
+    return "You compress a coding-agent conversation history. Produce a terse markdown summary with exactly these sections:\n## Goal\n## Progress\n## Key Decisions\n## Next Steps\nNever invent facts; omit sections with no content. Do not list files — the file manifest is appended mechanically."
+}
+
+/// Incremental-update instructions (pi's UPDATE_SUMMARIZATION_PROMPT): used
+/// when a previous summary exists. The previous summary is embedded in the
+/// user message; the model rewrites Goal/Progress/Decisions in place.
+fn update_system_prompt() str {
+    return "You update an existing conversation summary with new messages. PRESERVE all still-relevant information from the previous summary; ADD new progress, decisions, and context; move finished items to done; drop what is no longer relevant. Keep the same sections:\n## Goal\n## Progress\n## Key Decisions\n## Next Steps\nNever invent facts; omit sections with no content. Do not list files — the file manifest is appended mechanically."
 }
 
 /// Compact the memory: the pre-cut turns are summarized by an independent LLM
 /// request (isolated from the main conversation), and the new Memory keeps
 /// [system messages, summary anchor, recent tail]. On failure the original
 /// memory is preserved (an error is returned; the caller falls back to trim).
-pub fn compact(memory Memory, client @Client, model str, settings CompactionSettings) ~Result<Memory, AgentError> {
+pub fn compact(memory Memory, client @Client, model str, settings CompactionSettings, previous_summary ?str) ~Result<(Memory, str), AgentError> {
     let msgs = memory.messages()
     let cut = find_cut_point(msgs.clone(), settings.keep_recent_tokens)
     if cut < 1 {
@@ -184,15 +397,36 @@ pub fn compact(memory Memory, client @Client, model str, settings CompactionSett
         i = i + 1
     }
 
+    // Machine file manifest for the summarized range — spliced into the
+    // anchor verbatim so it never depends on the model obeying the template.
+    var prefix List<Message> = []
+    var pi int = 0
+    for pi < cut {
+        prefix.push(msgs[pi])
+        pi = pi + 1
+    }
+    let file_manifest = format_file_operations(extract_file_ops(prefix))
+
+    // Fresh summary vs incremental update (Plan 031).
+    var system = summary_system_prompt()
+    var user_msg = "Summarize this conversation history for continuation:\n\n" + transcript
+    is previous_summary {
+        Some(prev) -> {
+            system = update_system_prompt()
+            user_msg = "Update the existing summary with this new conversation history.\n\n<previous-summary>\n" + prev + "\n</previous-summary>\n\n<conversation>\n" + transcript + "\n</conversation>\n\nProduce the updated summary now."
+        },
+        None -> {}
+    }
+
     var blocks List<ContentBlock> = []
-    let tb = ContentBlock.Text(f"Summarize this conversation history for continuation:\n\n${transcript}")
+    let tb = ContentBlock.Text(user_msg)
     blocks.push(tb)
     let req = CompletionRequest(
         model: model.to_string(),
         messages: [Message(role: "user", content: blocks)],
         max_tokens: None,
         temperature: Some(0.0),
-        system_prompt: Some(summary_system_prompt()),
+        system_prompt: Some(system),
         tools: [],
         stream: false,
         preferred_provider: None
@@ -201,6 +435,13 @@ pub fn compact(memory Memory, client @Client, model str, settings CompactionSett
     is resp.error {
         Some(err) -> return Err(AgentError.Config(f"compaction summary error: ${err}")),
         None -> {}
+    }
+
+    // The stored summary = the model's narrative + the machine manifest (the
+    // manifest is ground truth; the model's file list is a paraphrase at best).
+    var summary = resp.content.trim().to_string()
+    if file_manifest.is_empty() == false {
+        summary = summary + "\n\n" + file_manifest
     }
 
     // Rebuild: system messages from the prefix, the summary as a user anchor,
@@ -214,11 +455,11 @@ pub fn compact(memory Memory, client @Client, model str, settings CompactionSett
         }
         j = j + 1
     }
-    mut_memory.add("user", f"[Compacted conversation summary — older turns were summarized to save context]\n\n${resp.content}".as_str())
+    mut_memory.add("user", f"[Compacted conversation summary — older turns were summarized to save context]\n\n${summary}".as_str())
     var k int = cut
     for k < msgs.len() as int {
         mut_memory.add_message(msgs[k])
         k = k + 1
     }
-    return Ok(mut_memory)
+    return Ok((mut_memory, summary))
 }

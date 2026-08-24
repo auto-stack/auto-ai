@@ -84,6 +84,58 @@ ext LlmError {
         }
     }
 
+    /// Plan 031: the request overflowed the model's context window. The
+    /// daemon itself doesn't recover (compaction lives in the agent); this
+    /// classification exists so callers/tests can recognize the class.
+    /// Conservative, mirroring the agent's compaction.is_context_overflow.
+    pub fn is_context_overflow() bool {
+        var message = ""
+        is self {
+            LlmError.Upstream(_status, msg, _retryable) -> message = msg.to_string(),
+            LlmError.Api(msg) -> message = msg.to_string(),
+            LlmError.Http(msg) -> message = msg.to_string(),
+            LlmError.Timeout(msg) -> message = msg.to_string(),
+            _ -> return false
+        }
+        let lower = message.to_lowercase()
+        // Rate limiting / throttling look-alikes are NOT overflow.
+        if lower.contains("rate limit") {
+            return false
+        }
+        if lower.contains("too many requests") {
+            return false
+        }
+        if lower.contains("throttling") {
+            return false
+        }
+        // The three provider families + generic error-code forms.
+        if lower.contains("prompt is too long") {
+            return true
+        }
+        if lower.contains("request_too_large") {
+            return true
+        }
+        if lower.contains("exceeds the context window") {
+            return true
+        }
+        if lower.contains("maximum context length") {
+            return true
+        }
+        if lower.contains("context_length_exceeded") {
+            return true
+        }
+        if lower.contains("exceeds the available context size") {
+            return true
+        }
+        if lower.contains("exceeded max context length") {
+            return true
+        }
+        if lower.contains("greater than the context length") {
+            return true
+        }
+        return false
+    }
+
     /// Classify an upstream non-success HTTP status into the right variant:
     /// 429 → RateLimited; 5xx → retryable Upstream; other 4xx → non-retryable
     /// Upstream. Used by both providers' status-check path.
