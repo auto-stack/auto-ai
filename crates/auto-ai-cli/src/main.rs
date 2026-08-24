@@ -226,15 +226,36 @@ pub fn build_banner(role: &str) -> String {
         }
     };
 
-    format!(
-        "┌─ auto-ai-cli ───────────────────────────────\n\
-         │  Directory: {dir}\n\
-         │  Session:   {session}\n\
-         │  Model:     {model_line}\n\
-         │  Daemon:    {daemon}\n\
-         │  Version:   {version}\n\
-         └──────────────────────────────────────────────"
-    )
+    // Closed rounded box: every row — borders included — is padded to one
+    // common total width (`box_w`), so the right edge lines up regardless of
+    // content lengths. Body row = │ + 2sp + inner + 2sp + │ → box_w = inner + 6.
+    use unicode_width::UnicodeWidthStr;
+    let rows = [
+        format!("Directory: {dir}"),
+        format!("Session:   {session}"),
+        format!("Model:     {model_line}"),
+        format!("Daemon:    {daemon}"),
+        format!("Version:   {version}"),
+    ];
+    let title = " auto-ai-cli ";
+    let inner = rows
+        .iter()
+        .map(|r| r.width())
+        .chain(std::iter::once(title.len() + 2))
+        .max()
+        .unwrap_or(0);
+    let box_w = inner + 6;
+    let top = format!(
+        "╭─{title}{}╮\n",
+        "─".repeat(box_w - 2 - 1 - title.len())
+    );
+    let mut out = top;
+    for r in &rows {
+        let pad = " ".repeat(inner - r.width());
+        out.push_str(&format!("│  {r}{pad}  │\n"));
+    }
+    out.push_str(&format!("╰{}╯", "─".repeat(box_w - 2)));
+    out
 }
 
 /// Build an agent from a role name, resolving user overrides when available.

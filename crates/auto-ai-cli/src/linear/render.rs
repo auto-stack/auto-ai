@@ -31,8 +31,10 @@ pub const POLL_MS: Duration = Duration::from_millis(33);
 
 const SPINNER_FRAMES: [&str; 3] = [".", "..", "..."];
 const SPINNER_INTERVAL: Duration = Duration::from_millis(400);
-/// Max result-tail lines shown under a committed tool summary (Plan 029 §2.3).
-const TOOL_RESULT_TAIL: usize = 10;
+/// Max result-tail lines shown under a committed tool summary before
+/// folding kicks in (real-terminal feedback: 2 was too aggressive — a
+/// routine `ls` got folded; 41 keeps typical listings fully visible).
+const TOOL_RESULT_TAIL: usize = 41;
 
 pub type LinearTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -63,8 +65,9 @@ pub fn tool_style(tool: &str) -> (&'static str, Color) {
 
 // ── commit-block builders (archived into scrollback once, never redrawn) ─────
 
-/// A user message: `❯ text` (cyan). The marker distinguishes plain sends
-/// (`❯`), in-run steering (`⇢`), and queued follow-ups (`↪`).
+/// A user message: `> text` (cyan). The marker distinguishes plain sends
+/// (`>`), in-run steering (`»`), and queued follow-ups (`»»`) — all narrow
+/// glyphs so the text column stays aligned (Plan 030 R1).
 pub fn user_lines(text: &str, marker: &str) -> Vec<Line<'static>> {
     let mut out = vec![Line::raw(String::new())];
     let marker_w = marker.width();
@@ -82,9 +85,10 @@ pub fn user_lines(text: &str, marker: &str) -> Vec<Line<'static>> {
 pub fn thinking_lines(text: &str) -> Vec<Line<'static>> {
     let mut out = vec![Line::raw(String::new())];
     out.push(Line::from(vec![
-        Span::styled("💭 ", dim()),
+        Span::styled("~ ", dim()),
         Span::styled("思考", dim_italic()),
     ]));
+    out.push(Line::raw(String::new()));
     for l in text.lines() {
         out.push(Line::styled(format!("  {l}"), dim()));
     }
@@ -92,29 +96,33 @@ pub fn thinking_lines(text: &str) -> Vec<Line<'static>> {
 }
 
 /// The final answer: markdown rendered exactly once at commit time
-/// (Plan 029 §2.3 — no per-frame re-parsing, unlike the old TUI).
+/// (Plan 029 §2.3 — no per-frame re-parsing, unlike the old TUI). Body is
+/// indented 2 columns under the header (Plan 030 R2).
 pub fn answer_lines(text: &str) -> Vec<Line<'static>> {
     let mut out = vec![Line::raw(String::new())];
     out.push(Line::from(vec![
-        Span::styled("● ", Style::default().fg(Color::Green)),
+        Span::styled("* ", Style::default().fg(Color::Green)),
         Span::styled(
             "回答",
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         ),
     ]));
+    out.push(Line::raw(String::new()));
     for l in crate::markdown::render_lines(text) {
-        out.push(l);
+        let mut line = l;
+        line.spans.insert(0, Span::raw("  "));
+        out.push(line);
     }
     out
 }
 
 /// A completed tool call: colored summary line (with its `/expand` id) plus
-/// a short result tail (Plan 029 §2.3).
+/// a short result tail (Plan 030 R4: 2 lines by default).
 pub fn tool_lines(tool: &str, args_summary: &str, result: &str, id: u64) -> Vec<Line<'static>> {
     let (verb, color) = tool_style(tool);
     let mut out = vec![Line::raw(String::new())];
     out.push(Line::from(vec![
-        Span::styled("⚙  ", Style::default().fg(color)),
+        Span::styled("+ ", Style::default().fg(color)),
         Span::styled(verb.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {args_summary}"), Style::default().fg(Color::Gray)),
         Span::styled(
@@ -122,42 +130,67 @@ pub fn tool_lines(tool: &str, args_summary: &str, result: &str, id: u64) -> Vec<
             dim(),
         ),
     ]));
+    out.push(Line::raw(String::new()));
     for l in result.lines().take(TOOL_RESULT_TAIL) {
         out.push(Line::styled(format!("  │ {l}"), dim()));
     }
     let extra = result.lines().count().saturating_sub(TOOL_RESULT_TAIL);
     if extra > 0 {
-        out.push(Line::styled(format!("  … (+{extra} 行 · /expand {id})"), dim()));
+        out.push(Line::styled(format!("  … +{extra} 行 · /expand {id}"), dim()));
     }
     out
 }
 
-/// An advisory (near-turn-cap etc.) — committed as a dim-yellow line so it
-/// stays in history without being mistaken for the model's answer.
+/// An advisory (near-turn-cap etc.) — dimmed so it can't be mistaken for the
+/// model's answer. Committed (kept in history) rather than transient.
 pub fn warning_lines(text: &str) -> Vec<Line<'static>> {
-    vec![Line::styled(text.to_string(), Style::default().fg(Color::Yellow))]
+    vec![
+        Line::raw(String::new()),
+        Line::styled(format!("! {text}"), Style::default().fg(Color::Yellow)),
+    ]
 }
 
 pub fn error_lines(text: &str) -> Vec<Line<'static>> {
-    let mut out = vec![Line::raw(String::new())];
+    let mut out = vec![
+        Line::raw(String::new()),
+        Line::from(vec![Span::styled(
+            "× 错误",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]),
+    ];
     for l in text.lines() {
         out.push(Line::styled(format!("  {l}"), Style::default().fg(Color::Red)));
     }
     out
 }
 
-/// A turn-end divider (thin rule with usage).
+/// A turn-end divider (thin rule with usage). Leading blank separates it
+/// from the previous block's content; the next block brings its own.
 pub fn divider_lines(text: &str) -> Vec<Line<'static>> {
-    vec![Line::styled(text.to_string(), dim())]
+    vec![
+        Line::raw(String::new()),
+        Line::styled(text.to_string(), dim()),
+    ]
 }
 
-/// `/expand <id>`: re-commit a tool call's full result as a dim block
-/// appended into the linear flow (reference-style append, Plan 029 §6.2).
-pub fn expand_lines(result: &str, id: u64) -> Vec<Line<'static>> {
+/// `/expand <id>`: re-commit a tool call's full result, replicating the
+/// original summary header plus a "完整结果" suffix (the expanded block
+/// must name which tool it was).
+pub fn expand_lines(tool: &str, args_summary: &str, result: &str, id: u64) -> Vec<Line<'static>> {
     const MAX_LINES: usize = 300;
+    let (verb, color) = tool_style(tool);
     let mut out = vec![
         Line::raw(String::new()),
-        Line::styled(format!("#{id} 工具完整结果"), dim()),
+        Line::from(vec![
+            Span::styled("+ ", Style::default().fg(color)),
+            Span::styled(verb.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {args_summary}"), Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!(" · ✓ {} 行 · #{id} · 完整结果", result.lines().count().max(1)),
+                dim(),
+            ),
+        ]),
+        Line::raw(String::new()),
     ];
     for l in result.lines().take(MAX_LINES) {
         out.push(Line::styled(format!("  │ {l}"), dim()));
@@ -199,14 +232,14 @@ fn build_preview(s: &super::LinearState, height: usize) -> Vec<Line<'static>> {
     if let Some((tool, args)) = &s.running_tool {
         let (verb, color) = tool_style(tool);
         v.push(Line::from(vec![
-            Span::styled("⚙ ", Style::default().fg(Color::Yellow)),
+            Span::styled("+ ", Style::default().fg(Color::Yellow)),
             Span::styled(verb.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
             Span::styled(format!(" {args} {}…", s.spinner_str()), Style::default().fg(Color::Gray)),
         ]));
     }
     if !s.active_thinking.trim().is_empty() {
         for l in tail_lines(&s.active_thinking, 30) {
-            v.push(Line::styled(format!("♪ {l}"), dim_italic()));
+            v.push(Line::styled(format!("~ {l}"), dim_italic()));
         }
     }
     if !s.active_answer.trim().is_empty() {
@@ -217,7 +250,7 @@ fn build_preview(s: &super::LinearState, height: usize) -> Vec<Line<'static>> {
     if v.is_empty() {
         if s.is_streaming {
             v.push(Line::styled(
-                format!("♪ 思考中 {}", s.spinner_str()),
+                format!("~ 思考中 {}", s.spinner_str()),
                 dim(),
             ));
         }
