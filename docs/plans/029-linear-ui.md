@@ -1,7 +1,8 @@
 # Plan 029: auto-ai-cli 交互形态重构——线性输出 + 尾部动态（主屏 inline viewport + 按需模态）
 
 > **状态**：✅ 已实施（2026-08-24，Phase 1/2/3/5/6 落地；Phase 6.5 /tree 挂起（前置条件缺失）、Phase 6.6 人工验证清单待做）
-> **finish-plan 复审（2026-08-25）**：代码逐项核验通过（15 单测 + clippy 基线一致，本会话重跑）；Phase 6.5 延期项已登记 KNOWN-DEBT；**归档前置条件 = Phase 6.6 人工验证清单完成**（三终端原生复制/resize/IME//clear 重锚/流式性能体感，自动化覆盖不到）。
+> **finish-plan 复审（2026-08-25）**：代码逐项核验通过（15 单测 + clippy 基线一致，本会话重跑）；Phase 6.5 延期项已登记 KNOWN-DEBT。
+> **Phase 6.6 冒烟（2026-08-25，agent 驱动 Windows Terminal 真机）**：✅ CJK 提交渲染（完整回合 `~ 思考`→`+ 目录 #1`→`+ 读取 #2`→`* 回答`→`──── 回合结束`，中文正文无"字 字 字"错乱——insert_before 补丁生效）；✅ banner 圆角框右侧对齐；✅ `/clear` 清屏 + 回滚区 Purge（滚轮回看无残留）+ viewport 重锚；✅ resize（Win+左/右贴靠宽度减半再恢复，尾部重绘正常、无崩溃）；✅ 退出收尾干净（提示符正常落位、无 UI 残留）。**仍需人工**：鼠标框选复制（含跨块多行）、Windows IME 候选窗锚定（AUTOAI_HARDWARE_CURSOR=1）、VSCode 终端 / tmux 环境矩阵、流式性能体感。
 > **仓库**：auto-ai（auto-ai-cli 主改；agent / ai-config / daemon / musk 零改动——本计划是 PLAN-026 事件模型的消费端）
 > **实施记录与计划偏差**（finish-plan 复审 2026-08-24，复审后以 Phase 6 补全）：
 > 1. ~~follow_up 未接线~~ → **Phase 6.1 已补**：终答流式期（无运行工具且 active_answer 非空）Enter → `follow_up()`（回合自然结束后复活），其余流式期 → `steer()`（工具批后注入）；标记 `⇢`/`↪` 区分。
