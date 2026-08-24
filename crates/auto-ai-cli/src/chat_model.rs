@@ -290,7 +290,8 @@ impl ChatLog {
 // ── helpers ──────────────────────────────────────────────────────────────
 
 /// Build a short human-readable summary of a tool call's args, by tool name.
-fn format_args_summary(tool: &str, args: &Value) -> String {
+/// Shared with the linear UI's tool summary lines (Plan 029).
+pub fn format_args_summary(tool: &str, args: &Value) -> String {
     match tool {
         "run_command" => args.get("cmd")
             .and_then(|c| c.as_str())
@@ -305,7 +306,9 @@ fn format_args_summary(tool: &str, args: &Value) -> String {
             .map(|p| p.to_string())
             .unwrap_or_default(),
         "search" => {
-            let q = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
+            // NOTE: the tool's schema names the parameter `pattern` (see
+            // tools.rs) — reading `query` here always showed "".
+            let q = args.get("pattern").and_then(|q| q.as_str()).unwrap_or("");
             format!("\"{q}\"")
         }
         "spawn_pipeline" => {

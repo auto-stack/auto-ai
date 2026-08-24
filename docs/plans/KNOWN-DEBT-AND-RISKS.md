@@ -18,6 +18,8 @@
 | — | 已修复 | ~~**a2r 发射形状漂移致 daemon 旧 sed 锚点失配（2026-08-23）**~~ — **当日修复并验收（同上 e29c3b92）**：clone 形状还原（`m.content`/`t.clone()` 复原）、`.length`→`.len()` 映射恢复、record 字面量→`serde_json::json!` 发射、const 推断复原。曾补的 5 条新锚点 sed 与 anthropic.at 的 is_empty/Map 手工构造规避写法均毕业还原（9727528，`.length` + record 字面量原始写法重生成 0 错）。 | `crates/auto-ai-daemon/retranspile.sh`（2026-08-23 段已删）、`crates/auto-ai-daemon/src/anthropic.at:125` |
 | — | 已知限制 | agent/retranspile.sh 现存 2 条独立 sed：① SOUL const 类型修复（comptime `read_text` 产字符串字面量但 a2r 推断 `/* unknown */`，sed 改 `&str`，Plan 016 3.1）；② correct_handoff_target 借用反转（a2r 把 `mut eng` 参数渲染成 `&mut`，sed 改回按值，Plan 387 §16 aftermath）。另：handoff.at 的 `routes`→`entries` 改名规避（`routes` 是 .at 保留字，同 TierRouting 先例）。 | `crates/auto-ai-agent/retranspile.sh`（L159/L178 段）、`crates/auto-ai-agent/src/orchestration/handoff.at:73` |
 
+| 029 | 已知限制 | **ratatui 0.29 `insert_before` 宽字符 bug**（上游）：inline viewport 的提交路径 `draw_lines` 跳过 `Buffer::diff` 直喂 `CrosstermBackend::draw`，宽字符的续接 cell（reset 后是空格）被逐个打印，覆盖每个 CJK 字形的右半——中文提交内容全部显示为 "字 字 字"。已用本地补丁规避：`linear/term.rs` 的 `sanitize_commit_buffer` 在提交前把续接 cell 的符号清空（`Print("")` 不输出，终端自身光标推进处理宽度）。行尾 padding cell 不能同样清空：insert_before 滚动后画到的行可能残留旧屏内容，`Print("")` 不输出会让残迹透出（2026-08-24 实测回归，已撤销）。**解除条件**：ratatui 修复 insert_before 对 multi-column grapheme 的处理（或升级 0.30+ 验证）后删除该补丁。 | `crates/auto-ai-cli/src/linear/term.rs`（sanitize_commit_buffer + 单测）|
+
 ## 📋 未来增强
 
 | Plan | 类别 | 描述 | 参考 |

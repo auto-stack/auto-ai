@@ -108,6 +108,12 @@ impl Tool for Search {
     }
     async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let pattern = args["pattern"].as_str().ok_or_else(|| ToolError::Args("missing 'pattern'".into()))?;
+        if pattern.trim().is_empty() {
+            // An empty regex matches every line of every file — almost never
+            // what the model wants. Fail fast so it retries with a real
+            // pattern instead of paying for a full-tree scan.
+            return Err(ToolError::Args("'pattern' must not be empty".into()));
+        }
         let path = args["path"].as_str().unwrap_or(".");
         let output = if cfg!(windows) {
             std::process::Command::new("cmd").args(["/C", &format!("findstr /S /N /R \"{pattern}\" {path}\\*")]).output()

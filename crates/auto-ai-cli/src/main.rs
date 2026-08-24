@@ -1,7 +1,8 @@
 //! auto-ai-cli — interactive agent demo for the AutoOS AI stack.
 //!
 //! Usage:
-//!   auto-ai-cli chat                    TUI chat (assistant auto-routes)
+//!   auto-ai-cli chat                    Linear chat UI (Plan 029; default)
+//!   auto-ai-cli chat --mode fullscreen  Legacy fullscreen TUI
 //!   auto-ai-cli chat --mode relay       Force a specific execution mode
 //!   auto-ai-cli run "<task>"            One-shot task (default role: assistant)
 //!   auto-ai-cli pipeline "<task>"       Multi-agent pipeline demo
@@ -9,21 +10,23 @@
 //!
 //! Prerequisites: `aaid` must be running (cargo run -p auto-ai-daemon).
 
+pub mod agent_task;
 pub mod chat_model;
+pub mod linear;
 pub mod markdown;
 pub mod session;
 pub mod tui;
 pub mod tools;
 mod spawn_pipeline;
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use auto_ai_agent::{
-    Agent, Client, StreamEvent, Tool,
+    Agent, Client, StreamEvent,
     AgentFactory, FlowSpec, FlowStep, GateType, GateDecision,
     HandoffDocument, PipelineDriver, PipelineEvent, RoleRegistry,
 };
@@ -94,18 +97,33 @@ fn main() {
         }
         Cmd::Chat { mode, continue_last } => {
             let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
-            // Normal mode → TUI. Forced mode → legacy text REPL.
-            if mode == "normal" {
-                // Launch TUI (optionally restoring the last session).
-                if let Err(e) = rt.block_on(tui::run_tui_chat("assistant", continue_last)) {
-                    eprintln!("auto-ai-cli: {e}");
-                    std::process::exit(1);
+            match mode.as_str() {
+                // Legacy forced-mode text REPL.
+                "superpowers" | "relay" => {
+                    if let Err(e) = rt.block_on(chat_loop(&mode)) {
+                        eprintln!("auto-ai-cli: {e}");
+                        std::process::exit(1);
+                    }
                 }
-            } else {
-                // Legacy text-based chat for superpowers/relay modes.
-                if let Err(e) = rt.block_on(chat_loop(&mode)) {
-                    eprintln!("auto-ai-cli: {e}");
-                    std::process::exit(1);
+                // Legacy fullscreen TUI (Plan 029 keeps it behind a flag).
+                "fullscreen" => {
+                    if let Err(e) = rt.block_on(tui::run_tui_chat("assistant", continue_last)) {
+                        eprintln!("auto-ai-cli: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                // Default ("normal"/"linear"): linear UI on a real TTY; print
+                // mode otherwise (piped/CI — Plan 029 §2.8).
+                _ => {
+                    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+                        if let Err(e) = rt.block_on(linear::run_linear_chat("assistant", continue_last)) {
+                            eprintln!("auto-ai-cli: {e}");
+                            std::process::exit(1);
+                        }
+                    } else if let Err(e) = rt.block_on(chat_loop("normal")) {
+                        eprintln!("auto-ai-cli: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -480,7 +498,8 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
 
 /// Human-friendly error rendering. Detects rate limits, auth failures, and
 /// network issues, showing actionable guidance instead of raw JSON.
-fn format_agent_error(e: &dyn std::fmt::Display) -> String {
+/// Shared by run/pipeline/REPL and the linear UI (Plan 029 §2.2).
+pub(crate) fn format_agent_error(e: &dyn std::fmt::Display) -> String {
     let msg = e.to_string();
 
     // ── Rate limit / quota exhausted ────────────────────────────────────
@@ -671,7 +690,7 @@ async fn run_pipeline(task: &str) -> Result<(), String> {
 /// Run a named pipeline flow (superpowers / relay) directly.
 /// Used by `chat --mode superpowers/relay`.
 async fn run_pipeline_flow(mode: &str, task: &str, client: &Arc<dyn Client>) -> Result<(), String> {
-    use auto_ai_agent::{AgentFactory, PipelineDriver, PipelineEvent};
+    use auto_ai_agent::{PipelineDriver, PipelineEvent};
 
     let flow = spawn_pipeline::flow_for(mode)
         .ok_or_else(|| format!("unknown mode '{mode}'"))?;
