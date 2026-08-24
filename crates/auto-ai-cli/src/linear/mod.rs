@@ -62,8 +62,9 @@ pub struct LinearState {
     /// Session-cumulative tokens from Done/Cancelled results.
     pub total_tokens: u64,
     pub tool_count: usize,
-    /// Tool results this session, keyed by display id (`/expand N`).
-    pub tool_log: Vec<(u64, String)>,
+    /// Tool results this session, keyed by display id (`/expand N`):
+    /// (id, tool name, args summary, full result).
+    pub tool_log: Vec<(u64, String, String, String)>,
     pub tool_seq: u64,
     /// Uncommitted streaming text. `active_answer` may be reclassified as
     /// thinking when a ToolStart arrives (chat_model semantics: text before a
@@ -276,7 +277,7 @@ fn handle_stream_event(s: &mut LinearState, term: &mut LinearTerm, ev: StreamEve
             let summary = format_args_summary(&tool, &args);
             s.tool_seq += 1;
             term.commit(tool_lines(&tool, &summary, &result, s.tool_seq))?;
-            s.tool_log.push((s.tool_seq, result));
+            s.tool_log.push((s.tool_seq, tool.clone(), summary.clone(), result));
             s.tool_count += 1;
         }
         StreamEvent::Done { result } => {
@@ -360,14 +361,14 @@ fn replay_lines(msgs: &[auto_ai_client::Message]) -> Vec<ratatui::text::Line<'st
                     if !text.is_empty() {
                         text.push('\n');
                     }
-                    text.push_str(&format!("⚙ {name}"));
+                    text.push_str(&format!("+ {name}"));
                 }
                 ContentBlock::ToolResult { .. } => {}
             }
         }
         match m.role.as_str() {
             "user" => out.push(Line::styled(
-                format!("❯ {text}"),
+                format!("> {text}"),
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )),
             _ => {
@@ -447,16 +448,16 @@ fn handle_key(
             // run ends naturally — a follow-up instead revives the run with
             // it (Plan 026 semantics; Plan 029 Phase 6.1).
             if use_follow_up(s) {
-                term.commit(user_lines(&text, "↪ ")).ok();
+                term.commit(user_lines(&text, "»» ")).ok();
                 let _ = cmd_tx.send(AgentCommand::FollowUp(text));
-                s.tip = "↪ 已排队：本回合结束后继续".into();
+                s.tip = "»» 已排队：本回合结束后继续".into();
             } else {
-                term.commit(user_lines(&text, "⇢ ")).ok();
+                term.commit(user_lines(&text, "» ")).ok();
                 let _ = cmd_tx.send(AgentCommand::Steer(text));
-                s.tip = "⇢ 已排队：当前工具批结束后注入".into();
+                s.tip = "» 已排队：当前工具批结束后注入".into();
             }
         } else {
-            term.commit(user_lines(&text, "❯ ")).ok();
+            term.commit(user_lines(&text, "> ")).ok();
             s.is_streaming = true;
             s.last_spinner_tick = Instant::now();
             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -564,7 +565,7 @@ fn handle_slash_command(
     match cmd {
         "/help" => {
             term.commit(system_lines(
-                "命令:\n  /help          显示本帮助\n  /roles         选择角色（切换后重建 agent）\n  /expand <id>   展开某次工具调用的完整结果（id 见 ⚙ 行尾 #N）\n  /config        打开 AutoOS 设置\n  /clear         清空会话与终端回滚区\n  q              退出\n  ↑/↓            历史回溯\n  流式中 Enter   插话：工具批后注入（⇢）或回合结束后继续（↪）",
+                "命令:\n  /help          显示本帮助\n  /roles         选择角色（切换后重建 agent）\n  /expand <id>   展开某次工具调用的完整结果（id 见 + 行尾 #N）\n  /config        打开 AutoOS 设置\n  /clear         清空会话与终端回滚区\n  q              退出\n  ↑/↓            历史回溯\n  流式中 Enter   插话：工具批后注入（»）或回合结束后继续（»»）",
             ))
             .ok();
         }
@@ -642,14 +643,15 @@ fn handle_slash_command(
         other if other.starts_with("/expand") => {
             let arg = other.trim_start_matches("/expand").trim();
             let Ok(id) = arg.parse::<u64>() else {
-                s.tip = "用法: /expand <id>（id 见工具摘要行尾的 #N）".into();
+                s.tip = "用法: /expand <id>（id 见 + 摘要行尾的 #N）".into();
                 return;
             };
-            match s.tool_log.iter().rev().find(|(tid, _)| *tid == id) {
-                Some((tid, result)) => {
+            match s.tool_log.iter().rev().find(|(tid, ..)| *tid == id) {
+                Some((tid, tool, args, result)) => {
                     // Reference-based append (Plan 029 Phase 6.2): the full
-                    // result is committed into the linear flow on demand.
-                    term.commit(expand_lines(result, *tid)).ok();
+                    // result is committed into the linear flow on demand,
+                    // under a replicated summary header (Plan 030 feedback).
+                    term.commit(expand_lines(tool, args, result, *tid)).ok();
                 }
                 None => {
                     s.tip = format!("#{id} 不存在（本会话工具调用 #1-#{}）", s.tool_seq);
