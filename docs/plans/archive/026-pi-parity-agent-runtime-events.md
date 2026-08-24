@@ -1,6 +1,6 @@
 # Plan 026: agent 运行时对齐 pi-agent-core——turn 级事件、Thinking 一等公民、steering/follow-up 队列与应用层取消
 
-> **状态**：✅ 已实施（2026-08-23，双轨落地，离线两轨对拍全等；live e2e 对拍待 daemon 实跑）
+> **状态**：✅ 已实施并验证（2026-08-23 双轨落地；2026-08-25 finish-plan 复审：workspace 236 测试 + 转译轨 24 测试全绿，live e2e 补跑通过——转译版全链路 hello world + TurnStart 事件序列断言命中，原生链路 turn/usage/Thinking 经 029 线性 UI 真机冒烟验证）
 > **仓库**：auto-ai（auto-ai-agent 主改；ai-config wire 小改）+ auto-musk（消费端适配，影响见文末，**不在本计划内实施**——已确认本计划只改 auto-ai）
 > **实施记录与计划偏差**：
 > 1. `StreamEvent` 实际定义在 auto-ai-agent（agent.rs / agent.at），不在 ai-config wire.at（计划文档笔误）；

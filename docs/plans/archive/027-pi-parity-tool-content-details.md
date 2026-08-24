@@ -1,6 +1,6 @@
 # Plan 027: Tool 结果 content/details 分离——模型看到的与 UI 展示的解耦
 
-> **状态**：✅ 已实施（2026-08-23，分支 feat/027-tool-output，双轨落地，两轨对拍全绿）
+> **状态**：✅ 已实施并验证（2026-08-23 分支 feat/027-tool-output 双轨落地；2026-08-25 finish-plan 复审：ToolOutput/details 交付物与"details 不进记忆"守卫在位，两轨测试全绿，CLI 内置工具真机运行验证；任务 5 的 musk 签名迁移由 auto-musk PLAN-039/040 跟进——跨仓事项，非本仓遗留）
 > **实施记录**：auto-ai 侧全部完成（任务 1-4、6）。任务 5 的 musk 仓库工具签名机械迁移在 auto-ai 之外，
 > 由 auto-musk 侧跟进（本变更对 musk 是破坏性签名变更，迁移前 musk 不可编译）。
 > 偏差：`ToolOutput::text(s)` 构造器替代计划中的 `From<String>`（.at 轨无 impl From 语法，
