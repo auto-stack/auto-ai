@@ -63,7 +63,7 @@ use memory: Memory
 use role_def: Role
 use skill: SkillTool
 use ai_config: ModelTier, Usage
-use tool: ToolRegistry, tool_to_definition, Tool
+use tool: ToolRegistry, tool_to_definition, Tool, ToolOutput
 use wire: ContentBlock, JsonValue, ToolDefinition
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -145,8 +145,10 @@ pub enum StreamEvent {
     ToolStart(str, JsonValue)
     /// A non-fatal advisory message (e.g. the near-turn-cap warning). (text)
     Warning(str)
-    /// A tool was called and produced a result. (tool, args, result)
-    Tool(str, JsonValue, str)
+    /// A tool was called and produced a result. result is the content fed
+    /// back to the model; details is the structured UI payload (Plan 027) —
+    /// never enters the LLM context. (tool, args, result, details)
+    Tool(str, JsonValue, str, ?JsonValue)
     /// The loop finished successfully (carries the full result). (result)
     Done(AgentResult)
     /// The run was cancelled by the user. (result)
@@ -203,7 +205,7 @@ task EventSink {
                 StreamEvent.Warning(text) -> {
                     log = f"${log}W:${text};"
                 },
-                StreamEvent.Tool(tool, _args, _result) -> {
+                StreamEvent.Tool(tool, _args, _result, _details) -> {
                     log = f"${log}T:${tool};"
                 },
                 StreamEvent.Done(result) -> {
@@ -599,14 +601,16 @@ ext Agent {
                     // exec_or_msg takes &str name — tc.name is String.
                     let outcome = self.tools.exec_or_msg(tc.name.as_str(), tc.input.clone()).await
                     let rec = ToolCallRecord(
-                        tool: tc.name.clone(), args: tc.input.clone(), result: outcome.clone()
+                        tool: tc.name.clone(), args: tc.input.clone(), result: outcome.content.clone()
                     )
                     result.tool_calls.push(rec)
-                    let tev = StreamEvent.Tool(tc.name, tc.input, outcome.clone())
+                    // details goes to the event stream only — NEVER memory
+                    // (Plan 027: zero context growth).
+                    let tev = StreamEvent.Tool(tc.name, tc.input, outcome.content.clone(), outcome.details.clone())
                     sink.send(tev)
                     // Truncate before storing so one big output can't blow the
                     // context window.
-                    let tr = Message.tool_result(tc.id, truncate_tool_result(outcome))
+                    let tr = Message.tool_result(tc.id, truncate_tool_result(outcome.content.as_str()))
                     self.memory.add_message(tr)
                     idx = idx + 1
                 }

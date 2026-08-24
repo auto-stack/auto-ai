@@ -21,7 +21,7 @@ use crate::memory::{Memory};
 use crate::role_def::{Role};
 use crate::skill::{SkillTool};
 use crate::ai_config::{ModelTier, Usage};
-use crate::tool::{ToolRegistry, tool_to_definition, Tool};
+use crate::tool::{ToolRegistry, tool_to_definition, Tool, ToolOutput};
 use crate::wire::{ContentBlock, JsonValue, ToolDefinition};
 /// The autonomous agent (Layer 3 core).
 /// 
@@ -134,7 +134,9 @@ pub trait Client: Send + Sync {
 /// matching rust-ref.
 /// A tool is about to be executed. (tool, args)
 /// A non-fatal advisory message (e.g. the near-turn-cap warning). (text)
-/// A tool was called and produced a result. (tool, args, result)
+/// A tool was called and produced a result. result is the content fed
+/// back to the model; details is the structured UI payload (Plan 027) —
+/// never enters the LLM context. (tool, args, result, details)
 /// The loop finished successfully (carries the full result). (result)
 /// The run was cancelled by the user. (result)
 /// The loop failed. (message)
@@ -146,7 +148,7 @@ pub enum StreamEvent {
     Thinking(String),
     ToolStart(String, JsonValue),
     Warning(String),
-    Tool(String, JsonValue, String),
+    Tool(String, JsonValue, String, Option<JsonValue>),
     Done(AgentResult),
     Cancelled(AgentResult),
     Error(String),
@@ -190,7 +192,7 @@ impl EventSink {
                     StreamEvent::Thinking(text) => self.log = format!("{}TH:{};", self.log, text),
                     StreamEvent::ToolStart(tool, _args) => self.log = format!("{}TS:{};", self.log, tool),
                     StreamEvent::Warning(text) => self.log = format!("{}W:{};", self.log, text),
-                    StreamEvent::Tool(tool, _args, _result) => self.log = format!("{}T:{};", self.log, tool),
+                    StreamEvent::Tool(tool, _args, _result, _details) => self.log = format!("{}T:{};", self.log, tool),
                     StreamEvent::Done(result) => self.log = format!("{}DONE:{};", self.log, result.output),
                     StreamEvent::Cancelled(result) => self.log = format!("{}CANCEL:{};", self.log, result.output),
                     StreamEvent::Error(message) => self.log = format!("{}E:{};", self.log, message),
@@ -520,13 +522,15 @@ impl Agent {
                     sink.send(tse);
                     
                     let outcome = self.tools.exec_or_msg(tc.name.as_str(), tc.input.clone()).await;
-                    let rec = ToolCallRecord { tool: tc.name.clone().to_string(), args: tc.input.clone(), result: outcome.clone().to_string() };
+                    let rec = ToolCallRecord { tool: tc.name.clone().to_string(), args: tc.input.clone(), result: outcome.content.clone().to_string() };
                     result.tool_calls.push(rec.clone());
-                    let tev = StreamEvent::Tool(tc.name, tc.input, outcome.clone());
+                    
+
+                    let tev = StreamEvent::Tool(tc.name, tc.input, outcome.content.clone(), outcome.details.clone());
                     sink.send(tev);
                     
 
-                    let tr = Message::tool_result(tc.id, truncate_tool_result(outcome.as_str()));
+                    let tr = Message::tool_result(tc.id, truncate_tool_result(outcome.content.as_str()));
                     self.memory.add_message(tr);
                     idx = idx + 1;
                 }

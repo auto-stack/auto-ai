@@ -21,7 +21,7 @@ use auto_ai_client::{
 use crate::error::{AgentError, ToolError};
 use crate::memory::Memory;
 use crate::role_def::Role;
-use crate::tool::{tool_to_definition, ToolRegistry};
+use crate::tool::{tool_to_definition, ToolOutput, ToolRegistry};
 
 /// After how many identical (tool, args) repeats the loop bails out as a cycle.
 const LOOP_DETECT_THRESHOLD: usize = 3;
@@ -123,11 +123,14 @@ pub enum StreamEvent {
     /// (review-003 stage 5 U1: replaces the earlier reuse of `Delta` for the
     /// near-cap warning, and the dead `Thinking` variant.)
     Warning { text: String },
-    /// A tool was called and produced a result.
+    /// A tool was called and produced a result. `result` is the content fed
+    /// back to the model; `details` is the structured UI payload (Plan 027) —
+    /// it never enters the LLM context.
     Tool {
         tool: String,
         args: serde_json::Value,
         result: String,
+        details: Option<serde_json::Value>,
     },
     /// The loop finished successfully (carries the full result).
     Done { result: AgentResult },
@@ -585,31 +588,33 @@ impl Agent {
                                         "[security denied ({kind})] '{path}' is outside the workspace root '{root}'. {hint} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)"
                                     );
                                     if security_errors >= 3 {
-                                        format!("{base}\n\n⚠ 已连续 {security_errors} 次尝试访问 workspace 外路径被拒。请立即换思路（让用户提供内容，或改用 API），不要再试读 workspace 外文件。")
+                                        ToolOutput::text(format!("{base}\n\n⚠ 已连续 {security_errors} 次尝试访问 workspace 外路径被拒。请立即换思路（让用户提供内容，或改用 API），不要再试读 workspace 外文件。"))
                                     } else {
-                                        base
+                                        ToolOutput::text(base)
                                     }
                                 }
-                                _ => format!("[tool error: {}]", e),
+                                _ => ToolOutput::text(format!("[tool error: {}]", e)),
                             }
                         }
                     };
                     result.tool_calls.push(ToolCallRecord {
                         tool: tc.name.clone(),
                         args: tc.input.clone(),
-                        result: outcome.clone(),
+                        result: outcome.content.clone(),
                     });
                     on_event(StreamEvent::Tool {
                         tool: tc.name.clone(),
                         args: tc.input.clone(),
-                        result: outcome.clone(),
+                        result: outcome.content.clone(),
+                        details: outcome.details.clone(),
                     });
                     // Truncate before storing in memory so one large tool output
                     // (e.g. read_file on a big file) can't blow the context
                     // window for the rest of the run. (review-003 S2)
+                    // details NEVER enters memory (Plan 027).
                     self.memory.add_message(Message::tool_result(
                         &tc.id,
-                        truncate_tool_result(&outcome),
+                        truncate_tool_result(&outcome.content),
                     ));
                 }
                 // Turn completed via tool batch (Plan 026): report the turn
@@ -817,9 +822,9 @@ mod tests {
         fn parameters(&self) -> Value {
             json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]})
         }
-        async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
             let n = args["n"].as_i64().unwrap_or(0);
-            Ok((n + 1).to_string())
+            Ok((n + 1).to_string().into())
         }
     }
 

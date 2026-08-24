@@ -2,7 +2,7 @@
 //! Demonstrates how to implement the Tool trait for a new app.
 
 use async_trait::async_trait;
-use auto_ai_agent::{Tool, ToolError};
+use auto_ai_agent::{Tool, ToolError, ToolOutput};
 use serde_json::{json, Value};
 
 /// Read a file's UTF-8 text.
@@ -15,9 +15,9 @@ impl Tool for ReadFile {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"path":{"type":"string","description":"file path"}},"required":["path"]})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let path = args["path"].as_str().ok_or_else(|| ToolError::Args("missing 'path'".into()))?;
-        std::fs::read_to_string(path).map_err(|e| ToolError::Exec(format!("read '{path}': {e}")))
+        std::fs::read_to_string(path).map_err(|e| ToolError::Exec(format!("read '{path}': {e}"))).map(ToolOutput::from)
     }
 }
 
@@ -31,7 +31,7 @@ impl Tool for WriteFile {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"path":{"type":"string","description":"file path"},"content":{"type":"string","description":"text content"}},"required":["path","content"]})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let path = args["path"].as_str().ok_or_else(|| ToolError::Args("missing 'path'".into()))?;
         let content = args["content"].as_str().ok_or_else(|| ToolError::Args("missing 'content'".into()))?;
         if let Some(parent) = std::path::Path::new(path).parent() {
@@ -40,7 +40,7 @@ impl Tool for WriteFile {
             }
         }
         std::fs::write(path, content).map_err(|e| ToolError::Exec(format!("write '{path}': {e}")))?;
-        Ok(format!("wrote {} bytes to {}", content.len(), path))
+        Ok(format!("wrote {} bytes to {}", content.len(), path).into())
     }
 }
 
@@ -54,7 +54,7 @@ impl Tool for EditFile {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"path":{"type":"string","description":"file to edit"},"old_string":{"type":"string","description":"exact text to find (must be unique)"},"new_string":{"type":"string","description":"replacement text"}},"required":["path","old_string","new_string"]})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let path = args["path"].as_str().ok_or_else(|| ToolError::Args("missing 'path'".into()))?;
         let old = args["old_string"].as_str().ok_or_else(|| ToolError::Args("missing 'old_string'".into()))?;
         let new = args["new_string"].as_str().ok_or_else(|| ToolError::Args("missing 'new_string'".into()))?;
@@ -64,7 +64,7 @@ impl Tool for EditFile {
         if count > 1 { return Err(ToolError::Exec(format!("old_string appears {count} times; must be unique."))); }
         let new_content = content.replacen(old, new, 1);
         std::fs::write(path, &new_content).map_err(|e| ToolError::Exec(format!("write: {e}")))?;
-        Ok(format!("edited '{path}'"))
+        Ok(format!("edited '{path}'").into())
     }
 }
 
@@ -78,7 +78,7 @@ impl Tool for ListDir {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"path":{"type":"string","description":"directory path (default: .)"}}})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let path = args["path"].as_str().unwrap_or(".");
         let entries = std::fs::read_dir(path).map_err(|e| ToolError::Exec(format!("list '{path}': {e}")))?;
         let mut items: Vec<(String, bool, u64)> = entries
@@ -92,7 +92,7 @@ impl Tool for ListDir {
             else { out.push_str(&format!("{name} <file {size}B>\n")); }
         }
         if out.is_empty() { out.push_str("(empty directory)"); }
-        Ok(out)
+        Ok(out.into())
     }
 }
 
@@ -106,7 +106,7 @@ impl Tool for Search {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"pattern":{"type":"string","description":"regex pattern"},"path":{"type":"string","description":"directory to search (default: .)"}},"required":["pattern"]})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let pattern = args["pattern"].as_str().ok_or_else(|| ToolError::Args("missing 'pattern'".into()))?;
         let path = args["path"].as_str().unwrap_or(".");
         let output = if cfg!(windows) {
@@ -119,7 +119,7 @@ impl Tool for Search {
         if result.trim().is_empty() { return Ok("(no matches)".into()); }
         // Cap output to avoid flooding context.
         let lines: Vec<&str> = result.lines().take(50).collect();
-        Ok(lines.join("\n"))
+        Ok(lines.join("\n").into())
     }
 }
 
@@ -148,7 +148,7 @@ impl Tool for RunCommand {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"cmd":{"type":"string","description":"the shell command"},"force":{"type":"boolean","description":"skip whitelist check (after user approval)"}},"required":["cmd"]})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let cmd = args["cmd"].as_str().ok_or_else(|| ToolError::Args("missing 'cmd'".into()))?;
         let force = args["force"].as_bool().unwrap_or(false);
 
@@ -157,13 +157,13 @@ impl Tool for RunCommand {
             // Danger patterns.
             for pat in &["rm -rf", "format ", "del /s", "curl ", "wget ", "shutdown", "| sh"] {
                 if lower.contains(pat) {
-                    return Ok(format!("⏸ PAUSED: dangerous pattern '{pat}'. Needs user approval."));
+                    return Ok(format!("⏸ PAUSED: dangerous pattern '{pat}'. Needs user approval.").into());
                 }
             }
             // Whitelist.
             let allowed = ALLOWED_PREFIXES.iter().any(|p| lower == *p || lower.starts_with(&format!("{p} ")));
             if !allowed {
-                return Ok(format!("⏸ PAUSED: '{cmd}' is not on the whitelist. Pass force:true after approval."));
+                return Ok(format!("⏸ PAUSED: '{cmd}' is not on the whitelist. Pass force:true after approval.").into());
             }
         }
 
@@ -180,6 +180,6 @@ impl Tool for RunCommand {
             result.push_str(&String::from_utf8_lossy(&output.stderr));
         }
         if result.is_empty() { result.push_str("(no output)"); }
-        Ok(result)
+        Ok(result.into())
     }
 }

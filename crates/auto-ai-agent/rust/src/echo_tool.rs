@@ -2,7 +2,7 @@
 //! Returns "ECHO: <input>" — lets the model practice calling a tool and
 //! seeing its result fed back. Hand-written (no .at source).
 
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolOutput};
 use crate::wire::JsonValue;
 
 pub struct EchoTool;
@@ -24,10 +24,10 @@ impl Tool for EchoTool {
         a2r_std::json::parse("{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\",\"description\":\"The message to echo back\"}},\"required\":[\"message\"]}")
     }
 
-    async fn execute(&self, args: JsonValue) -> Result<String, crate::error::ToolError> {
+    async fn execute(&self, args: JsonValue) -> Result<ToolOutput, crate::error::ToolError> {
         let msg = args.get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        Ok(format!("ECHO: {}", msg))
+        Ok(ToolOutput::text(format!("ECHO: {}", msg).as_str()))
     }
 }

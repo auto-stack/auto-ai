@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolOutput};
 
 /// One skill: a name, a trigger description, and the full prompt body.
 #[derive(Clone, Debug)]
@@ -307,18 +307,18 @@ impl Tool for SkillTool {
         self.parameters_cache.clone()
     }
 
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let name = args["skill_name"]
             .as_str()
             .ok_or_else(|| ToolError::Args("missing 'skill_name' argument".into()))?;
         match self.registry.get(name) {
             Some(skill) => {
                 tracing::info!("skill: loaded '{name}'");
-                Ok(format!(
+                Ok(ToolOutput::text(format!(
                     "# Skill: {name}\n\n{content}",
                     name = skill.name,
                     content = skill.content
-                ))
+                )))
             }
             None => {
                 let available = self.registry.names().join(", ");
@@ -423,7 +423,7 @@ mod tests {
             .execute(&json!({"skill_name": "demo"}))
             .await
             .unwrap();
-        assert!(out.contains("do the demo dance"));
+        assert!(out.content.contains("do the demo dance"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

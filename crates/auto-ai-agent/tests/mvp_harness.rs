@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use auto_ai_agent::{
-    Agent, Client, Role, StreamEvent, Tool, ToolError,
+    Agent, Client, Role, StreamEvent, Tool, ToolError, ToolOutput,
 };
 use auto_ai_agent::orchestration::{
     FlowSpec, FlowStep, PipelineDriver, PipelineEvent, AgentFactory,
@@ -217,8 +217,8 @@ impl Tool for EchoTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
-        Ok(args["word"].as_str().unwrap_or("").to_string())
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
+        Ok(args["word"].as_str().unwrap_or("").to_string().into())
     }
 }
 
@@ -537,7 +537,7 @@ impl Tool for FlagTool {
     fn name(&self) -> &str { "flag" }
     fn description(&self) -> &str { "Sets the cancel flag." }
     fn parameters(&self) -> Value { json!({"type":"object","properties":{}}) }
-    async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, _args: &Value) -> Result<ToolOutput, ToolError> {
         self.flag.store(true, Ordering::SeqCst);
         Ok("flagged".into())
     }
@@ -607,4 +607,65 @@ async fn harness_cancel_mid_batch_keeps_wire_and_drops_steering() {
     }
     let cancelled = tool_results.iter().find(|(rid, _)| rid == "call_2").unwrap();
     assert_eq!(cancelled.1, "[cancelled by user]");
+}
+
+// ── Harness 7: Plan 027 — content/details separation ────────────────────────
+
+/// A tool returning structured details (Plan 027 shape: edit-style).
+struct DetailsTool;
+#[async_trait]
+impl Tool for DetailsTool {
+    fn name(&self) -> &str { "editstub" }
+    fn description(&self) -> &str { "Edits a stub file." }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
+    }
+    async fn execute(&self, _args: &Value) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            content: "edited 'stub.txt' (1 replacement)".into(),
+            details: Some(json!({
+                "diff": "@@ -1 +1 @@
+-old line
++new line",
+                "patch": "stub.patch",
+                "first_changed_line": 1
+            })),
+        })
+    }
+}
+
+/// details flow to the event stream but NEVER into the LLM request (Plan 027
+/// acceptance: captured ToolResult block byte-identical, zero details leak).
+#[tokio::test]
+async fn harness_tool_details_flow_to_events_not_llm() {
+    let client = Arc::new(ScriptedClient::new(vec![
+        tool_call_response("", "editstub", json!({"path": "stub.txt"})),
+        text_response("done"),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.register_tool(DetailsTool);
+
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = agent.run_stream("edit it", cb, cancel).await.unwrap();
+    assert_eq!(result.output, "done");
+
+    // 1. The Tool event carries the structured details.
+    let evs = events.lock().unwrap();
+    let tool_ev = evs.iter().find_map(|e| match e {
+        StreamEvent::Tool { details, .. } => Some(details.clone()),
+        _ => None,
+    }).expect("no Tool event");
+    let details = tool_ev.expect("Tool event had no details");
+    assert_eq!(details.get("patch").and_then(|p| p.as_str()), Some("stub.patch"));
+
+    // 2. The next LLM request's ToolResult content is EXACTLY the content —
+    //    and the serialized request contains none of the details payload.
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let body = serde_json::to_string(&reqs[1]).unwrap();
+    assert!(body.contains("edited 'stub.txt' (1 replacement)"),
+        "ToolResult content missing from the LLM request");
+    assert!(!body.contains("stub.patch") && !body.contains("@@ -1 +1 @@"),
+        "details leaked into the LLM request: {body}");
 }

@@ -21,6 +21,30 @@ use wire: ToolDefinition, JsonValue
 use error: ToolError
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ToolOutput (Plan 027, pi parity)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A tool's structured result: two channels so the model's context and the
+/// UI's payload never fight over one string.
+pub type ToolOutput {
+    /// The text fed back to the LLM (goes into the ToolResult content block).
+    content str
+    /// Structured payload for UI / logs / approval flows. NEVER enters the LLM
+    /// context — the agent loop attaches it to StreamEvent.Tool only.
+    /// Shape is tool-specific and weakly typed (pi uses runtime-typed details
+    /// too); conventions: edit → {diff, patch, first_changed_line},
+    /// run_command → {truncation, full_output_path}, read → {truncation}.
+    details ?JsonValue
+}
+
+ext ToolOutput {
+    /// Plain-text output with no details.
+    pub static fn text(s str) ToolOutput {
+        return ToolOutput(content: s, details: None)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tool spec
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -44,9 +68,10 @@ pub spec Tool: Send + Sync {
         return json.parse("{\"type\":\"object\",\"properties\":{}}")
     }
 
-    /// Run the tool with the model-supplied arguments, returning a string
-    /// result that is fed back to the model.
-    fn execute(args JsonValue) ~Result<str, ToolError>
+    /// Run the tool with the model-supplied arguments. content is fed back
+    /// to the model; details is a structured payload for the UI (dropped
+    /// before the LLM request is built).
+    fn execute(args JsonValue) ~Result<ToolOutput, ToolError>
 }
 
 /// Convert a [Tool] into the Layer-2 [ToolDefinition] the client sends.
@@ -153,8 +178,8 @@ ext ToolRegistry {
         return out
     }
 
-    /// Run a tool by name, returning its string output.
-    pub fn execute(name str, args JsonValue) ~Result<str, ToolError> {
+    /// Run a tool by name, returning its structured output.
+    pub fn execute(name str, args JsonValue) ~Result<ToolOutput, ToolError> {
         is self.get(name) {
             Some(tool) -> return tool.execute(args).await,
             None -> return Err(ToolError.Exec(f"tool not found: ${name}"))
@@ -168,11 +193,11 @@ ext ToolRegistry {
     /// Exists as a ToolRegistry METHOD (not a free fn taking ToolRegistry by
     /// value) because a2r clones struct args at call sites and ToolRegistry
     /// (holding Arc<Box<dyn Tool>>) is not Clone.
-    pub fn exec_or_msg(name str, args JsonValue) ~str {
+    pub fn exec_or_msg(name str, args JsonValue) ~ToolOutput {
         is self.execute(name, args).await {
             Ok(out) -> return out,
-            Err(ToolError.SecurityDenied { kind, path, root, hint }) -> return f"[security denied (${kind})] '${path}' is outside the workspace root '${root}'. ${hint} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)",
-            Err(e) -> return f"[tool error: ${e.message()}]"
+            Err(ToolError.SecurityDenied { kind, path, root, hint }) -> return ToolOutput.text(f"[security denied (${kind})] '${path}' is outside the workspace root '${root}'. ${hint} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)"),
+            Err(e) -> return ToolOutput.text(f"[tool error: ${e.message()}]")
         }
     }
 }

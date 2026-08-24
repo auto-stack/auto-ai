@@ -13,7 +13,7 @@ use serde_json;
 use serde_json::Value;
 
 use crate::error::{ToolError};
-use crate::tool::{Tool};
+use crate::tool::{Tool, ToolOutput};
 use crate::wire::{JsonValue};
 /// Skill system — a "skill" is a markdown prompt fragment the model loads
 /// on demand by calling the SkillTool.
@@ -371,7 +371,7 @@ impl Tool for SkillTool {
     fn parameters(&self) -> JsonValue {
         return self.parameters_cache.clone();
     }
-    async fn execute(&self, args: JsonValue) -> Result<String, ToolError> {
+    async fn execute(&self, args: JsonValue) -> Result<ToolOutput, ToolError> {
         let v = args.get("skill_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         if v.is_empty() {
             return Err(ToolError::Args("missing 'skill_name' argument".to_string()));
@@ -379,9 +379,9 @@ impl Tool for SkillTool {
         let name = v.clone();
 
         match self.registry.get(name.as_str()) {
-            Some(skill) => return Ok(format!("# Skill: {}
+            Some(skill) => return Ok(ToolOutput::text(format!("# Skill: {}
 
-{}", skill.name, skill.content)),
+{}", skill.name, skill.content).as_str())),
             None => {
                 let available = self.registry.names().join(", ");
                 return Err(ToolError::Exec(format!("skill '{}' not found; available: {}", name, available)));

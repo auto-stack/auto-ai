@@ -42,8 +42,8 @@ impl Tool for EchoTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]})
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
-        Ok(args["word"].as_str().unwrap_or("").to_string())
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
+        Ok(args["word"].as_str().unwrap_or("").to_string().into())
     }
 }
 

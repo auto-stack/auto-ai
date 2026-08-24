@@ -38,7 +38,7 @@ pub use ai_config::ModelTier;
 pub use builtin_roles::{load_builtin, builtin_names, Assistant, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
 pub use roles::{RoleDetail, RoleRegistry, RoleSummary};
 pub use skill::{Skill, SkillRegistry, SkillTool};
-pub use tool::{Tool, ToolRegistry};
+pub use tool::{Tool, ToolOutput, ToolRegistry};
 pub use validate::{load_client_config, validate_role_model};
 pub use orchestration::{
     BudgetAction, BudgetStrategy, BudgetTracker, TokenBudget,

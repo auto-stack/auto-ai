@@ -10,9 +10,43 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use auto_ai_client::ToolDefinition;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::error::ToolError;
+
+/// A tool's structured result (Plan 027, pi parity): two channels so the
+/// model's context and the UI's payload never fight over one string.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolOutput {
+    /// The text fed back to the LLM (goes into the ToolResult content block).
+    pub content: String,
+    /// Structured payload for UI / logs / approval flows. NEVER enters the LLM
+    /// context — the agent loop attaches it to `StreamEvent::Tool` only.
+    /// Shape is tool-specific and weakly typed (pi uses runtime-typed details
+    /// too); conventions: edit → `{diff, patch, first_changed_line}`,
+    /// run_command → `{truncation, full_output_path}`, read → `{truncation}`.
+    pub details: Option<JsonValue>,
+}
+
+impl ToolOutput {
+    /// Plain-text output with no details.
+    pub fn text(s: impl Into<String>) -> Self {
+        Self { content: s.into(), details: None }
+    }
+}
+
+impl From<String> for ToolOutput {
+    fn from(s: String) -> Self {
+        Self::text(s)
+    }
+}
+
+impl From<&str> for ToolOutput {
+    fn from(s: &str) -> Self {
+        Self::text(s)
+    }
+}
 
 /// A callable tool the agent can hand to the LLM.
 ///
@@ -32,9 +66,10 @@ pub trait Tool: Send + Sync {
         serde_json::json!({"type": "object", "properties": {}})
     }
 
-    /// Run the tool with the model-supplied arguments, returning a string
-    /// result that is fed back to the model.
-    async fn execute(&self, args: &JsonValue) -> Result<String, ToolError>;
+    /// Run the tool with the model-supplied arguments. `content` is fed back
+    /// to the model; `details` is a structured payload for the UI (dropped
+    /// before the LLM request is built).
+    async fn execute(&self, args: &JsonValue) -> Result<ToolOutput, ToolError>;
 }
 
 /// Convert a [`Tool`] into the Layer-2 [`ToolDefinition`] the client sends.
@@ -98,8 +133,8 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Run a tool by name, returning its string output.
-    pub async fn execute(&self, name: &str, args: &JsonValue) -> Result<String, ToolError> {
+    /// Run a tool by name, returning its structured output.
+    pub async fn execute(&self, name: &str, args: &JsonValue) -> Result<ToolOutput, ToolError> {
         let tool = self
             .tools
             .get(name)
@@ -122,8 +157,8 @@ mod tests {
         fn description(&self) -> &str {
             "echo back the input"
         }
-        async fn execute(&self, args: &JsonValue) -> Result<String, ToolError> {
-            Ok(args.to_string())
+        async fn execute(&self, args: &JsonValue) -> Result<ToolOutput, ToolError> {
+            Ok(args.to_string().into())
         }
     }
 
@@ -136,9 +171,9 @@ mod tests {
         fn description(&self) -> &str {
             "reverse a string"
         }
-        async fn execute(&self, args: &JsonValue) -> Result<String, ToolError> {
+        async fn execute(&self, args: &JsonValue) -> Result<ToolOutput, ToolError> {
             let s = args["s"].as_str().unwrap_or("");
-            Ok(s.chars().rev().collect())
+            Ok(s.chars().rev().collect::<String>().into())
         }
     }
 
@@ -187,7 +222,8 @@ mod tests {
             .execute("reverse", &serde_json::json!({"s": "abc"}))
             .await
             .unwrap();
-        assert_eq!(out, "cba");
+        assert_eq!(out.content, "cba");
+        assert!(out.details.is_none());
     }
 
     #[tokio::test]

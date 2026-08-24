@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use auto_ai_agent::{
     Agent, AgentFactory, Client, FlowSpec, FlowStep, PipelineDriver, PipelineEvent,
-    RoleRegistry, Tool, ToolError,
+    RoleRegistry, Tool, ToolError, ToolOutput,
 };
 
 /// Build a flow spec for a named mode.
@@ -124,7 +124,7 @@ impl Tool for SpawnPipeline {
             "required": ["flow", "task"]
         })
     }
-    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
         let flow_name = args["flow"]
             .as_str()
             .ok_or_else(|| ToolError::Args("missing 'flow' argument".into()))?;
@@ -195,10 +195,10 @@ impl Tool for SpawnPipeline {
         match result {
             Ok(_) => Ok(format!(
                 "Pipeline '{flow_name}' completed successfully.\n\nSummary:\n{summary}"
-            )),
+            ).into()),
             Err(e) => Ok(format!(
                 "Pipeline '{flow_name}' encountered an error: {e}\n\nPartial summary:\n{summary}"
-            )),
+            ).into()),
         }
     }
 }

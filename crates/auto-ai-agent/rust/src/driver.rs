@@ -405,7 +405,7 @@ fn emit_budget_warning(engine: PipelineEngine, role_for_budget: &str, on_event: 
 fn forward_stream_event(ev: StreamEvent, on_event: fn(PipelineEvent) -> ()) {
     match ev {
         StreamEvent::Delta(text) => on_event(PipelineEvent::Delta(text)),
-        StreamEvent::Tool(tool, _args, result) => on_event(PipelineEvent::Tool(tool, result)),
+        StreamEvent::Tool(tool, _args, result, _details) => on_event(PipelineEvent::Tool(tool, result)),
         _ => {},
     };
 }

@@ -11,23 +11,6 @@ use std::future::Future;
 use async_trait;
 use crate::wire::{ToolDefinition, JsonValue};
 use crate::error::{ToolError};
-#[async_trait::async_trait]
-pub trait Tool: Send + Sync {
-    fn name(&self) -> String;
-    fn description(&self) -> String;
-    fn parameters(&self) -> JsonValue{
-
-
-
-        return a2r_std::json::parse("{\"type\":\"object\",\"properties\":{}}");
-    }    async fn execute(&self, args: JsonValue) -> Result<String, ToolError>;
-}
-
-
-pub fn tool_to_definition(tool: Arc<dyn Tool>) -> ToolDefinition {
-    return ToolDefinition::new(tool.name(), tool.description(), tool.parameters());
-}
-
 /// The [Tool] spec and [ToolRegistry].
 /// 
 /// Apps register concrete tools (file IO, shell, search, ...) and the
@@ -41,6 +24,44 @@ pub fn tool_to_definition(tool: Arc<dyn Tool>) -> ToolDefinition {
 /// - `async fn execute` → `fn execute ~...` (plan 013 async decision).
 /// - ToolRegistry stores a parallel `names List<str>` because Auto's VM Map
 /// has no iteration API (plan 013 gotcha B5). Fields are `pub` (B12).
+/// A tool's structured result: two channels so the model's context and the
+/// UI's payload never fight over one string.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolOutput {
+    pub content: String,
+    pub details: Option<JsonValue>,
+}
+
+impl ToolOutput {
+    pub fn text(s: &str) -> ToolOutput {
+        return ToolOutput { content: s.to_string(), details: None };
+    }
+}
+
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> String;
+    fn description(&self) -> String;
+    fn parameters(&self) -> JsonValue{
+
+
+
+        return a2r_std::json::parse("{\"type\":\"object\",\"properties\":{}}");
+    }    async fn execute(&self, args: JsonValue) -> Result<ToolOutput, ToolError>;
+}
+
+
+pub fn tool_to_definition(tool: Arc<dyn Tool>) -> ToolDefinition {
+    return ToolDefinition::new(tool.name(), tool.description(), tool.parameters());
+}
+
+/// The text fed back to the LLM (goes into the ToolResult content block).
+/// Structured payload for UI / logs / approval flows. NEVER enters the LLM
+/// context — the agent loop attaches it to StreamEvent.Tool only.
+/// Shape is tool-specific and weakly typed (pi uses runtime-typed details
+/// too); conventions: edit → {diff, patch, first_changed_line},
+/// run_command → {truncation, full_output_path}, read → {truncation}.
+/// Plain-text output with no details.
 /// A callable tool the agent can hand to the LLM.
 /// 
 /// Implementors supply the metadata the model sees (name/description/
@@ -49,8 +70,9 @@ pub fn tool_to_definition(tool: Arc<dyn Tool>) -> ToolDefinition {
 /// Human/LLM-facing description — the model uses this to decide whether to
 /// call the tool.
 /// JSON-Schema fragment describing the tool's `input` object.
-/// Run the tool with the model-supplied arguments, returning a string
-/// result that is fed back to the model.
+/// Run the tool with the model-supplied arguments. content is fed back
+/// to the model; details is a structured payload for the UI (dropped
+/// before the LLM request is built).
 /// Convert a [Tool] into the Layer-2 [ToolDefinition] the client sends.
 /// Registry of tools keyed by name.
 /// 
@@ -121,17 +143,17 @@ impl ToolRegistry {
         }
         return out;
     }
-    pub async fn execute(&self, name: &str, args: JsonValue) -> Result<String, ToolError> {
+    pub async fn execute(&self, name: &str, args: JsonValue) -> Result<ToolOutput, ToolError> {
         match self.get(name) {
             Some(tool) => return tool.execute(args).await,
             None => return Err(ToolError::Exec(format!("tool not found: {}", name))),
         }
     }
-    pub async fn exec_or_msg(&self, name: &str, args: JsonValue) -> String {
+    pub async fn exec_or_msg(&self, name: &str, args: JsonValue) -> ToolOutput {
         match self.execute(name, args).await {
             Ok(out) => return out,
-            Err(ToolError::SecurityDenied { kind, path, root, hint }) => return format!("[security denied ({})] '{}' is outside the workspace root '{}'. {} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)", kind, path, root, hint),
-            Err(e) => return format!("[tool error: {}]", e.message()),
+            Err(ToolError::SecurityDenied { kind, path, root, hint }) => return ToolOutput::text(format!("[security denied ({})] '{}' is outside the workspace root '{}'. {} (workspace 外的文件 AI 无法读取，请让用户提供内容或改用 API)", kind, path, root, hint).as_str()),
+            Err(e) => return ToolOutput::text(format!("[tool error: {}]", e.message()).as_str()),
         }
     }
 }

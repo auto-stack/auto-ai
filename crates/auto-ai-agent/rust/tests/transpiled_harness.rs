@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use auto_ai_agent_a2r::{
     load_builtin, builtin_names, Agent, AgentError, Client, Role, SkillTool,
-    SkillRegistry, StreamEvent, Tool, ToolError,
+    SkillRegistry, StreamEvent, Tool, ToolError, ToolOutput,
 };
 // spawn_event_sink{,_with} live in the agent module (pub fns, not re-exported
 // at the crate root) and the event capture closures live there too.
@@ -153,9 +153,9 @@ impl Tool for EchoTool {
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]})
     }
-    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
         let w = args.get("word").and_then(|v| v.as_str()).unwrap_or("");
-        Ok(format!("ECHO: {}", w))
+        Ok(ToolOutput::text(format!("ECHO: {}", w).as_str()))
     }
 }
 
@@ -558,7 +558,7 @@ async fn t15_complete_stream_forwards_deltas() {
         events.iter().map(|e| match e {
             StreamEvent::Delta(_) => "Delta",
             StreamEvent::Done(_) => "Done",
-            StreamEvent::Tool(_, _, _) => "Tool",
+            StreamEvent::Tool(_, _, _, _) => "Tool",
             other => unreachable!("unexpected event {:?}", other),
         }).collect::<Vec<_>>()
     );
@@ -664,7 +664,7 @@ fn ptag(ev: &StreamEvent) -> String {
         StreamEvent::Delta(_) => "D".into(),
         StreamEvent::Thinking(_) => "TH".into(),
         StreamEvent::ToolStart(tool, _) => format!("TS:{}", tool),
-        StreamEvent::Tool(tool, _, _) => format!("T:{}", tool),
+        StreamEvent::Tool(tool, _, _, _) => format!("T:{}", tool),
         StreamEvent::Warning(_) => "W".into(),
         StreamEvent::Done(_) => "DONE".into(),
         StreamEvent::Cancelled(_) => "CANCEL".into(),
@@ -791,4 +791,76 @@ async fn t19_steering_injected_before_next_llm() {
     let msgs = &reqs[1].messages;
     assert_eq!(msgs.len(), 4, "steering message missing");
     assert_eq!(msgs[3].role, "user", "steering message should be last");
+}
+
+// ─── T20: Plan 027 parity — details flow to events, never the LLM request ───
+
+/// A tool returning structured details (edit-style shape, Plan 027).
+struct DetailsTool;
+#[async_trait]
+impl Tool for DetailsTool {
+    fn name(&self) -> String { "editstub".into() }
+    fn description(&self) -> String { "Edits a stub file.".into() }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
+    }
+    async fn execute(&self, _args: Value) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            content: "edited 'stub.txt' (1 replacement)".into(),
+            details: Some(json!({
+                "diff": "@@ -1 +1 @@
+-old line
++new line",
+                "patch": "stub.patch",
+                "first_changed_line": 1
+            })),
+        })
+    }
+}
+
+#[tokio::test]
+async fn t20_tool_details_events_not_llm() {
+    let client = SseScriptedClient::new(
+        vec![
+            tool_call_response("editstub", json!({"path": "stub.txt"})),
+            text_response("done"),
+        ],
+        vec![vec![], vec![]],
+    );
+
+    let collected: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(vec![]));
+    let cb = collected.clone();
+    let sink = spawn_event_sink_with(
+        String::new(),
+        Box::new(move |ev: StreamEvent| cb.lock().unwrap().push(ev)),
+    );
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client.clone()));
+    agent.register_tool(Box::new(DetailsTool));
+    let result = agent.run_stream("edit it", cancel, sink).await.unwrap();
+    assert_eq!(result.output, "done");
+    a2r_std::task::drain_all().await;
+
+    // 1. The Tool event carries the structured details.
+    {
+        let evs = collected.lock().unwrap();
+        let mut found: Option<Value> = None;
+        for e in evs.iter() {
+            if let StreamEvent::Tool(_, _, _, Some(d)) = e {
+                found = Some(d.clone());
+                break;
+            }
+        }
+        let details = found.expect("Tool event had no details");
+        assert_eq!(details.get("patch").and_then(|p| p.as_str()), Some("stub.patch"));
+    }
+
+    // 2. The next LLM request carries exactly the content — no details leak.
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let body = serde_json::to_string(&reqs[1]).unwrap();
+    assert!(body.contains("edited 'stub.txt' (1 replacement)"),
+        "ToolResult content missing from the LLM request");
+    assert!(!body.contains("stub.patch") && !body.contains("@@ -1 +1 @@"),
+        "details leaked into the LLM request: {body}");
 }

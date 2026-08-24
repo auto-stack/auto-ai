@@ -33,7 +33,7 @@ use.rust serde_json
 use.rust serde_json::Value
 
 use error: ToolError
-use tool: Tool
+use tool: Tool, ToolOutput
 use wire: JsonValue
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -389,7 +389,7 @@ pub type SkillTool has Tool {
     }
 
     /// Load a skill's content by name. Errors if the skill isn't registered.
-    pub fn execute(args JsonValue) ~Result<str, ToolError> {
+    pub fn execute(args JsonValue) ~Result<ToolOutput, ToolError> {
         let v = args.get("skill_name").as_string()
         if v.is_empty() {
             return Err(ToolError.Args("missing 'skill_name' argument"))
@@ -398,7 +398,7 @@ pub type SkillTool has Tool {
         // registry.get takes &str — name is an owned String.
         is self.registry.get(name.as_str()) {
             Some(skill) -> {
-                return Ok(f"# Skill: ${skill.name}\n\n${skill.content}")
+                return Ok(ToolOutput.text((f"# Skill: ${skill.name}\n\n${skill.content}").as_str()))
             },
             None -> {
                 let available = self.registry.names().join(", ")

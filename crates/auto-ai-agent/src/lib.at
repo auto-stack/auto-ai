@@ -29,7 +29,7 @@ use ai_config: ModelTier
 use builtin_roles: load_builtin, builtin_names, Assistant, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator
 use roles: RoleDetail, RoleRegistry, RoleSummary
 use skill: Skill, SkillRegistry, SkillTool
-use tool: Tool, ToolRegistry
+use tool: Tool, ToolOutput, ToolRegistry
 use validate: load_client_config, validate_role_model
 use orchestration: BudgetAction, BudgetStrategy, BudgetTracker, TokenBudget
 use orchestration: ContextPointers, Decision, HandoffDocument, Question, TokenUsage, WorkProduct

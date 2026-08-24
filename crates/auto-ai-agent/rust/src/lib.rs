@@ -63,7 +63,7 @@ pub use crate::ai_config::{ModelTier};
 pub use crate::builtin_roles::{load_builtin, builtin_names, Assistant, Architect, Coder, Documenter, Reviewer, Runner, Tester, Translator};
 pub use crate::roles::{RoleDetail, RoleRegistry, RoleSummary};
 pub use crate::skill::{Skill, SkillRegistry, SkillTool};
-pub use crate::tool::{Tool, ToolRegistry};
+pub use crate::tool::{Tool, ToolOutput, ToolRegistry};
 pub use crate::validate::{load_client_config, validate_role_model};
 pub use crate::orchestration::{BudgetAction, BudgetStrategy, BudgetTracker, TokenBudget};
 pub use crate::orchestration::{ContextPointers, Decision, HandoffDocument, Question, TokenUsage, WorkProduct};
