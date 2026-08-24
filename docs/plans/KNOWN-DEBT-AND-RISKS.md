@@ -20,6 +20,7 @@
 
 | 029 | 已知限制 | **ratatui 0.29 `insert_before` 宽字符 bug**（上游）：inline viewport 的提交路径 `draw_lines` 跳过 `Buffer::diff` 直喂 `CrosstermBackend::draw`，宽字符的续接 cell（reset 后是空格）被逐个打印，覆盖每个 CJK 字形的右半——中文提交内容全部显示为 "字 字 字"。已用本地补丁规避：`linear/term.rs` 的 `sanitize_commit_buffer` 在提交前把续接 cell 的符号清空（`Print("")` 不输出，终端自身光标推进处理宽度）。行尾 padding cell 不能同样清空：insert_before 滚动后画到的行可能残留旧屏内容，`Print("")` 不输出会让残迹透出（2026-08-24 实测回归，已撤销）。**解除条件**：ratatui 修复 insert_before 对 multi-column grapheme 的处理（或升级 0.30+ 验证）后删除该补丁。 | `crates/auto-ai-cli/src/linear/term.rs`（sanitize_commit_buffer + 单测）|
 | 029 | 延期 | **`/tree` 重型模态挂起**（Plan 029 Phase 6.5）：pi 的 /tree 导航的是分支会话树，而 CLI 会话是纯线性的、无分支数据结构可展示——前置条件（会话分支功能）不存在。过渡期 `--mode fullscreen` 为全屏逃生门；`/expand <id>` 引用式追加已覆盖工具全文查看需求。**解除条件**：会话分支功能落地后再评估实现（或永久放弃并从计划裁剪）。 | `docs/plans/029-linear-ui.md`（Phase 6.5）|
+| 028 | 延期 | **client→Agent 的模型元数据透传未接**（Plan 028 偏差 2）：`/v1/models` 已携带 context_window/cost 等元数据，但未透传到 Agent 侧——compaction 的 window 目前来自 CompactionSettings 默认值（128k 可配）而非实际模型窗口。**解除条件**：musk 消费端需要按真实窗口触发压缩/预算控制时接线。 | `crates/auto-ai-client/rust-ref/src/`（Model 元数据类型已备）、Plan 028 §实施记录偏差 2 |
 
 ## 📋 未来增强
 
