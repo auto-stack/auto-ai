@@ -1,10 +1,9 @@
-//! TUI rendering and event loop using ratatui + crossterm.
-//!
-//! Architecture (streaming-first):
-//! - A **resident background task** owns the `Agent` (so its memory survives
-//!   across turns). The main loop talks to it over two channels:
-//!     • `input_tx`  (String)            — main → task: a user message to run.
-//!     • `stream_tx` (StreamEvent)       — task → main: streaming events.
+//! Legacy fullscreen TUI (kept behind `--mode fullscreen`; Plan 029 made the
+//! linear UI the default). Architecture (streaming-first):
+//! - A **resident background task** (agent_task) owns the `Agent` (so its
+//!   memory survives across turns). The main loop talks to it over channels:
+//!   • `AgentCommand` — main → task: Run / Steer / Reset (see agent_task).
+//!   • `stream_tx`    — task → main: StreamEvents.
 //! - The main loop runs every ~50ms: drain stream events → advance the
 //!   spinner → render → poll keyboard. Because rendering is *not* blocked on
 //!   `agent.run_stream`, text deltas show up on screen as they arrive.
@@ -21,19 +20,20 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Borders, ListState, Padding, Paragraph};
+use ratatui::widgets::{Borders, Padding, Paragraph};
 // NOTE: ratatui's `Block` is referenced via the fully-qualified path
 // `ratatui::widgets::Block` because this module also uses `chat_model::Block`
 // (a content block in the chat model). Importing both unqualified collides.
 use ratatui::Terminal;
-use tui_textarea::TextArea;
 use tokio::sync::mpsc;
+use tui_textarea::TextArea;
 
-use auto_ai_agent::{Agent, StreamEvent};
+use auto_ai_agent::StreamEvent;
 
+use crate::agent_task::AgentCommand;
 use crate::chat_model::{Block, ChatLine, ChatLog, ToolBlock};
 
 /// Spinner frames cycled while the assistant is "thinking" (no text yet).
@@ -147,54 +147,35 @@ pub async fn run_tui_chat(role: &str, continue_last: bool) -> Result<(), String>
     ));
 
     let client = crate::build_client().await;
-    let mut agent = crate::build_agent("assistant", client, true)
+    let mut agent = crate::build_agent("assistant", client.clone(), true)
         .map_err(|e| format!("build agent: {e}"))?;
 
-    // Two channels bridging the main loop and the resident agent task:
-    //   input_tx  — main → task: (user message, cancel handle for this turn).
-    //   stream_tx — task → main: StreamEvents from run_stream.
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<(String, Arc<AtomicBool>)>();
+    // Streaming events flow back over this channel; commands go to the
+    // resident agent task (shared with the linear UI — Plan 029).
     let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<StreamEvent>();
 
-    // Resident agent task: owns the agent (memory persists across turns),
-    // runs one `run_stream` per incoming (message, cancel) pair.
     // Session persistence: on startup, optionally loads the last session's
-    // messages into the agent's memory; after each turn, saves the updated
-    // memory back to disk (review: -c/--continue feature).
+    // messages into the agent's memory; after each turn, the task saves the
+    // updated memory back to disk (review: -c/--continue feature).
     let cwd_for_session = std::env::current_dir().unwrap_or_default();
-    let session_loaded = if continue_last {
-        match crate::session::load(&cwd_for_session) {
-            Some(record) => {
-                let n = record.messages.len();
-                agent.preload_messages(record.messages);
-                // Notify the TUI that a session was restored.
-                let _ = stream_tx.send(StreamEvent::Delta {
-                    text: format!("📖 恢复了上一次会话（{} 条消息）。继续对话即可。\n\n", n),
-                });
-                true
-            }
-            None => false,
+    if continue_last {
+        if let Some(record) = crate::session::load(&cwd_for_session) {
+            let n = record.messages.len();
+            agent.preload_messages(record.messages);
+            // Notify the TUI that a session was restored.
+            let _ = stream_tx.send(StreamEvent::Delta {
+                text: format!("📖 恢复了上一次会话（{} 条消息）。继续对话即可。\n\n", n),
+            });
         }
-    } else {
-        false
-    };
-    let _ = session_loaded; // (loaded flag available for future use)
+    }
 
-    let join_handle = tokio::spawn(async move {
-        let mut agent = agent;
-        while let Some((text, cancel)) = input_rx.recv().await {
-            let tx = stream_tx.clone();
-            let on_event: Arc<dyn Fn(StreamEvent) + Send + Sync> =
-                Arc::new(move |ev| { let _ = tx.send(ev); });
-            // run_stream errors surface as StreamEvent::Error already; a hard
-            // failure just ends this turn (the task stays alive for the next).
-            let _ = agent.run_stream(&text, on_event, cancel).await;
-            // Persist the updated conversation after each turn.
-            crate::session::save(&cwd_for_session, "session", agent.memory_messages());
-        }
-    });
-
-    let mut list_state = ListState::default();
+    let input_tx = crate::agent_task::spawn(
+        agent,
+        "assistant".into(),
+        client,
+        cwd_for_session,
+        stream_tx,
+    );
 
     loop {
         // ── Drain all streaming events. ──
@@ -204,8 +185,7 @@ pub async fn run_tui_chat(role: &str, continue_last: bool) -> Result<(), String>
 
         // ── Render. ──
         app.tick_spinner();
-        update_list_state(&mut list_state, &app);
-        terminal.draw(|f| render_app(f, &app, &mut list_state)).ok();
+        terminal.draw(|f| render_app(f, &app)).ok();
 
         if app.should_quit {
             break;
@@ -223,8 +203,8 @@ pub async fn run_tui_chat(role: &str, continue_last: bool) -> Result<(), String>
 
     // Dropping input_tx makes the resident task's recv() return None → it exits.
     drop(input_tx);
-    // Don't await the join indefinitely; the task exits once input_rx closes.
-    let _ = tokio::time::timeout(Duration::from_millis(500), join_handle).await;
+    // Give the task a moment to finish any in-flight turn bookkeeping.
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     disable_raw_mode().map_err(|e| format!("disable raw: {e}"))?;
     execute!(io::stdout(), event::DisableMouseCapture).map_err(|e| format!("disable mouse: {e}"))?;
@@ -232,62 +212,11 @@ pub async fn run_tui_chat(role: &str, continue_last: bool) -> Result<(), String>
     Ok(())
 }
 
-/// Update list state: auto-scroll to bottom or respect manual scroll.
-fn update_list_state(state: &mut ListState, app: &App) {
-    let total_items: usize = app.chat.lines.iter().map(|l| line_height(l)).sum();
-    if app.auto_scroll && total_items > 0 {
-        state.select(Some(total_items.saturating_sub(1)));
-    }
-}
-
-/// Approximate rendered height of a chat line (for auto-scroll accounting).
-/// Counts the top rule + dialog header + bottom rule for Assistant/User dialogs.
-fn line_height(line: &ChatLine) -> usize {
-    match line {
-        ChatLine::User { text, .. } => {
-            // blank + top rule + header + body lines + bottom rule
-            1 + 1 + 1 + text.lines().count().max(1) + 1
-        }
-        ChatLine::System(text) | ChatLine::Error(text) | ChatLine::Divider(text) => {
-            text.lines().count().max(1)
-        }
-        ChatLine::Assistant(turn) => {
-            // blank + top rule + header + blocks + bottom rule
-            let mut h = 1 + 1 + 1;
-            for (i, block) in turn.blocks.iter().enumerate() {
-                if i > 0 {
-                    h += 1; // blank line between blocks
-                }
-                h += 1; // title line
-                h += block_body_height(block);
-            }
-            h += 1; // bottom rule
-            h.max(1)
-        }
-    }
-}
-
-/// Rendered height of a block's body (below its title line).
-fn block_body_height(block: &Block) -> usize {
-    match block {
-        Block::Answer { text } => text.lines().count().max(1),
-        Block::Thinking { text } => text.lines().count().max(1),
-        Block::Tool(t) => {
-            if t.collapsed || !t.done {
-                0
-            } else {
-                t.result.lines().count().min(11) + 1
-            }
-        }
-        _ => 0,
-    }
-}
-
 /// Handle a keyboard event.
 fn handle_key(
     app: &mut App,
     key: KeyEvent,
-    input_tx: &mpsc::UnboundedSender<(String, Arc<AtomicBool>)>,
+    input_tx: &mpsc::UnboundedSender<AgentCommand>,
 ) {
     // Ctrl-C → quit.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -348,7 +277,7 @@ fn handle_key(
         app.last_spinner_tick = Instant::now();
         let cancel = Arc::new(AtomicBool::new(false));
         app.current_cancel = Some(cancel.clone());
-        let _ = input_tx.send((text, cancel));
+        let _ = input_tx.send(AgentCommand::Run { text, cancel });
         return;
     }
 
@@ -565,7 +494,7 @@ fn format_agent_error(msg: &str) -> String {
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-fn render_app(f: &mut ratatui::Frame, app: &App, list_state: &mut ListState) {
+fn render_app(f: &mut ratatui::Frame, app: &App) {
     // Inset the whole app by 1 column left/right so borders/status/help text
     // have breathing room instead of touching the terminal edge.
     let area = f.area().inner(Margin { horizontal: 1, vertical: 0 });

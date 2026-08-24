@@ -69,6 +69,19 @@ The daemon control CLI. It talks only to the daemon (`/v1/status`,
 see agent/workflow-level task state — that's by design (the daemon stays free
 of business logic).
 
+### `auto-ai-cli`
+The interactive agent CLI (binary `auto-ai-cli`). Default interactive mode is
+the **linear UI** (Plan 029): completed blocks are committed once into the
+terminal's native scrollback (`ratatui` `Viewport::Inline` + `insert_before`),
+with a fixed 14-row dynamic tail (status / streaming preview / input editor);
+no alternate screen, no mouse capture — so native copy/scrollback work. A
+resident agent task (`agent_task.rs`, shared with both UIs) owns the `Agent`
+and serves `Run`/`Steer`/`Reset` commands; steering messages typed while a run
+is in flight are injected after the current tool batch (Plan 026). Non-TTY
+invocations fall back to a print-mode REPL; the legacy fullscreen TUI stays
+available via `--mode fullscreen`. One-shot `run` / `pipeline` subcommands are
+non-interactive.
+
 ## Data flow (a completion request)
 
 ```
