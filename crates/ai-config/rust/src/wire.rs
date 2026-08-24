@@ -183,6 +183,22 @@ impl CompletionRequest {
 /// With temperature.
 /// With a set of callable tools.
 /// A completion response.
+/// Metadata about the model that actually served a response (Plan 031).
+/// 
+/// The daemon embeds this in every completion response (non-streaming body
+/// and the SSE done tail frame) so consumers can adapt to the ACTUAL model —
+/// which may differ from the requested one after tier fallback. Old daemons
+/// / old clients that don't know the field simply ignore it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModelMeta {
+    pub id: String,
+    pub context_window: u32,
+    pub max_output_tokens: Option<u32>,
+}
+
+/// The concrete model id that served the response.
+/// The model's context window in tokens.
+/// The model's max output tokens, when the daemon's config declares one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompletionResponse {
     pub content: String,
@@ -191,6 +207,7 @@ pub struct CompletionResponse {
     pub usage: Option<Usage>,
     pub model: String,
     pub error: Option<String>,
+    pub model_meta: Option<ModelMeta>,
 }
 
 impl CompletionResponse {

@@ -74,6 +74,38 @@ impl LlmError {
         }
     }
 
+    /// Plan 031: the request overflowed the model's context window. The
+    /// daemon itself doesn't recover (compaction lives in the agent); this
+    /// classification exists so callers/tests can recognize the class and so
+    /// the error text keeps flowing to the client un-mangled. Conservative,
+    /// mirroring the agent's `compaction::is_context_overflow`.
+    pub fn is_context_overflow(&self) -> bool {
+        let message = match self {
+            LlmError::Upstream { message, .. } => message,
+            LlmError::Api(m) | LlmError::Http(m) | LlmError::Timeout(m) => m,
+            _ => return false,
+        };
+        let lower = message.to_lowercase();
+        if ["rate limit", "too many requests", "throttling"]
+            .iter()
+            .any(|m| lower.contains(m))
+        {
+            return false;
+        }
+        [
+            "prompt is too long",
+            "request_too_large",
+            "exceeds the context window",
+            "maximum context length",
+            "context_length_exceeded",
+            "exceeds the available context size",
+            "exceeded max context length",
+            "greater than the context length",
+        ]
+        .iter()
+        .any(|m| lower.contains(m))
+    }
+
     /// Whether falling back to another provider candidate is reasonable.
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -127,5 +159,63 @@ impl From<reqwest::Error> for LlmError {
             return Self::Timeout(e.to_string());
         }
         Self::Http(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quota_exhausted_detection() {
+        assert!(LlmError::Upstream { status: 402, message: "payment required".into(), retryable: false }.is_quota_exhausted());
+        assert!(LlmError::Upstream { status: 400, message: "insufficient_quota: you exceeded".into(), retryable: false }.is_quota_exhausted());
+        assert!(LlmError::Upstream { status: 429, message: "quota_exceeded for today".into(), retryable: true }.is_quota_exhausted());
+        assert!(LlmError::Upstream { status: 400, message: "billing hard limit reached".into(), retryable: false }.is_quota_exhausted());
+        assert!(!LlmError::Upstream { status: 500, message: "internal".into(), retryable: true }.is_quota_exhausted());
+        assert!(!LlmError::Upstream { status: 400, message: "bad parameter".into(), retryable: false }.is_quota_exhausted());
+        assert!(!LlmError::RateLimited.is_quota_exhausted());
+        assert!(!LlmError::Http("conn".into()).is_quota_exhausted());
+    }
+
+    #[test]
+    fn retryable_classification() {
+        assert!(LlmError::RateLimited.is_retryable());
+        assert!(LlmError::Timeout("t".into()).is_retryable());
+        assert!(LlmError::Http("connection refused".into()).is_retryable());
+        assert!(LlmError::Upstream { status: 503, message: "unavailable".into(), retryable: true }.is_retryable());
+        assert!(!LlmError::Upstream { status: 400, message: "invalid request".into(), retryable: false }.is_retryable());
+        assert!(!LlmError::Api("bad body".into()).is_retryable());
+        assert!(!LlmError::NoProvider.is_retryable());
+        assert!(!LlmError::NoApiKey("p".into()).is_retryable());
+    }
+
+    #[test]
+    fn from_upstream_status_routing() {
+        assert!(matches!(LlmError::from_upstream_status(reqwest::StatusCode::TOO_MANY_REQUESTS, "x".into()), LlmError::RateLimited));
+        match LlmError::from_upstream_status(reqwest::StatusCode::BAD_GATEWAY, "x".into()) {
+            LlmError::Upstream { status: 502, retryable: true, .. } => {}
+            other => panic!("expected retryable 502 Upstream, got {other:?}"),
+        }
+        match LlmError::from_upstream_status(reqwest::StatusCode::BAD_REQUEST, "x".into()) {
+            LlmError::Upstream { status: 400, retryable: false, .. } => {}
+            other => panic!("expected non-retryable 400 Upstream, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_overflow_classification() {
+        // The three provider families (Plan 031), via the daemon variant.
+        let of = |msg: &str| LlmError::Upstream { status: 400, message: msg.into(), retryable: false };
+        assert!(of("prompt is too long: 90000 tokens > 32000 maximum").is_context_overflow());
+        assert!(of("{\"type\":\"request_too_large\"}").is_context_overflow());
+        assert!(of("This model's maximum context length is 8192 tokens").is_context_overflow());
+        assert!(of("the request exceeds the available context size").is_context_overflow());
+        assert!(LlmError::Api("context_length_exceeded".into()).is_context_overflow());
+        // Rate limiting / unknown errors are NOT overflow.
+        assert!(!of("rate limit exceeded").is_context_overflow());
+        assert!(!of("invalid api key").is_context_overflow());
+        assert!(!LlmError::RateLimited.is_context_overflow());
+        assert!(!LlmError::NoProvider.is_context_overflow());
     }
 }

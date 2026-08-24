@@ -29,7 +29,7 @@ use.rust std::sync::Arc
 
 use error: ClientError
 use daemon
-use ai_config: CompletionRequest, CompletionResponse, ContentBlock, Message, ToolCall, ToolDefinition, Usage
+use ai_config: CompletionRequest, CompletionResponse, ContentBlock, Message, ModelMeta, ToolCall, ToolDefinition, Usage
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AiClient
@@ -77,6 +77,11 @@ pub ext AiClient {
     pub fn is_daemon_mode() bool {
         return true
     }
+
+    /// Metadata passthrough note (Plan 031): unlike the rust-ref track, the
+    /// Auto track keeps no client-level last_model_meta cache — the agent
+    /// consumes CompletionResponse.model_meta directly on every turn, which
+    /// is the load-bearing path; the rust-ref cache is a convenience API.
 
     /// Send a canonical completion request, receive a canonical response.
     ///
@@ -136,6 +141,7 @@ pub ext AiClient {
         var stop_reason ?str = None
         var usage ?Usage = None
         var model = ""
+        var model_meta ?ModelMeta = None
         var error_msg ?str = None
 
         // Read the SSE stream chunk by chunk. The blocking recv() runs inside
@@ -157,6 +163,7 @@ pub ext AiClient {
                                     tool_calls = parse_tool_calls(value)
                                     stop_reason = opt_str_field(value, "stop_reason")
                                     model = value.get("model").as_string()
+                                    model_meta = parse_model_meta(value)
                                     usage = parse_usage(value)
                                 },
                                 else -> {}
@@ -181,6 +188,7 @@ pub ext AiClient {
                             tool_calls = parse_tool_calls(value)
                             stop_reason = opt_str_field(value, "stop_reason")
                             model = value.get("model").as_string()
+                            model_meta = parse_model_meta(value)
                             usage = parse_usage(value)
                         },
                         else -> {}
@@ -197,7 +205,8 @@ pub ext AiClient {
             stop_reason: stop_reason,
             usage: usage,
             model: model,
-            error: error_msg
+            error: error_msg,
+            model_meta: model_meta
         ))
     }
 }
@@ -312,6 +321,24 @@ fn parse_usage(value JsonValue) ?Usage {
         output_tokens: json.as_int(json.get(u, "output_tokens")),
         cache_read_tokens: json.as_int(json.get(u, "cache_read_tokens")),
         cache_write_tokens: json.as_int(json.get(u, "cache_write_tokens"))
+    ))
+}
+
+/// Parse `model_meta` object from a done event, or None if absent (Plan 031).
+fn parse_model_meta(value JsonValue) ?ModelMeta {
+    let m = json.get(value, "model_meta")
+    if m.is_null() {
+        return None
+    }
+    var max_out ?uint = None
+    let raw_max = json.get(m, "max_output_tokens")
+    if raw_max.is_null() == false {
+        max_out = Some(json.as_int(raw_max) as uint)
+    }
+    return Some(ModelMeta(
+        id: json.get_str(m, "id"),
+        context_window: json.as_int(json.get(m, "context_window")) as uint,
+        max_output_tokens: max_out
     ))
 }
 

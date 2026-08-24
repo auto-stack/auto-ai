@@ -214,6 +214,24 @@ impl CompletionRequest {
     }
 }
 
+/// Metadata about the model that actually served a response (Plan 031).
+///
+/// The daemon embeds this in every completion response (non-streaming body
+/// and the SSE `done` tail frame) so consumers can adapt to the *actual*
+/// model — which may differ from the requested one after tier fallback
+/// (e.g. a tier routed from a 200k-window model down to a 32k one). Old
+/// daemons / old clients that don't know the field simply ignore it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelMeta {
+    /// The concrete model id that served the response.
+    pub id: String,
+    /// The model's context window in tokens.
+    pub context_window: u32,
+    /// The model's max output tokens, when the daemon's config declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
 /// A completion response.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionResponse {
@@ -229,6 +247,10 @@ pub struct CompletionResponse {
     pub model: String,
     /// Error message (if any). Content may still be partial.
     pub error: Option<String>,
+    /// Metadata of the model that actually served the response (Plan 031:
+    /// follows tier fallback; `None` when the daemon doesn't provide it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_meta: Option<ModelMeta>,
 }
 
 impl CompletionResponse {
@@ -345,8 +367,31 @@ mod tests {
             usage: None,
             model: "m".into(),
             error: None,
+            model_meta: None,
         };
         assert!(r.wants_tool());
+    }
+
+    #[test]
+    fn model_meta_serde_roundtrip_and_default() {
+        // Old payloads without the field deserialize to None (serde default).
+        let old = serde_json::json!({
+            "content": "hi",
+            "tool_calls": [],
+            "model": "m",
+        });
+        let r: CompletionResponse = serde_json::from_value(old).expect("old shape must parse");
+        assert!(r.model_meta.is_none());
+        // New payloads round-trip; absent optional fields stay absent.
+        let meta = ModelMeta {
+            id: "glm-4.5-air".into(),
+            context_window: 128_000,
+            max_output_tokens: None,
+        };
+        let v = serde_json::to_value(&meta).unwrap();
+        assert!(v.get("max_output_tokens").is_none());
+        let back: ModelMeta = serde_json::from_value(v).unwrap();
+        assert_eq!(back.context_window, 128_000);
     }
 
     #[test]

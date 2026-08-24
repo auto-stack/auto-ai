@@ -85,7 +85,8 @@ pub type AnthropicProvider has AiProvider {
             stop_reason: stop_reason,
             usage: usage,
             model: model,
-            error: None
+            error: None,
+            model_meta: None
         ))
     }
 

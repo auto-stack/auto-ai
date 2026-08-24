@@ -92,7 +92,7 @@ impl AiProvider for OpenAiProvider {
         let model_field = a2r_std::json::get_str(&v, "model");
         let model = match model_field.is_empty() { true => req.model.clone(), false => model_field, };
 
-        return Ok(CompletionResponse { content: content, tool_calls: tool_calls, stop_reason: stop_reason, usage: usage, model: model, error: None });
+        return Ok(CompletionResponse { content: content, tool_calls: tool_calls, stop_reason: stop_reason, usage: usage, model: model, error: None, model_meta: None });
     }
     async fn complete_stream(&self, req: &CompletionRequest, on_delta: Arc<dyn Fn(StreamDelta) + Send + Sync>, cancel: CancellationToken) -> Result<CompletionResponse, LlmError> {
         return crate::provider_glue::openai_complete_stream(self, req, on_delta, cancel).await;

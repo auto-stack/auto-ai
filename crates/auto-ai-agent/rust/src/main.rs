@@ -7,10 +7,11 @@
 
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
-use auto_ai_agent_a2r::agent::Agent;
+use auto_ai_agent_a2r::agent::{spawn_event_sink_with, Agent};
 use auto_ai_agent_a2r::builtin_roles::Assistant;
 use auto_ai_agent_a2r::client_impl::StreamingAiClient;
 use auto_ai_agent_a2r::echo_tool::EchoTool;
+use auto_ai_agent_a2r::StreamEvent;
 
 fn daemon_url() -> String {
     std::env::var("AAID_URL").unwrap_or_else(|_| "http://127.0.0.1:17654".into())
@@ -46,6 +47,39 @@ async fn main() {
     let role = Assistant {};
     let mut agent = Agent::new_shared(Box::new(role), Box::new(client));
 
+    // Plan 031 debt (closes 026 task 8): surface turn-boundary + thinking
+    // markers on stderr so live e2e can assert the event sequence. Thinking
+    // chunks fold into one marker per turn (they can be numerous); text
+    // deltas stay on stdout via the streaming printer above.
+    let in_thinking = Arc::new(std::sync::Mutex::new(false));
+    let itc = in_thinking.clone();
+    let sink = spawn_event_sink_with(
+        String::new(),
+        Box::new(move |ev: StreamEvent| {
+            match &ev {
+                StreamEvent::TurnStart(turn) => {
+                    *itc.lock().unwrap() = false;
+                    eprintln!("[event] turn {turn} start");
+                }
+                StreamEvent::TurnEnd(turn, _, _) => {
+                    *itc.lock().unwrap() = false;
+                    eprintln!("[event] turn {turn} end");
+                }
+                StreamEvent::Thinking(_) => {
+                    let mut folding = itc.lock().unwrap();
+                    if !*folding {
+                        *folding = true;
+                        eprintln!("[event] thinking");
+                    }
+                }
+                _ => {}
+            }
+        }),
+    );
+    // Cancellation flag: never set in the REPL (Ctrl+C kills the process);
+    // run_stream requires one.
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Register the echo tool so the model can invoke it.
     // Single-wrap (Plan 390 §15.11): ToolRegistry now stores Arc<dyn Tool>, so
     // register_shared takes Arc<dyn Tool> — Arc::new(EchoTool) coerces directly
@@ -80,7 +114,7 @@ async fn main() {
             break;
         }
 
-        match agent.run(&input).await {
+        match agent.run_stream(&input, cancel.clone(), sink.clone()).await {
             Ok(result) => {
                 // The streaming printer already output the text tokens live.
 

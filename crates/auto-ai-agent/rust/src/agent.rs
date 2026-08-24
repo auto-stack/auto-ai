@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::auto_ai_client::{ClientError, CompletionRequest, CompletionResponse, Message};
 use crate::error::{AgentError};
 use crate::memory::{Memory};
-use crate::compaction::{CompactionSettings, default_compaction_settings, should_compact, estimate_tokens, compact};
+use crate::compaction::{CompactionSettings, default_compaction_settings, should_compact, estimate_tokens, compact, is_context_overflow};
 use crate::role_def::{Role};
 use crate::skill::{SkillTool};
 use crate::ai_config::{ModelTier, Usage};
@@ -305,12 +305,14 @@ pub struct Agent {
     pub last_usage: Option<Usage>,
     pub compaction: CompactionSettings,
     pub compaction_on: bool,
+    pub compaction_window_pinned: bool,
+    pub last_summary: Option<String>,
 }
 
 impl Agent {
     pub fn new_shared(role: Box<dyn Role>, client: Box<dyn Client>) -> Agent {
         let limit = role.memory_limit();
-        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])), last_usage: None, compaction: default_compaction_settings(), compaction_on: true };
+        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])), last_usage: None, compaction: default_compaction_settings(), compaction_on: true, compaction_window_pinned: false, last_summary: None };
     }
     pub fn with_context(&mut self, context: &str) {
         let ctx = context.trim().to_string();
@@ -377,25 +379,110 @@ impl Agent {
     pub async fn run_stream(&mut self, task_msg: &str, cancel: Arc<AtomicBool>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
         return self.run_inner(task_msg, Some(cancel), sink).await;
     }
+    pub fn set_compaction_settings(&mut self, settings: CompactionSettings) {
+        self.compaction = settings;
+        self.compaction_window_pinned = true;
+    }
+    pub fn compaction_settings(&self) -> CompactionSettings {
+        return self.compaction.clone();
+    }
+    pub async fn try_compact(&mut self, sink: a2r_std::task::TaskRef<StreamEvent>, reason: &str) -> bool {
+        let model = build_model_id(self.role.model().as_str(), self.role.model_tier());
+        let est = estimate_tokens(self.memory.messages(), self.last_usage.clone());
+        match compact(self.memory.clone(), &self.client, model.as_str(), self.compaction.clone(), self.last_summary.clone()).await {
+            Ok(pair) => {
+                self.memory = pair.0;
+                self.last_summary = Some(pair.1);
+                let mut text: String = format!("context compacted (estimated {} tokens)", est);
+                if reason == "overflow" {
+                    text = format!("context overflow recovered, compacted and retried (was ~{} tokens)", est);
+                }
+                let w = StreamEvent::Warning(text);
+                sink.send(w);
+                return true;
+            },
+            Err(e) => {
+                let w = StreamEvent::Warning(format!("compaction skipped: {}", e.message()));
+                sink.send(w);
+                return false;
+            },
+        };
+        return false;
+    }
+    pub async fn request_with_recovery(&mut self, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<CompletionResponse, AgentError> {
+        let mut req = self.build_request();
+        let mut retried: bool = false;
+        let mut settled: bool = false;
+        while settled == false {
+            let sink_cb = sink.clone();
+            match self.client.complete_stream(req.clone(), Arc::new(move |ev| forward_sse_delta(ev.clone(), &sink_cb))).await {
+                Err(e) => {
+                    let mut handled: bool = false;
+                    if retried == false {
+                        if self.compaction_on {
+                            if is_context_overflow(&e.message()) {
+                                let ok = self.try_compact(sink.clone(), "overflow").await;
+                                if ok {
+                                    retried = true;
+                                    req = self.build_request();
+                                    handled = true;
+                                }                            }                        }                    }
+                    if handled == false {
+                        return Err(AgentError::Client(e));
+                    }
+                },
+                Ok(resp) => {
+                    match resp.error {
+                        Some(err) => {
+                            let mut handled2: bool = false;
+                            if retried == false {
+                                if self.compaction_on {
+                                    if is_context_overflow(&err) {
+                                        let ok = self.try_compact(sink.clone(), "overflow").await;
+                                        if ok {
+                                            retried = true;
+                                            req = self.build_request();
+                                            handled2 = true;
+                                        }                                    }                                }                            }
+                            if handled2 == false {
+                                let ev = StreamEvent::Error(err.clone());
+                                sink.send(ev);
+                                return Err(AgentError::Config(err));
+                            }
+                        },
+                        None => {
+                            
+
+
+
+                            match &resp.model_meta {
+                                Some(meta) => {
+                                    if self.compaction_window_pinned == false {
+                                        self.compaction.context_window = meta.context_window;
+                                    }
+                                },
+                                None => {},
+                            };
+                            settled = true;
+                            return Ok(resp);
+                        },
+                    };
+                },
+            };
+        }
+        return Err(AgentError::Config("request_with_recovery: unreachable".to_string()));
+    }
     pub async fn run_inner(&mut self, task_msg: &str, cancel: Option<Arc<AtomicBool>>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
 
 
         if self.compaction_on {
             let est = estimate_tokens(self.memory.messages(), self.last_usage.clone());
             if should_compact(est, self.compaction.clone()) {
-                let model = build_model_id(self.role.model().as_str(), self.role.model_tier());
-                match compact(self.memory.clone(), &self.client, model.as_str(), self.compaction.clone()).await {
-                    Ok(next) => {
-                        self.memory = next;
-                        let w = StreamEvent::Warning(format!("context compacted (estimated {} tokens)", est));
-                        sink.send(w);
-                    },
-                    Err(e) => {
-                        let w = StreamEvent::Warning(format!("compaction skipped: {}", e.message()));
-                        sink.send(w);
-                    },
-                };
-            }        }
+                let ok = self.try_compact(sink.clone(), "threshold").await;
+                if ok == false {
+                    
+
+                }            }        }
         self.memory.add("user", task_msg);
         let soft_limit = self.role.max_turns();
         let hard_limit: u32 = soft_limit * 5;
@@ -444,16 +531,12 @@ impl Agent {
                     sink.send(w);
                 }            }
             
-            let req = self.build_request();
-            
 
 
 
 
 
-
-            let sink_cb = sink.clone();
-            let resp = self.client.complete_stream(req, Arc::new(move |ev| forward_sse_delta(ev.clone(), &sink_cb))).await?;
+            let resp = self.request_with_recovery(sink.clone()).await?;
             
 
             if is_cancelled(cancel.clone()) {
@@ -464,17 +547,6 @@ impl Agent {
                 return Ok(result);
             }
             
-
-            match resp.error {
-                Some(err) => {
-                    
-
-                    let ev = StreamEvent::Error(err.clone());
-                    sink.send(ev);
-                    return Err(AgentError::Config(err));
-                },
-                None => {},
-            };
             result.total_tokens = record_usage(result.clone(), resp.clone());
             self.last_usage = resp.usage.clone();
             
@@ -641,6 +713,11 @@ impl Agent {
 /// compaction estimator).
 /// Compaction thresholds (Plan 028).
 /// Kill switch for auto-compaction (on by default).
+/// Plan 031: set_compaction_settings was called — the window no longer
+/// follows response metadata (explicit settings win, so tests and special
+/// scenarios can pin the thresholds).
+/// Plan 031: the summary produced by the most recent compaction (seed for
+/// the incremental UPDATE template on the next compaction).
 /// Build a new agent from an already-shared Role + Client spec value, and
 /// the Role's memory-limit preference. (Non-generic substitute for Rust's
 /// `new<P: Role>(role P, client)`.)
@@ -683,6 +760,20 @@ impl Agent {
 /// forwarding closure (Plan 390 §15.10 Box<dyn Fn>):
 /// `Task.spawn("EventSink", 16, f"", Box((ev) => forward(ev, on_event)))`.
 /// `mut fn`: run_inner mutates self.memory/tools.
+/// Override the compaction settings (Plan 028). Plan 031: an explicit
+/// override also pins context_window — later response metadata no longer
+/// adjusts it.
+/// The current compaction settings (Plan 031: the window may have been
+/// refreshed from response metadata — tests assert on the live value).
+/// Compact now and report via a Warning (Plan 031: shared by the pre-run
+/// threshold check and the overflow-recovery path). Updates last_summary
+/// so the next compaction can use the incremental UPDATE template.
+/// Returns false when compaction failed (caller keeps the original memory).
+/// Issue this turn's LLM request with overflow recovery (Plan 031): when
+/// the call fails with a context-overflow error — either as a transport
+/// error or in-band as resp.error — compact the memory and retry this
+/// turn's request ONCE against the compacted history (bounded, no loop).
+/// A second overflow propagates as an error.
 /// Unified ReAct loop backing run + run_stream.
 /// 
 /// Each turn: build a request from memory + role, ask the model, execute

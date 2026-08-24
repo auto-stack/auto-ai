@@ -18,9 +18,10 @@ use auto_ai_agent_a2r::agent::Agent;
 use auto_ai_agent_a2r::builtin_roles::Assistant;
 use auto_ai_agent_a2r::echo_tool::EchoTool;
 use auto_ai_agent_a2r::{Client, Role};
-// The real client + wire types (the transpiled crate re-exports them and the
-// client_impl.rs bridge makes AiClient implement the transpiled Client trait).
-use auto_ai_client::{AiClient, CompletionRequest};
+// The transpiled client + wire types (re-exported through the crate's
+// auto_ai_client shim — same path client_impl.rs uses; the bridge makes the
+// transpiled AiClient implement the transpiled Client trait).
+use auto_ai_agent_a2r::auto_ai_client::{AiClient, CompletionRequest};
 
 /// Probe the daemon; return true if it is reachable.
 async fn daemon_alive(url: &str) -> bool {

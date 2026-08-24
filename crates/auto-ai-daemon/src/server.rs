@@ -193,12 +193,20 @@ async fn chat_completions(
         // Streaming: once we enter streaming_response we commit to this
         // provider (mid-stream fallback would need to replay deltas).
         if req.stream {
-            return streaming_response(state, app_name, provider, req, permit).await;
+            // Plan 031: the metadata travels with the *actual* serving model
+            // (after this candidate won), in the SSE done tail frame.
+            let model_meta = model_meta_for(&state.cfg(), provider_name, model_id);
+            return streaming_response(state, app_name, provider, req, permit, model_meta)
+                .await;
         }
 
         // Non-streaming: try the call, fall back on retryable errors.
         match provider.complete(&req).await {
-            Ok(resp) => {
+            Ok(mut resp) => {
+                // Plan 031: embed the serving model's metadata so the client
+                // can adapt its context-window math (tier fallback may have
+                // swapped in a different-window model than requested).
+                resp.model_meta = model_meta_for(&state.cfg(), provider_name, model_id);
                 if let Some(u) = &resp.usage {
                     state.tracker.record_full(
                         &app_name,
@@ -274,6 +282,7 @@ async fn streaming_response(
     provider: Arc<dyn crate::provider::AiProvider>,
     req: ai_config::CompletionRequest,
     permit: tokio::sync::OwnedSemaphorePermit,
+    model_meta: Option<ai_config::ModelMeta>,
 ) -> axum::response::Response {
     use axum::body::Body;
     use axum::response::Response;
@@ -317,6 +326,9 @@ async fn streaming_response(
                     json!({
                         "type": "done",
                         "model": resp.model,
+                        // Plan 031: serving-model metadata in the tail frame
+                        // (consumers adapt context-window math to it).
+                        "model_meta": serde_json::to_value(&model_meta).unwrap_or(serde_json::Value::Null),
                         "usage": resp.usage,
                         "tool_calls": resp.tool_calls.iter().map(|tc| json!({
                             "id": tc.id,
@@ -438,6 +450,28 @@ fn resolve_tier_model(token: &str, config: &crate::config::DaemonConfig) -> Opti
     let provider = config.providers.get(&config.default_provider)?;
     let models: Vec<ai_config::ModelDefinition> = provider.models.clone();
     ai_config::resolve_model_id(tier, &models)
+}
+
+/// Plan 031: metadata of the model that actually served a request, looked up
+/// from the daemon config by (provider, model id). `None` when the config
+/// doesn't declare a context window for the model — we never guess a window,
+/// so consumers keep their own default rather than trusting a fabricated one.
+fn model_meta_for(
+    config: &DaemonConfig,
+    provider: &str,
+    model_id: &str,
+) -> Option<ai_config::ModelMeta> {
+    let m = config
+        .providers
+        .get(provider)?
+        .models
+        .iter()
+        .find(|m| m.id == model_id)?;
+    Some(ai_config::ModelMeta {
+        id: model_id.to_string(),
+        context_window: m.context_window?,
+        max_output_tokens: m.max_output_tokens,
+    })
 }
 
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -567,5 +601,263 @@ async fn services_ensure(
             Json(json!({"status": "error", "id": id, "error": e})),
         )
             .into_response(),
+    }
+}
+
+// ── Tests (Plan 031: metadata embedding + tier-fallback gating) ─────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LlmError;
+    use ai_config::tier::ModelDefinition;
+    use ai_config::ProviderConfig;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A mock provider whose responses are scripted per call. The call
+    /// counter is a shared handle so tests can read it after the mock moved
+    /// into the registry.
+    struct MockProvider {
+        name: String,
+        model: String,
+        responses: std::sync::Mutex<Vec<Result<ai_config::CompletionResponse, LlmError>>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl MockProvider {
+        fn new(name: &str, model: &str, responses: Vec<Result<ai_config::CompletionResponse, LlmError>>) -> Self {
+            Self {
+                name: name.into(),
+                model: model.into(),
+                responses: std::sync::Mutex::new(responses),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::AiProvider for MockProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn models(&self) -> Vec<String> {
+            vec![self.model.clone()]
+        }
+        async fn complete(&self, _req: &ai_config::CompletionRequest) -> Result<ai_config::CompletionResponse, LlmError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut q = self.responses.lock().unwrap();
+            if q.is_empty() {
+                return Ok(ai_config::CompletionResponse {
+                    content: "(script exhausted)".into(),
+                    tool_calls: vec![],
+                    stop_reason: Some("end_turn".into()),
+                    usage: None,
+                    model: self.model.clone(),
+                    error: None,
+                    model_meta: None,
+                });
+            }
+            let idx = n.min(q.len() - 1);
+            q.remove(idx)
+        }
+        async fn complete_stream(
+            &self,
+            req: &ai_config::CompletionRequest,
+            _on_delta: Arc<dyn Fn(crate::provider::StreamDelta) + Send + Sync>,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<ai_config::CompletionResponse, LlmError> {
+            self.complete(req).await
+        }
+    }
+
+    fn ok_response() -> ai_config::CompletionResponse {
+        ai_config::CompletionResponse {
+            content: "hi".into(),
+            tool_calls: vec![],
+            stop_reason: Some("end_turn".into()),
+            usage: Some(ai_config::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Default::default()
+            }),
+            model: String::new(),
+            error: None,
+            model_meta: None,
+        }
+    }
+
+    fn model_def(id: &str, tier: ai_config::ModelTier, window: Option<u32>) -> ModelDefinition {
+        ModelDefinition {
+            id: id.into(),
+            name: String::new(),
+            tier,
+            context_window: window,
+            max_output_tokens: Some(4_096),
+            cost_per_mtok: None,
+            capabilities: None,
+        }
+    }
+
+    fn test_config() -> DaemonConfig {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "mocka".to_string(),
+            ProviderConfig {
+                kind: "openai".into(),
+                base_url: "http://localhost:1".into(),
+                api_key: Some("k".into()),
+                key_env: None,
+                models: vec![model_def("model-a", ai_config::ModelTier::Mid, Some(32_000))],
+                max_concurrency: Some(4),
+                auth_required: true,
+            },
+        );
+        providers.insert(
+            "mockb".to_string(),
+            ProviderConfig {
+                kind: "openai".into(),
+                base_url: "http://localhost:2".into(),
+                api_key: Some("k".into()),
+                key_env: None,
+                models: vec![model_def("model-b", ai_config::ModelTier::Mid, Some(200_000))],
+                max_concurrency: Some(4),
+                auth_required: true,
+            },
+        );
+        DaemonConfig {
+            listen_addr: "127.0.0.1:0".into(),
+            idle_timeout_min: 10,
+            log_level: "info".into(),
+            providers,
+            default_provider: "mocka".into(),
+            default_model: "model-a".into(),
+            tier_routing: ai_config::loader::TierRouting::default(),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn state_with(
+        config: DaemonConfig,
+        mocks: Vec<(&str, &str, Vec<Result<ai_config::CompletionResponse, LlmError>>)>,
+    ) -> (Arc<AppState>, HashMap<String, Arc<AtomicUsize>>) {
+        let mut state = AppState::new(config);
+        let mut counters = HashMap::new();
+        for (name, model, responses) in mocks {
+            let mock = MockProvider::new(name, model, responses);
+            counters.insert(name.to_string(), mock.calls.clone());
+            state.registry.insert(name, Arc::new(mock));
+        }
+        (Arc::new(state), counters)
+    }
+
+    #[test]
+    fn model_meta_for_lookup() {
+        let cfg = test_config();
+        // Known model with a window → full metadata.
+        let meta = model_meta_for(&cfg, "mocka", "model-a").expect("meta must resolve");
+        assert_eq!(meta.id, "model-a");
+        assert_eq!(meta.context_window, 32_000);
+        assert_eq!(meta.max_output_tokens, Some(4_096));
+        // Unknown provider / model → None (never fabricate a window).
+        assert!(model_meta_for(&cfg, "nope", "model-a").is_none());
+        assert!(model_meta_for(&cfg, "mocka", "nope").is_none());
+        // Model without a declared window → None.
+        let mut cfg2 = test_config();
+        cfg2.providers.get_mut("mockb").unwrap().models[0].context_window = None;
+        assert!(model_meta_for(&cfg2, "mockb", "model-b").is_none());
+    }
+
+    #[tokio::test]
+    async fn usage_endpoint_projects_cache_dimensions() {
+        let (state, _) = state_with(test_config(), vec![]);
+        state.tracker.record_full("app-x", 1000, 200, 700, 250);
+        let resp = usage(State(state)).await.into_response();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let app = v["usage"]
+            .as_array()
+            .and_then(|a| a.iter().find(|o| o["app"] == "app-x"))
+            .expect("app-x missing");
+        assert_eq!(app["input_tokens"], 1000);
+        assert_eq!(app["output_tokens"], 200);
+        assert_eq!(app["total_tokens"], 1200);
+        assert_eq!(app["requests"], 1);
+        assert_eq!(app["cache_read_tokens"], 700);
+        assert_eq!(app["cache_write_tokens"], 250);
+    }
+
+    async fn call_chat(state: Arc<AppState>, model: &str) -> (axum::http::StatusCode, serde_json::Value) {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-app-name", "test".parse().unwrap());
+        let req = ai_config::CompletionRequest::single(model, "hi");
+        let resp = chat_completions(State(state), headers, Json(req)).await.into_response();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, v)
+    }
+
+    #[tokio::test]
+    async fn response_embeds_serving_model_meta() {
+        // A tier request whose first candidate (mocka, 32k window) serves it.
+        let (state, _) = state_with(
+            test_config(),
+            vec![("mocka", "model-a", vec![Ok(ok_response())])],
+        );
+        let (status, v) = call_chat(state.clone(), "tier:mid").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let meta = v["model_meta"].as_object().expect("model_meta missing");
+        assert_eq!(meta["id"], "model-a");
+        assert_eq!(meta["context_window"], 32_000);
+        // usage recorded for the app
+        assert_eq!(state.tracker.get("test").total_input_tokens, 10);
+    }
+
+    #[tokio::test]
+    async fn quota_error_aborts_candidate_chain() {
+        // Plan 028 debt: quota/billing exhaustion must NOT consume the chain —
+        // mocka fails with a quota error and mockb must never be called.
+        let quota_err = Err(LlmError::Upstream {
+            status: 429,
+            message: "You exceeded your current quota".into(),
+            retryable: true,
+        });
+        let (state, counters) = state_with(
+            test_config(),
+            vec![
+                ("mocka", "model-a", vec![quota_err]),
+                ("mockb", "model-b", vec![Ok(ok_response())]),
+            ],
+        );
+        let (status, v) = call_chat(state, "tier:mid").await;
+        assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{v}");
+        assert_eq!(v["error"]["type"], "quota_exhausted");
+        assert_eq!(counters["mockb"].load(Ordering::SeqCst), 0, "quota error must not consume the candidate chain");
+    }
+
+    #[tokio::test]
+    async fn retryable_error_falls_back_to_next_candidate() {
+        // Control: a retryable 5xx DOES move to the next candidate, and the
+        // response's model_meta reflects the model that actually served it.
+        let server_err = Err(LlmError::Upstream {
+            status: 503,
+            message: "unavailable".into(),
+            retryable: true,
+        });
+        let (state, counters) = state_with(
+            test_config(),
+            vec![
+                ("mocka", "model-a", vec![server_err]),
+                ("mockb", "model-b", vec![Ok(ok_response())]),
+            ],
+        );
+        let (status, v) = call_chat(state, "tier:mid").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["model_meta"]["id"], "model-b");
+        assert_eq!(v["model_meta"]["context_window"], 200_000, "meta must follow the fallback model");
+        assert_eq!(counters["mocka"].load(Ordering::SeqCst), 1);
     }
 }

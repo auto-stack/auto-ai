@@ -518,7 +518,8 @@ if [ -f "$RUST/server.rs" ]; then
     sed -i 's|server_glue\.streaming_response|crate::server_glue::streaming_response|' "$RUST/server.rs"
     # streaming_response is async (Phase 3.6 made it a real impl) — the call in
     # chat_completions's streaming branch needs .await.
-    sed -i 's|return crate::server_glue::streaming_response(state, app_name, provider, req, permit);|return crate::server_glue::streaming_response(state, app_name, provider, req, permit).await;|' "$RUST/server.rs"
+    # Plan 031: streaming_response now also takes the serving model's meta.
+    sed -i 's|return crate::server_glue::streaming_response(state, app_name, provider, req, permit, meta);|return crate::server_glue::streaming_response(state, app_name, provider, req, permit, meta).await;|' "$RUST/server.rs"
     # candidates.push((c.provider, c.model)): c is &TierCandidate (iterating
     # &chain) — clone the borrowed String fields before moving into the tuple.
     sed -i 's|candidates.push((c.provider, c.model))|candidates.push((c.provider.clone(), c.model.clone()))|' "$RUST/server.rs"

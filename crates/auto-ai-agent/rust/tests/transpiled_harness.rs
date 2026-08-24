@@ -25,6 +25,7 @@ use auto_ai_agent_a2r::agent::{spawn_event_sink, spawn_event_sink_with};
 use auto_ai_agent_a2r::auto_ai_client::{
     ClientError, CompletionRequest, CompletionResponse, ToolCall,
 };
+use auto_ai_client_a2r::ContentBlock;
 // JsonValue (= serde_json::Value) is the SSE event type complete_stream forwards.
 use auto_ai_agent_a2r::wire::JsonValue;
 
@@ -53,6 +54,8 @@ struct ScriptedClient {
     responses: Mutex<Vec<CompletionResponse>>,
     /// Captures the last request (for assertions on preferred_provider etc.).
     last_request: Mutex<Option<CompletionRequest>>,
+    /// Every request seen, in order (Plan 031: compaction-order assertions).
+    seen: Mutex<Vec<CompletionRequest>>,
 }
 
 impl ScriptedClient {
@@ -60,7 +63,13 @@ impl ScriptedClient {
         Self {
             responses: Mutex::new(responses),
             last_request: Mutex::new(None),
+            seen: Mutex::new(vec![]),
         }
+    }
+
+    /// Every CompletionRequest seen, in order.
+    fn requests(&self) -> Vec<CompletionRequest> {
+        self.seen.lock().unwrap().clone()
     }
 }
 
@@ -70,7 +79,8 @@ impl Client for ScriptedClient {
         &self,
         req: CompletionRequest,
     ) -> Result<CompletionResponse, ClientError> {
-        *self.last_request.lock().unwrap() = Some(req);
+        *self.last_request.lock().unwrap() = Some(req.clone());
+        self.seen.lock().unwrap().push(req);
         let mut q = self.responses.lock().unwrap();
         if q.is_empty() {
             Ok(text_response("(no more scripted responses)"))
@@ -213,6 +223,29 @@ fn text_response(s: &str) -> CompletionResponse {
         usage: None,
         model: "mock".into(),
         error: None,
+        model_meta: None,
+    }
+}
+
+/// Plan 031 parity helpers (mirror rust-ref mvp_harness.rs).
+fn with_model_meta(mut r: CompletionResponse, window: u32) -> CompletionResponse {
+    r.model_meta = Some(auto_ai_agent_a2r::auto_ai_client::ModelMeta {
+        id: r.model.clone(),
+        context_window: window,
+        max_output_tokens: None,
+    });
+    r
+}
+
+fn overflow_error_response(msg: &str) -> CompletionResponse {
+    CompletionResponse {
+        content: String::new(),
+        tool_calls: vec![],
+        stop_reason: Some("error".into()),
+        usage: None,
+        model: "mock".into(),
+        error: Some(msg.into()),
+        model_meta: None,
     }
 }
 
@@ -228,6 +261,7 @@ fn tool_call_response(tool_name: &str, args: Value) -> CompletionResponse {
         usage: None,
         model: "mock".into(),
         error: None,
+        model_meta: None,
     }
 }
 
@@ -872,7 +906,7 @@ async fn t20_tool_details_events_not_llm() {
 
 #[tokio::test]
 async fn t21_compact_summarizes_prefix_keeps_tail() {
-    use auto_ai_agent_a2r::{Memory, compact, default_compaction_settings, CompactionSettings};
+    use auto_ai_agent_a2r::{Memory, compact, CompactionSettings};
     use auto_ai_agent_a2r::compaction::find_cut_point;
     use auto_ai_client_a2r::ContentBlock;
 
@@ -897,7 +931,7 @@ fix the bug
         keep_recent_tokens: 2_000,
     };
     let boxed: Box<dyn Client> = Box::new(client.clone());
-    let next = compact(mem, &boxed, "tier:mid", settings).await.unwrap();
+    let (next, _summary) = compact(mem, &boxed, "tier:mid", settings, None).await.unwrap();
 
     // Exactly one isolated summary request.
     let reqs = client.requests();
@@ -920,4 +954,217 @@ fix the bug
     assert_eq!(msgs.last().unwrap().role, "assistant");
     // Cut-point sanity (parity with rust-ref unit tests).
     let _ = find_cut_point(msgs.clone(), 2_000);
+}
+
+// ─── T22-T24: Plan 031 parity — window follow / overflow recovery ───────────
+
+/// Parity of rust-ref's harness_agent_auto_compacts_before_run: the pre-run
+/// threshold check fires exactly one isolated summary request before the
+/// real turn, and the compacted anchor leads the retried request.
+#[tokio::test]
+async fn t22_agent_auto_compacts_before_run() {
+    use auto_ai_agent_a2r::CompactionSettings;
+
+    let filler = |i: usize| text_response(&format!("r{} {}", i, "w".repeat(2000)));
+    let client = SseScriptedClient::new(
+        vec![
+            filler(0),
+            filler(1),
+            filler(2),
+            text_response("## Goal
+keep going"),
+            text_response("ok"),
+        ],
+        vec![vec![], vec![], vec![], vec![], vec![]],
+    );
+    let mut agent = Agent::new_shared(
+        Box::new(TestRole::new()),
+        Box::new(client.clone()),
+    );
+    agent.set_compaction_settings(CompactionSettings {
+        context_window: 3_000,
+        reserve_tokens: 500,
+        keep_recent_tokens: 1_200,
+    });
+
+    let long_task = format!("task {}", "q".repeat(1500));
+    for _ in 0..3 {
+        agent.run(&long_task).await.unwrap();
+    }
+    assert_eq!(client.requests().len(), 3, "no summary expected yet");
+
+    let result = agent.run(&long_task).await.unwrap();
+    assert_eq!(result.output, "ok");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "expected 3 fillers + 1 summary + 1 real");
+    assert!(
+        reqs[3].system_prompt.as_deref().unwrap_or("").contains("compress"),
+        "request 4 must be the isolated summary request"
+    );
+    assert!(
+        reqs[3].system_prompt.as_deref().unwrap_or("").contains("update an existing") == false,
+        "first compaction must use the fresh template"
+    );
+    let m0 = &reqs[4].messages[0];
+    assert!(
+        matches!(&m0.content[0], ContentBlock::Text { text } if text.contains("Compacted conversation summary")),
+        "compacted memory must lead the next LLM request"
+    );
+}
+
+/// Parity of rust-ref's harness_window_follows_response_metadata_until_pinned:
+/// the compaction window follows resp.model_meta until set_compaction_settings
+/// pins it.
+#[tokio::test]
+async fn t23_window_follows_response_metadata() {
+    use auto_ai_agent_a2r::CompactionSettings;
+
+    let client = SseScriptedClient::new(
+        vec![
+            with_model_meta(text_response("first"), 200_000),
+            with_model_meta(text_response("second"), 32_000),
+        ],
+        vec![vec![], vec![]],
+    );
+    let mut agent = Agent::new_shared(
+        Box::new(TestRole::new()),
+        Box::new(client.clone()),
+    );
+    agent.run("q1").await.unwrap();
+    assert_eq!(agent.compaction_settings().context_window, 200_000);
+    agent.run("q2").await.unwrap();
+    assert_eq!(agent.compaction_settings().context_window, 32_000);
+
+    // Pinned settings win over later metadata.
+    agent.set_compaction_settings(CompactionSettings {
+        context_window: 1_000,
+        reserve_tokens: 100,
+        keep_recent_tokens: 500,
+    });
+    let client2 = SseScriptedClient::new(
+        vec![with_model_meta(text_response("x"), 400_000)],
+        vec![vec![]],
+    );
+    let mut agent2 = Agent::new_shared(
+        Box::new(TestRole::new()),
+        Box::new(client2),
+    );
+    agent2.set_compaction_settings(CompactionSettings {
+        context_window: 1_000,
+        reserve_tokens: 100,
+        keep_recent_tokens: 500,
+    });
+    agent2.run("q").await.unwrap();
+    assert_eq!(agent2.compaction_settings().context_window, 1_000);
+}
+
+/// Parity of rust-ref's overflow-recovery pair: an in-band overflow error
+/// (resp.error) triggers compact + exactly one retry; a second overflow fails
+/// the run without looping.
+#[tokio::test]
+async fn t24_overflow_error_recovers_once_then_fails() {
+    use auto_ai_agent_a2r::CompactionSettings;
+
+    let filler = |i: usize| text_response(&format!("r{} {}", i, "w".repeat(2000)));
+    let client = SseScriptedClient::new(
+        vec![
+            filler(0),
+            filler(1),
+            filler(2),
+            overflow_error_response("prompt is too long: 90000 tokens > 32000 maximum"),
+            text_response("## Goal
+recover"),
+            text_response("recovered answer"),
+        ],
+        vec![vec![], vec![], vec![], vec![], vec![], vec![]],
+    );
+    let mut agent = Agent::new_shared(
+        Box::new(TestRole::new()),
+        Box::new(client.clone()),
+    );
+    agent.set_compaction_settings(CompactionSettings {
+        context_window: 1_000_000, // never trips the pre-run threshold
+        reserve_tokens: 500,
+        keep_recent_tokens: 1_000,
+    });
+    for _ in 0..3 {
+        agent
+            .run(&format!("task {}", "q".repeat(1500)))
+            .await
+            .unwrap();
+    }
+    let baseline = client.requests().len();
+
+    let collected: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(vec![]));
+    let cc = collected.clone();
+    let sink = spawn_event_sink_with(
+        String::new(),
+        Box::new(move |ev: StreamEvent| {
+            if matches!(ev, StreamEvent::Warning(_) | StreamEvent::Error(_)) {
+                cc.lock().unwrap().push(ev);
+            }
+        }),
+    );
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let result = agent.run_stream("make it overflow", cancel, sink).await.unwrap();
+    a2r_std::task::drain_all().await;
+    // The recovery warning must surface on the stream (Plan 031 parity).
+    assert!(
+        collected
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Warning(w) if w.contains("context overflow recovered"))),
+        "missing overflow recovery warning"
+    );
+    assert_eq!(result.output, "recovered answer");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), baseline + 3, "expected overflow + summary + retry");
+    assert!(
+        reqs[baseline + 1].system_prompt.as_deref().unwrap_or("").contains("compress"),
+        "recovery must run the isolated summary request"
+    );
+    assert!(
+        matches!(&reqs[baseline + 2].messages[0].content[0], ContentBlock::Text { text } if text.contains("Compacted conversation summary")),
+        "retry must run against the compacted memory"
+    );
+
+    // Second overflow on both attempts → the run fails after ONE retry.
+    let client2 = SseScriptedClient::new(
+        vec![
+            filler(3),
+            filler(4),
+            filler(5),
+            overflow_error_response("prompt is too long: 90000 tokens > 32000 maximum"),
+            text_response("## Goal
+recover"),
+            overflow_error_response("prompt is too long: 70000 tokens > 32000 maximum"),
+            text_response("never reached"),
+        ],
+        vec![vec![], vec![], vec![], vec![], vec![], vec![], vec![]],
+    );
+    let mut agent2 = Agent::new_shared(
+        Box::new(TestRole::new()),
+        Box::new(client2.clone()),
+    );
+    agent2.set_compaction_settings(CompactionSettings {
+        context_window: 1_000_000,
+        reserve_tokens: 500,
+        keep_recent_tokens: 1_000,
+    });
+    // Preload enough turns for a compaction to have something to cut.
+    for _ in 0..3 {
+        agent2.run(&format!("task {}", "q".repeat(1500))).await.unwrap();
+    }
+    let baseline2 = client2.requests().len();
+    let err = agent2
+        .run("overflow twice")
+        .await
+        .expect_err("second overflow must fail the run");
+    assert!(err.message().contains("prompt is too long"), "{}", err.message());
+    assert_eq!(
+        client2.requests().len(),
+        baseline2 + 3,
+        "overflow + summary + one retry only (bounded recovery)"
+    );
 }

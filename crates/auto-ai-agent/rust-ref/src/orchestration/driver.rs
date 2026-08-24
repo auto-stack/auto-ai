@@ -371,6 +371,7 @@ mod tests {
                     usage: None,
                     model: "mock".into(),
                     error: None,
+                    model_meta: None,
                 });
             }
             Ok(q.remove(0))
@@ -402,6 +403,7 @@ mod tests {
             usage: None,
             model: "mock".into(),
             error: None,
+            model_meta: None,
         }
     }
 

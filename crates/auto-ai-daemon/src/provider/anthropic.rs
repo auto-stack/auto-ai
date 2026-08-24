@@ -162,12 +162,7 @@ impl AiProvider for AnthropicProvider {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        let usage = json.get("usage").map(|u| Usage {
-            input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
-            output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
-            cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32,
-            cache_write_tokens: u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32,
-        });
+        let usage = json.get("usage").map(usage_from_json);
 
         let model = json["model"]
             .as_str()
@@ -181,6 +176,7 @@ impl AiProvider for AnthropicProvider {
             usage,
             model,
             error: None,
+            model_meta: None,
         })
     }
 
@@ -281,16 +277,7 @@ impl AiProvider for AnthropicProvider {
                 "message_start" => {
                     // Anthropic reports input_tokens in the initial message_start.
                     if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
-                        let (cr, cw) = (
-                            u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32,
-                            u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32,
-                        );
-                        *usage = Some(Usage {
-                            input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
-                            output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
-                            cache_read_tokens: cr,
-                            cache_write_tokens: cw,
-                        });
+                        *usage = Some(usage_from_json(u));
                     }
                 }
                 "message_delta" => {
@@ -393,11 +380,24 @@ impl AiProvider for AnthropicProvider {
             usage,
             model: req.model.clone(),
             error: None,
+            model_meta: None,
         })
     }
 }
 
 // ── Anthropic wire-format adapters ──────────────────────────────────────────
+
+/// Parse an Anthropic `usage` object (non-streaming body or the streaming
+/// `message_start.message.usage` frame) into a canonical [`Usage`], keeping
+/// the cache dimensions (Plan 028).
+fn usage_from_json(u: &serde_json::Value) -> Usage {
+    Usage {
+        input_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
+        output_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_write_tokens: u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32,
+    }
+}
 
 /// Translate our provider-agnostic content blocks into Anthropic's content
 /// block array. Plain `Text` → `{type:"text"}`, and the user-side
@@ -493,6 +493,51 @@ mod tests {
         assert_eq!(last["type"], "tool_result");
         assert_eq!(last["tool_use_id"], "call_1");
         assert_eq!(last["content"], "42");
+    }
+
+    #[test]
+    fn usage_from_json_keeps_cache_dimensions() {
+        // Non-streaming body shape (also message_start.message.usage).
+        let u = serde_json::json!({
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "cache_read_input_tokens": 700,
+            "cache_creation_input_tokens": 250
+        });
+        let parsed = usage_from_json(&u);
+        assert_eq!(parsed.input_tokens, 1000);
+        assert_eq!(parsed.output_tokens, 200);
+        assert_eq!(parsed.cache_read_tokens, 700);
+        assert_eq!(parsed.cache_write_tokens, 250);
+        // Missing fields default to 0 (older API versions without caching).
+        let bare = usage_from_json(&serde_json::json!({"input_tokens": 5, "output_tokens": 2}));
+        assert_eq!((bare.cache_read_tokens, bare.cache_write_tokens), (0, 0));
+    }
+
+    #[test]
+    fn stream_usage_accumulates_message_start_then_delta() {
+        // message_start seeds input + cache dims; message_delta finalizes
+        // output_tokens without touching the rest (stream-path shapes).
+        let start = serde_json::json!({
+            "type": "message_start",
+            "message": { "usage": {
+                "input_tokens": 800, "output_tokens": 1,
+                "cache_read_input_tokens": 500, "cache_creation_input_tokens": 100
+            }}
+        });
+        let mut usage: Option<Usage> = None;
+        if let Some(u) = start.get("message").and_then(|m| m.get("usage")) {
+            usage = Some(usage_from_json(u));
+        }
+        let u = usage.as_mut().unwrap();
+        let delta = serde_json::json!({"type": "message_delta", "usage": {"output_tokens": 342}});
+        if let Some(du) = delta.get("usage") {
+            u.output_tokens = du["output_tokens"].as_u64().unwrap_or(0) as u32;
+        }
+        assert_eq!(u.input_tokens, 800);
+        assert_eq!(u.output_tokens, 342);
+        assert_eq!(u.cache_read_tokens, 500);
+        assert_eq!(u.cache_write_tokens, 100);
     }
 
     #[test]

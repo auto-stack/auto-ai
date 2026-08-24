@@ -149,12 +149,7 @@ impl AiProvider for OpenAiProvider {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        let usage = json.get("usage").map(|u| Usage {
-            input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-            output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-            cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
-            cache_write_tokens: 0,
-        });
+        let usage = json.get("usage").map(usage_from_json);
 
         let model = json["model"]
             .as_str()
@@ -168,6 +163,7 @@ impl AiProvider for OpenAiProvider {
             usage,
             model,
             error: None,
+            model_meta: None,
         })
     }
 
@@ -239,12 +235,7 @@ impl AiProvider for OpenAiProvider {
             // The final usage frame carries a top-level `usage` object
             // (with stream_options.include_usage). choices is empty there.
             if let Some(u) = json.get("usage") {
-                *usage = Some(Usage {
-                    input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                    output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-                    cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
-                    cache_write_tokens: 0,
-                });
+                *usage = Some(usage_from_json(u));
             }
             // Parse tool_calls deltas (incremental by index).
             if let Some(tcs) = json["choices"][0]["delta"]["tool_calls"].as_array() {
@@ -372,13 +363,44 @@ impl AiProvider for OpenAiProvider {
             usage,
             model: req.model.clone(),
             error: None,
+            model_meta: None,
         })
+    }
+}
+
+/// Parse an OpenAI `usage` object (non-streaming body, or the streaming
+/// final frame enabled by `stream_options.include_usage`) into a canonical
+/// [`Usage`]. Cached prompt tokens come from `prompt_tokens_details`.
+fn usage_from_json(u: &serde_json::Value) -> Usage {
+    Usage {
+        input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+        output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_write_tokens: 0,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_from_json_keeps_cached_tokens() {
+        // Non-streaming body and the streaming final frame share this shape.
+        let u = serde_json::json!({
+            "prompt_tokens": 4096,
+            "completion_tokens": 512,
+            "prompt_tokens_details": { "cached_tokens": 3584 }
+        });
+        let parsed = usage_from_json(&u);
+        assert_eq!(parsed.input_tokens, 4096);
+        assert_eq!(parsed.output_tokens, 512);
+        assert_eq!(parsed.cache_read_tokens, 3584);
+        assert_eq!(parsed.cache_write_tokens, 0, "OpenAI wire has no cache-write field");
+        // Missing details object → zero cache (older/compatible endpoints).
+        let bare = usage_from_json(&serde_json::json!({"prompt_tokens": 10, "completion_tokens": 5}));
+        assert_eq!(bare.cache_read_tokens, 0);
+    }
 
     #[test]
     fn build_body_basic() {

@@ -151,6 +151,12 @@ impl ProviderRegistry {
             .ok_or(LlmError::NoProvider)
     }
 
+    /// Insert (or replace) a provider by name. Used by tests to inject mock
+    /// providers into an otherwise config-built registry (Plan 031).
+    pub fn insert(&mut self, name: &str, provider: Arc<dyn AiProvider>) {
+        self.providers.insert(name.to_string(), provider);
+    }
+
     pub fn get(&self, name: &str) -> Option<&Arc<dyn AiProvider>> {
         self.providers.get(name)
     }

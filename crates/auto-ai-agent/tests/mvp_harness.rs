@@ -22,7 +22,7 @@ use auto_ai_agent::{
 use auto_ai_agent::orchestration::{
     FlowSpec, FlowStep, PipelineDriver, PipelineEvent, AgentFactory,
 };
-use auto_ai_client::{CompletionRequest, CompletionResponse, ClientError, ToolCall, Usage};
+use auto_ai_client::{CompletionRequest, CompletionResponse, ClientError, Message, ToolCall, Usage};
 
 // ── Test mocks ─────────────────────────────────────────────────────────────
 
@@ -131,6 +131,7 @@ impl ScriptedClient {
                 content: "(empty)".into(), tool_calls: vec![],
                 stop_reason: Some("end_turn".into()), usage: None,
                 model: "mock".into(), error: None,
+                model_meta: None,
             }
         } else {
             q.remove(0)
@@ -180,7 +181,7 @@ fn text_response(s: &str) -> CompletionResponse {
     CompletionResponse {
         content: s.into(), tool_calls: vec![],
         stop_reason: Some("end_turn".into()), usage: None,
-        model: "mock".into(), error: None,
+        model: "mock".into(), error: None, model_meta: None,
     }
 }
 
@@ -191,7 +192,7 @@ fn tool_call_response(text: &str, tool_name: &str, args: Value) -> CompletionRes
             id: "call_1".into(), name: tool_name.into(), input: args,
         }],
         stop_reason: Some("tool_use".into()), usage: None,
-        model: "mock".into(), error: None,
+        model: "mock".into(), error: None, model_meta: None,
     }
 }
 
@@ -207,7 +208,7 @@ fn multi_tool_response(calls: Vec<ToolCall>) -> CompletionResponse {
         content: String::new(),
         tool_calls: calls,
         stop_reason: Some("tool_use".into()), usage: None,
-        model: "mock".into(), error: None,
+        model: "mock".into(), error: None, model_meta: None,
     }
 }
 
@@ -702,7 +703,9 @@ fix the bug
         reserve_tokens: 1_000,
         keep_recent_tokens: 2_000,
     };
-    let next = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &settings).await.unwrap();
+    let (next, _summary) = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &settings, None)
+        .await
+        .unwrap();
 
     // Exactly one summary request went out, isolated (its own system prompt).
     let reqs = client.requests();
@@ -792,4 +795,273 @@ keep going
         events.lock().unwrap().iter().any(|e| matches!(e, StreamEvent::Warning { text } if text.contains("context compacted"))),
         "missing compaction warning"
     );
+}
+
+/// Plan 031 debt: `with_abort_after` (the streaming-abort simulation seam,
+/// Plan 026 test infra) had zero consumers. This exercises the mid-stream
+/// cancel path deterministically: the client sets the shared cancel flag
+/// after the 3rd delta chunk, the loop's post-response checkpoint observes
+/// it, and the run ends with Cancelled — never Done.
+#[tokio::test]
+async fn harness_abort_after_mid_stream_cancels_run() {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let client = ScriptedClient::new(vec![text_response(&"answer ".repeat(20))])
+        .with_chunk_size(5)
+        .with_abort_after(3, cancel.clone());
+    let mut agent = Agent::new(TestRole, Arc::new(client));
+
+    let (events, cb) = collect_events();
+    let result = agent
+        .run_stream("stream then cancel", cb, cancel)
+        .await
+        .unwrap();
+    assert!(result.turns <= 1, "the run must not continue past the aborted turn");
+
+    let evs = events.lock().unwrap();
+    assert!(
+        evs.iter().any(|e| matches!(e, StreamEvent::Cancelled { .. })),
+        "mid-stream abort must surface a Cancelled event"
+    );
+    assert!(
+        !evs.iter().any(|e| matches!(e, StreamEvent::Done { .. })),
+        "an aborted run must not emit Done"
+    );
+}
+
+// ── Harness 9: Plan 031 — window follow + overflow recovery + incremental
+// summaries ─────────────────────────────────────────────────────────────────
+
+/// Attach model metadata to a scripted response (window-follow assertions).
+fn with_model_meta(mut r: CompletionResponse, window: u32) -> CompletionResponse {
+    r.model_meta = Some(auto_ai_client::ModelMeta {
+        id: r.model.clone(),
+        context_window: window,
+        max_output_tokens: None,
+    });
+    r
+}
+
+/// A response carrying an in-band overflow error (200 + SSE error event —
+/// the daemon's non-fatal error channel).
+fn overflow_error_response(msg: &str) -> CompletionResponse {
+    CompletionResponse {
+        content: String::new(),
+        tool_calls: vec![],
+        stop_reason: Some("error".into()),
+        usage: None,
+        model: "mock".into(),
+        error: Some(msg.into()),
+        model_meta: None,
+    }
+}
+
+#[tokio::test]
+async fn harness_window_follows_response_metadata_until_pinned() {
+    use auto_ai_agent::CompactionSettings;
+
+    // Turn 1 is served by a 200k model; turn 2 by a 32k one (tier fallback).
+    let client = Arc::new(ScriptedClient::new(vec![
+        with_model_meta(text_response("first"), 200_000),
+        with_model_meta(text_response("second"), 32_000),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.run("q1").await.unwrap();
+    // No explicit settings → the window followed the first response.
+    assert_eq!(agent.compaction_settings().context_window, 200_000);
+    agent.run("q2").await.unwrap();
+    // The 32k model took over → the window shrank with it.
+    assert_eq!(agent.compaction_settings().context_window, 32_000);
+
+    // Explicit settings win: later metadata no longer touches the window.
+    agent.set_compaction_settings(CompactionSettings {
+        context_window: 1_000,
+        reserve_tokens: 100,
+        keep_recent_tokens: 500,
+    });
+    let client2 = Arc::new(ScriptedClient::new(vec![with_model_meta(text_response("x"), 400_000)]));
+    let mut agent2 = Agent::new(TestRole, client2);
+    agent2.set_compaction_settings(CompactionSettings {
+        context_window: 1_000,
+        reserve_tokens: 100,
+        keep_recent_tokens: 500,
+    });
+    agent2.run("q").await.unwrap();
+    assert_eq!(agent2.compaction_settings().context_window, 1_000);
+}
+
+#[tokio::test]
+async fn harness_overflow_error_recovers_via_compaction_and_retry() {
+    use auto_ai_agent::CompactionSettings;
+
+    // Preload enough history for a compaction to have something to cut, then:
+    // response 1 = the run's first LLM call fails with an overflow error,
+    // response 2 = the compaction summary, response 3 = the retried call.
+    let filler = |i: usize| text_response(&format!("r{i} {}", "w".repeat(2000)));
+    let client = Arc::new(ScriptedClient::new(vec![
+        filler(0),
+        filler(1),
+        filler(2),
+        overflow_error_response(
+            "anthropic error: prompt is too long: 90000 tokens > 32000 maximum",
+        ),
+        text_response("## Goal\nrecover"),
+        text_response("recovered answer"),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.set_compaction_settings(CompactionSettings {
+        context_window: 1_000_000, // never trips the pre-run threshold
+        reserve_tokens: 500,
+        keep_recent_tokens: 1_000,
+    });
+    for _ in 0..3 {
+        agent.run(&format!("task {}", "q".repeat(1500))).await.unwrap();
+    }
+    let baseline = client.requests().len();
+
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = agent.run_stream("make it overflow", cb, cancel).await.unwrap();
+    assert_eq!(result.output, "recovered answer");
+
+    let reqs = client.requests();
+    // Overflowed attempt, compaction summary, retried attempt.
+    assert_eq!(reqs.len(), baseline + 3, "expected overflow + summary + retry");
+    let summary = &reqs[baseline + 1];
+    assert!(
+        summary.system_prompt.as_deref().unwrap_or("").contains("compress"),
+        "recovery must run the isolated summary request"
+    );
+    // The retried request leads with the compacted anchor.
+    let retry = &reqs[baseline + 2];
+    assert!(
+        matches!(&retry.messages[0].content[0], auto_ai_client::ContentBlock::Text { text } if text.contains("Compacted conversation summary")),
+        "retry must run against the compacted memory"
+    );
+    // The stream saw the recovery warning.
+    assert!(
+        events.lock().unwrap().iter().any(|e| matches!(e, StreamEvent::Warning { text } if text.contains("context overflow recovered"))),
+        "missing overflow recovery warning"
+    );
+}
+
+#[tokio::test]
+async fn harness_second_overflow_fails_without_loop() {
+    use auto_ai_agent::CompactionSettings;
+
+    // Both attempts overflow → the run must end in an error after exactly
+    // one retry (bounded recovery, no infinite compact/retry loop).
+    let filler = |i: usize| text_response(&format!("r{i} {}", "w".repeat(2000)));
+    let client = Arc::new(ScriptedClient::new(vec![
+        filler(0),
+        filler(1),
+        filler(2),
+        overflow_error_response("prompt is too long: 90000 tokens > 32000 maximum"),
+        text_response("## Goal\nrecover"),
+        overflow_error_response("prompt is too long: 70000 tokens > 32000 maximum"),
+        // The 7th response must never be consumed if recovery is bounded…
+        text_response("never reached"),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.set_compaction_settings(CompactionSettings {
+        context_window: 1_000_000,
+        reserve_tokens: 500,
+        keep_recent_tokens: 1_000,
+    });
+    for _ in 0..3 {
+        agent.run(&format!("task {}", "q".repeat(1500))).await.unwrap();
+    }
+    let baseline = client.requests().len();
+
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let err = agent
+        .run_stream("overflow twice", cb, cancel)
+        .await
+        .expect_err("second overflow must fail the run");
+    assert!(err.to_string().contains("prompt is too long"), "{err}");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), baseline + 3, "overflow + summary + one retry only");
+    assert!(
+        events.lock().unwrap().iter().any(|e| matches!(e, StreamEvent::Error { .. })),
+        "the failed run must surface an Error event"
+    );
+}
+
+#[tokio::test]
+async fn harness_second_compaction_uses_incremental_update() {
+    use auto_ai_agent::compaction::find_cut_point;
+    use auto_ai_client::ContentBlock;
+
+    // 50 turns × ~200 tokens. First compaction summarizes fresh; then more
+    // turns accumulate and a second compaction must send the previous
+    // summary (UPDATE template with <previous-summary>).
+    let mut mem = auto_ai_agent::Memory::new(None);
+    for i in 0..50 {
+        mem.add("user", &format!("turn {i}: {}", "x".repeat(800)));
+        mem.add("assistant", &"y".repeat(800));
+    }
+    // A read + a write in the prefix so the machine manifest is non-empty.
+    mem.add_message(Message {
+        role: "assistant".into(),
+        content: vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "read_file".into(),
+            input: serde_json::json!({"path": "src/old.rs"}),
+        }],
+    });
+    mem.add("user", "result");
+    for i in 50..60 {
+        mem.add("user", &format!("turn {i}: {}", "x".repeat(800)));
+        mem.add("assistant", &"y".repeat(800));
+    }
+
+    let client = Arc::new(ScriptedClient::new(vec![
+        text_response("## Goal\nfirst summary"),
+        text_response("## Goal\nsecond summary"),
+    ]));
+    let client_dyn: Arc<dyn Client> = client.clone();
+    let settings = auto_ai_agent::CompactionSettings {
+        context_window: 10_000,
+        reserve_tokens: 1_000,
+        keep_recent_tokens: 2_000,
+    };
+
+    let (mut mem1, summary1) = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &settings, None)
+        .await
+        .unwrap();
+    // The fresh anchor carries the machine file manifest.
+    let m0 = &mem1.messages()[0];
+    match &m0.content[0] {
+        ContentBlock::Text { text } => {
+            assert!(text.contains("<read-files>"), "machine manifest missing: {text}");
+            assert!(text.contains("src/old.rs"));
+        }
+        other => panic!("expected text anchor, got {other:?}"),
+    }
+    let all = mem.messages();
+    if let Some(cut) = find_cut_point(&all, 2_000) {
+        assert!(cut >= 1 && cut < all.len());
+    }
+
+    // Grow the tail past the budget again, then compact incrementally.
+    for i in 60..80 {
+        mem1.add("user", &format!("turn {i}: {}", "x".repeat(800)));
+        mem1.add("assistant", &"y".repeat(800));
+    }
+    let (_mem2, summary2) =
+        auto_ai_agent::compact(&mem1, &client_dyn, "tier:mid", &settings, Some(&summary1))
+            .await
+            .unwrap();
+
+    // The second summary request embedded the previous summary verbatim.
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 2);
+    let body = serde_json::to_string(&reqs[1]).unwrap();
+    assert!(
+        body.contains("previous-summary"),
+        "incremental request must embed the previous summary"
+    );
+    assert!(body.contains("first summary"));
+    // The returned summary is the updated one (anchor replacement, not stacking).
+    assert!(summary2.contains("second summary"));
 }

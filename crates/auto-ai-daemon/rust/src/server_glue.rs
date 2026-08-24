@@ -114,6 +114,7 @@ pub async fn streaming_response(
     provider: std::sync::Arc<dyn crate::provider::AiProvider>,
     req: ai_config::CompletionRequest,
     permit: tokio::sync::OwnedSemaphorePermit,
+    model_meta: Option<ai_config::ModelMeta>,
 ) -> axum::response::Response {
     use axum::body::Body;
     use axum::response::Response;
@@ -155,6 +156,9 @@ pub async fn streaming_response(
                     serde_json::json!({
                         "type": "done",
                         "model": resp.model,
+                        // Plan 031: serving-model metadata in the tail frame
+                        // (consumers adapt context-window math to it).
+                        "model_meta": serde_json::to_value(&model_meta).unwrap_or(serde_json::Value::Null),
                         "usage": resp.usage,
                         "tool_calls": resp.tool_calls.iter().map(|tc| serde_json::json!({
                             "id": tc.id,

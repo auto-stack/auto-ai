@@ -21,8 +21,8 @@ mod error;
 // what a client consumer needs (review-003 L1: a glob re-export also leaked
 // daemon-only types like DaemonConfig/TierRouting through this thin client).
 pub use ai_config::{
-    CompletionRequest, CompletionResponse, ContentBlock, Message, ToolCall, ToolDefinition,
-    Usage,
+    CompletionRequest, CompletionResponse, ContentBlock, Message, ModelMeta, ToolCall,
+    ToolDefinition, Usage,
 };
 pub use error::ClientError;
 
@@ -30,6 +30,10 @@ pub use error::ClientError;
 pub struct AiClient {
     url: String,
     http: reqwest::Client,
+    /// Metadata of the model that served the most recent request (Plan 031).
+    /// Refreshed from every response — including the SSE `done` tail frame —
+    /// so it follows tier fallback's actual model swaps.
+    last_model_meta: std::sync::Mutex<Option<ModelMeta>>,
 }
 
 impl AiClient {
@@ -41,6 +45,7 @@ impl AiClient {
         Ok(Self {
             url,
             http: reqwest::Client::new(),
+            last_model_meta: std::sync::Mutex::new(None),
         })
     }
 
@@ -49,12 +54,26 @@ impl AiClient {
         Self {
             url: url.into(),
             http: reqwest::Client::new(),
+            last_model_meta: std::sync::Mutex::new(None),
         }
     }
 
     /// The daemon URL this client talks to.
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// Metadata of the model that served the most recent request (Plan 031).
+    /// `None` until the daemon reports it (or when talking to an old daemon
+    /// that doesn't embed `model_meta`).
+    pub fn last_model_meta(&self) -> Option<ModelMeta> {
+        self.last_model_meta.lock().unwrap().clone()
+    }
+
+    fn remember_meta(&self, resp: &CompletionResponse) {
+        if resp.model_meta.is_some() {
+            *self.last_model_meta.lock().unwrap() = resp.model_meta.clone();
+        }
     }
 
     /// Send a canonical completion request, receive a canonical response.
@@ -78,9 +97,12 @@ impl AiClient {
             return Err(ClientError::Api(format!("daemon {status}: {text}")));
         }
 
-        resp.json::<CompletionResponse>()
+        let resp = resp
+            .json::<CompletionResponse>()
             .await
-            .map_err(|e| ClientError::Api(format!("parse response: {e}")))
+            .map_err(|e| ClientError::Api(format!("parse response: {e}")))?;
+        self.remember_meta(&resp);
+        Ok(resp)
     }
 
     /// Send a **streaming** completion request. Sets `stream: true` and reads
@@ -126,6 +148,7 @@ impl AiClient {
         let mut stop_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
         let mut model = String::new();
+        let mut model_meta: Option<ModelMeta> = None;
         let mut error_msg: Option<String> = None;
 
         while let Some(chunk_result) = stream.next().await {
@@ -153,6 +176,9 @@ impl AiClient {
                         }
                         stop_reason = value.get("stop_reason").and_then(|t| t.as_str()).map(String::from);
                         model = value.get("model").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                        if let Some(m) = value.get("model_meta") {
+                            model_meta = serde_json::from_value(m.clone()).ok();
+                        }
                         if let Some(u) = value.get("usage") {
                             usage = serde_json::from_value(u.clone()).ok();
                         }
@@ -191,14 +217,17 @@ impl AiClient {
             }
         }
 
-        Ok(CompletionResponse {
+        let resp = CompletionResponse {
             content: full,
             tool_calls,
             stop_reason,
             usage,
             model,
             error: error_msg,
-        })
+            model_meta,
+        };
+        self.remember_meta(&resp);
+        Ok(resp)
     }
 
     /// Always true now (the client is daemon-only).
