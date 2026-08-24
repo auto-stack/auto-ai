@@ -140,7 +140,10 @@ impl ScriptedClient {
 
 #[async_trait]
 impl Client for ScriptedClient {
-    async fn complete(&self, _req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
+    async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
+        // Plan 028: compaction's summary requests go through complete() —
+        // capture them too.
+        self.requests.lock().unwrap().push(req.clone());
         Ok(self.next_response())
     }
 
@@ -194,7 +197,7 @@ fn tool_call_response(text: &str, tool_name: &str, args: Value) -> CompletionRes
 
 /// Attach usage to a scripted response (TurnEnd assertions read this).
 fn with_usage(mut r: CompletionResponse, input: u32, output: u32) -> CompletionResponse {
-    r.usage = Some(Usage { input_tokens: input, output_tokens: output });
+    r.usage = Some(Usage { input_tokens: input, output_tokens: output, ..Default::default() });
     r
 }
 
@@ -607,4 +610,125 @@ async fn harness_cancel_mid_batch_keeps_wire_and_drops_steering() {
     }
     let cancelled = tool_results.iter().find(|(rid, _)| rid == "call_2").unwrap();
     assert_eq!(cancelled.1, "[cancelled by user]");
+}
+
+// ── Harness 8: Plan 028 — context compaction ────────────────────────────────
+
+#[tokio::test]
+async fn harness_compact_summarizes_prefix_keeps_tail() {
+    use auto_ai_agent::compaction::find_cut_point;
+    use auto_ai_client::ContentBlock;
+
+    // 50 turns × ~800 chars (~200 tokens each) ≈ 20k tokens.
+    let mut mem = auto_ai_agent::Memory::new(None);
+    for i in 0..50 {
+        mem.add("user", &format!("turn {i}: {}", "x".repeat(800)));
+        mem.add("assistant", &"y".repeat(800));
+    }
+
+    // The summary response for the compaction request (with the Files list).
+    let client = Arc::new(ScriptedClient::new(vec![text_response(
+        "## Goal
+fix the bug
+
+## Files
+- src/main.rs
+- src/lib.rs",
+    )]));
+    let client_dyn: Arc<dyn Client> = client.clone();
+    let settings = auto_ai_agent::CompactionSettings {
+        context_window: 10_000,
+        reserve_tokens: 1_000,
+        keep_recent_tokens: 2_000,
+    };
+    let next = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &settings).await.unwrap();
+
+    // Exactly one summary request went out, isolated (its own system prompt).
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 1, "summary must be a single isolated request");
+    assert!(
+        reqs[0].system_prompt.as_deref().unwrap_or("").contains("compress"),
+        "summary request must carry the summarizer system prompt"
+    );
+    assert_eq!(reqs[0].messages.len(), 1);
+
+    // The compacted memory: summary anchor first (user role, wire-legal),
+    // carrying the structured summary with the Files list.
+    let msgs = next.messages();
+    assert!(msgs.len() < 20, "compacted memory must be much smaller: {}", msgs.len());
+    assert_eq!(msgs[0].role, "user");
+    match &msgs[0].content[0] {
+        ContentBlock::Text { text } => {
+            assert!(text.contains("Compacted conversation summary"));
+            assert!(text.contains("## Files"));
+            assert!(text.contains("src/main.rs"), "file list must survive");
+        }
+        other => panic!("summary anchor should be text, got {other:?}"),
+    }
+    // The kept tail is verbatim recent turns.
+    let last = msgs.last().unwrap();
+    assert_eq!(last.role, "assistant");
+
+    // Cut-point purity proxy: a cut exists and stays inside the list.
+    let all = mem.messages();
+    if let Some(cut) = find_cut_point(&all, 2_000) {
+        assert!(cut >= 1 && cut < all.len());
+    }
+}
+
+#[tokio::test]
+async fn harness_agent_auto_compacts_before_run() {
+    use auto_ai_agent::CompactionSettings;
+
+    // 3 filler rounds (~875 tokens each with long tasks/answers) cross the
+    // 2.5k threshold; round 4's run starts with a compaction summary request
+    // (script response 4), then the real request (response 5).
+    let filler = |i: usize| text_response(&format!("r{i} {}", "w".repeat(2000)));
+    let client = Arc::new(ScriptedClient::new(vec![
+        filler(0), filler(1), filler(2),
+        text_response("## Goal
+keep going
+
+## Files
+- a.rs"),
+        text_response("ok"),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.set_compaction_settings(CompactionSettings {
+        context_window: 3_000,
+        reserve_tokens: 500,
+        keep_recent_tokens: 1_200,
+    });
+
+    let long_task = format!("task {}", "q".repeat(1500));
+    for _ in 0..3 {
+        agent.run(&long_task).await.unwrap();
+    }
+    // Short memories did not trigger compaction: 3 requests so far, no summary.
+    assert_eq!(client.requests().len(), 3);
+
+    // Round 4 crosses the threshold: run_inner compacts first.
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = agent.run_stream(&long_task, cb, cancel).await.unwrap();
+    assert_eq!(result.output, "ok");
+
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 5, "expected 3 fillers + 1 summary + 1 real");
+    assert!(
+        reqs[3].system_prompt.as_deref().unwrap_or("").contains("compress"),
+        "request 4 must be the isolated summary request"
+    );
+    // The real request starts with the summary anchor.
+    let m0 = &reqs[4].messages[0];
+    assert_eq!(m0.role, "user");
+    assert!(
+        matches!(&m0.content[0], auto_ai_client::ContentBlock::Text { text } if text.contains("Compacted conversation summary")),
+        "compacted memory must lead the next LLM request"
+    );
+    // A warning told the stream about the compaction.
+    assert!(
+        events.lock().unwrap().iter().any(|e| matches!(e, StreamEvent::Warning { text } if text.contains("context compacted"))),
+        "missing compaction warning"
+    );
 }

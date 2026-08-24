@@ -200,10 +200,12 @@ async fn chat_completions(
         match provider.complete(&req).await {
             Ok(resp) => {
                 if let Some(u) = &resp.usage {
-                    state.tracker.record(
+                    state.tracker.record_full(
                         &app_name,
                         u.input_tokens as u64,
                         u.output_tokens as u64,
+                        u.cache_read_tokens as u64,
+                        u.cache_write_tokens as u64,
                     );
                 }
                 drop(permit);
@@ -215,6 +217,20 @@ async fn chat_completions(
             }
             Err(e) => {
                 drop(permit);
+                // Plan 028: quota/billing exhaustion is account-level — falling
+                // back to the next candidate only burns the retry window.
+                if e.is_quota_exhausted() {
+                    tracing::error!(
+                        "tier fallback: '{}' failed with quota/billing error ({}) — aborting candidate chain",
+                        provider_name,
+                        e
+                    );
+                    return (
+                        StatusCode::PAYMENT_REQUIRED,
+                        Json(json!({"error": {"message": format!("quota/billing exhausted: {e}"), "type": "quota_exhausted"}})),
+                    )
+                        .into_response();
+                }
                 let retryable = e.is_retryable();
                 last_error = Some(format!("{e}"));
                 if retryable {
@@ -448,6 +464,29 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }))
 }
 
+/// Plan 028: model metadata projection for /v1/models (omits unknown fields).
+fn model_metadata(m: &ai_config::ModelDefinition) -> serde_json::Value {
+    let mut v = serde_json::Map::new();
+    if let Some(w) = m.context_window {
+        v.insert("context_window".into(), json!(w));
+    }
+    if let Some(o) = m.max_output_tokens {
+        v.insert("max_output_tokens".into(), json!(o));
+    }
+    if let Some(c) = &m.cost_per_mtok {
+        v.insert(
+            "cost_per_mtok".into(),
+            json!({"input_usd_per_mtok_usd": c.input as f64 / 1e6,
+                   "output_usd_per_mtok": c.output as f64 / 1e6,
+                   "cache_read_usd_per_mtok": c.cache_read as f64 / 1e6}),
+        );
+    }
+    if let Some(c) = &m.capabilities {
+        v.insert("capabilities".into(), json!({"vision": c.vision, "thinking": c.thinking}));
+    }
+    serde_json::Value::Object(v)
+}
+
 async fn models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let cfg = state.cfg();
     let models: Vec<serde_json::Value> = cfg
@@ -456,7 +495,7 @@ async fn models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .flat_map(|(name, p)| {
             p.models
                 .iter()
-                .map(move |m| json!({"provider": name, "model": m}))
+                .map(move |m| json!({"provider": name, "model": m.id, "metadata": model_metadata(m)}))
         })
         .collect();
     Json(json!({"models": models}))
@@ -474,6 +513,9 @@ async fn usage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "output_tokens": u.total_output_tokens,
                 "total_tokens": u.total_tokens(),
                 "requests": u.request_count,
+                // Plan 028: cache dimensions.
+                "cache_read_tokens": u.total_cache_read_tokens,
+                "cache_write_tokens": u.total_cache_write_tokens,
             })
         })
         .collect();

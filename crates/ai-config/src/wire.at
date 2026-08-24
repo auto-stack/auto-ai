@@ -149,6 +149,11 @@ pub type ToolCall {
 pub type Usage {
     input_tokens uint
     output_tokens uint
+    /// Prompt tokens served from the provider's cache (Plan 028; 0 when the
+    /// provider doesn't report caching).
+    cache_read_tokens uint
+    /// Prompt tokens written into the cache this request (Plan 028).
+    cache_write_tokens uint
 }
 
 ext Usage {

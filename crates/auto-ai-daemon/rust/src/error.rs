@@ -43,6 +43,30 @@ impl LlmError {
         };
         return false;
     }
+    pub fn is_quota_exhausted(&self) -> bool {
+        match self {
+            LlmError::Upstream { status, message, retryable: _retryable } => {
+                if *status == 402 {
+                    return true;
+                }
+                let lower = message.to_lowercase();
+                if lower.contains("insufficient_quota") {
+                    return true;
+                }
+                if lower.contains("quota_exceeded") {
+                    return true;
+                }
+                if lower.contains("billing") {
+                    return true;
+                }
+                if lower.contains("exceeded your current quota") {
+                    return true;
+                }
+                return false;
+            },
+            _ => return false,
+        }
+    }
     pub fn from_upstream_status(status: StatusCode, body: &str) -> LlmError {
         let code = status.as_u16();
         if code == 429 {

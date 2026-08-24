@@ -15,6 +15,7 @@
 //! Design doc: `docs/auto-ai-agent-design.md`.
 
 pub mod agent;
+pub mod compaction;
 pub mod config;
 pub mod error;
 pub mod memory;
@@ -28,6 +29,7 @@ pub mod tool;
 pub mod validate;
 
 pub use agent::{Agent, AgentResult, Client, StreamEvent, ToolCallRecord};
+pub use compaction::{compact, estimate_tokens, find_cut_point, should_compact, CompactionSettings};
 pub use config::{load_role, parse_at_role, parse_tier_field, serialize_at_role, ConfigRole, RoleConfig};
 pub use error::{AgentError, ToolError};
 pub use memory::Memory;

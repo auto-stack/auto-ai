@@ -247,6 +247,13 @@ impl CompletionResponse {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// Prompt tokens served from the provider's cache (Plan 028; 0 when the
+    /// provider doesn't report caching).
+    #[serde(default)]
+    pub cache_read_tokens: u32,
+    /// Prompt tokens written into the cache this request (Plan 028).
+    #[serde(default)]
+    pub cache_write_tokens: u32,
 }
 
 impl Usage {
@@ -347,6 +354,7 @@ mod tests {
         let u = Usage {
             input_tokens: 100,
             output_tokens: 50,
+            ..Default::default()
         };
         assert_eq!(u.total_tokens(), 150);
     }

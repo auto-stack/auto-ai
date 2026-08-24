@@ -1,6 +1,16 @@
 # Plan 028: 上下文压缩与模型元数据——长会话生存与成本计量
 
-> **状态**：📝 drafting（未开工）
+> **状态**：✅ 已实施（2026-08-23，分支 feat/028-compaction-metadata，三阶段双轨落地，workspace 203 绿）
+> **实施记录与偏差**：
+> 1. `cost_per_mtok` 用整数微美元（u64 micro-USD/Mtok，如 3000000=$3.00/Mtok）——f64 会破坏 a2r 对
+>    ProviderConfig 自动生成的 Eq/Ord derive；/v1/models 手写轨输出时换算回小数。
+> 2. client→Agent 的元数据透传未做（compaction 的 window 来自 CompactionSettings，默认 128k 可配）——
+>    全链路透传留待 musk 消费端需要时再接。
+> 3. compact() 的 client 参数在 rust-ref 是 `&Arc<dyn Client>`、.at 轨是 `&Box<dyn Client>`（两轨
+>    Client spec 包装不同）；摘要请求走 Client::complete（独立 system_prompt，session 隔离）。
+> 4. find_cut_point 在"尾部起点非边界且前方无边界"时回退到前一个边界（尾部略超 keep_recent 也比
+>    拒绝压缩、放任环形截断丢历史安全）——pi 行为的对齐取舍。
+> 5. e2e 对拍（任务 9）未跑 live（需 daemon 实跑）；离线两轨对拍（t21 vs harness_compact）已全等。
 > **仓库**：auto-ai（auto-ai-daemon 模型元数据主改；auto-ai-agent Memory 压缩主改）
 > **目标**：①给 tier 路由补模型元数据（context_window/cost/能力）；②Memory 从"环形截断"升级为"结构化摘要压缩"（compaction）；③usage 补 cache 维度；④重试前先分类，配额类错误不走 fallback 链。
 > **参考实现**：pi-mono 本地克隆 `D:\github\pi`（main @ a1f955e9f），`packages/agent/src/harness/compaction/` 与 `packages/ai/`。

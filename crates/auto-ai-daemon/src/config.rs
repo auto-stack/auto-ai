@@ -44,8 +44,8 @@ fn load_from_env() -> DaemonConfig {
         providers.insert(
             "zhipu".into(),
             provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", key, vec![
-                ModelDefinition::new("glm-4.6", ModelTier::Mid),
-                ModelDefinition::new("glm-4-flash", ModelTier::Min),
+                with_meta("glm-4.6", ModelTier::Mid, 200_000, 32_768, 800_000, 3_200_000, 0, false, true),
+                with_meta("glm-4-flash", ModelTier::Min, 128_000, 8_192, 0, 0, 0, false, false),
             ]),
         );
     }
@@ -57,7 +57,7 @@ fn load_from_env() -> DaemonConfig {
         providers.insert(
             "anthropic".into(),
             provider_env("anthropic", &std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into()), key, vec![
-                ModelDefinition::new("claude-3-5-sonnet-20241022", ModelTier::Mid),
+                with_meta("claude-3-5-sonnet-20241022", ModelTier::Mid, 200_000, 8_192, 3_000_000, 15_000_000, 300_000, true, true),
             ]),
         );
     }
@@ -65,7 +65,7 @@ fn load_from_env() -> DaemonConfig {
         providers.insert(
             "openai".into(),
             provider_env("openai", &std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into()), key, vec![
-                ModelDefinition::new("gpt-4o", ModelTier::Mid),
+                with_meta("gpt-4o", ModelTier::Mid, 128_000, 16_384, 2_500_000, 10_000_000, 1_250_000, true, false),
             ]),
         );
     }
@@ -103,6 +103,34 @@ fn load_from_env() -> DaemonConfig {
         default_provider,
         default_model,
         tier_routing: ai_config::loader::TierRouting::default(),
+    }
+}
+
+/// Plan 028 model metadata helper: build a ModelDefinition with window /
+/// output cap / cost (micro-USD per Mtok) / capabilities.
+fn with_meta(
+    id: &str,
+    tier: ModelTier,
+    window: u32,
+    max_out: u32,
+    cost_in: u64,
+    cost_out: u64,
+    cost_cache_read: u64,
+    vision: bool,
+    thinking: bool,
+) -> ModelDefinition {
+    ModelDefinition {
+        id: id.into(),
+        name: String::new(),
+        tier,
+        context_window: Some(window),
+        max_output_tokens: Some(max_out),
+        cost_per_mtok: Some(ai_config::tier::CostPerMtok {
+            input: cost_in,
+            output: cost_out,
+            cache_read: cost_cache_read,
+        }),
+        capabilities: Some(ai_config::tier::ModelCapabilities { vision, thinking }),
     }
 }
 

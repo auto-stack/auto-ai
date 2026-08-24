@@ -468,7 +468,7 @@ fn opt_models(node: Node, key: &str) -> Vec<ModelDefinition> {
                         if id.is_empty() == false {
                             let name = obj_get_str(o.clone(), "name");
                             let tier = parse_tier(obj_get_str(o.clone(), "tier").as_str());
-                            out.push(ModelDefinition { id: id, name: name, tier: tier });
+                            out.push(ModelDefinition { id: id, name: name, tier: tier, context_window: None, max_output_tokens: None, cost_per_mtok: None, capabilities: None });
                         }
                     },
                     Value::Str(s) => {

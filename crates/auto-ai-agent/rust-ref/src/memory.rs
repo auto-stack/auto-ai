@@ -18,6 +18,11 @@ pub struct Memory {
 }
 
 impl Memory {
+    /// The configured turn limit (Plan 028: compaction preserves it).
+    pub fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+
     /// Create memory with an optional turn limit (None = unbounded).
     pub fn new(limit: Option<usize>) -> Self {
         Self {

@@ -19,11 +19,15 @@ pub type AppUsage {
     total_input_tokens uint
     total_output_tokens uint
     request_count uint
+    /// Plan 028: cache-hit accounting (prompt tokens served from cache).
+    total_cache_read_tokens uint
+    /// Plan 028: prompt tokens written into the cache.
+    total_cache_write_tokens uint
 }
 
 ext AppUsage {
     pub static fn new() AppUsage {
-        return AppUsage(total_input_tokens: 0, total_output_tokens: 0, request_count: 0)
+        return AppUsage(total_input_tokens: 0, total_output_tokens: 0, request_count: 0, total_cache_read_tokens: 0, total_cache_write_tokens: 0)
     }
 
     /// Total tokens consumed (input + output).
@@ -52,6 +56,12 @@ ext UsageTracker {
 
     /// Record usage for an app (accumulates into any existing entry).
     pub fn record(app str, input uint, output uint) void {
+        // Plan 028: cache dimensions (kept 0 in the plain record; the server
+        // calls record_full with the parsed cache fields).
+        self.record_full(app, input, output, 0, 0)
+    }
+
+    pub fn record_full(app str, input uint, output uint, cache_read uint, cache_write uint) void {
         let guard = self.apps.lock()
         is guard.get(app) {
             Some(entry) -> {
@@ -62,6 +72,8 @@ ext UsageTracker {
                 updated.total_input_tokens = entry.total_input_tokens + input
                 updated.total_output_tokens = entry.total_output_tokens + output
                 updated.request_count = entry.request_count + 1
+                updated.total_cache_read_tokens = entry.total_cache_read_tokens + cache_read
+                updated.total_cache_write_tokens = entry.total_cache_write_tokens + cache_write
                 guard.set(app.to_string(), updated)
             },
             None -> {
@@ -69,6 +81,8 @@ ext UsageTracker {
                 e.total_input_tokens = input
                 e.total_output_tokens = output
                 e.request_count = 1
+                e.total_cache_read_tokens = cache_read
+                e.total_cache_write_tokens = cache_write
                 guard.set(app.to_string(), e)
                 self.names.lock().push(app.to_string())
             }

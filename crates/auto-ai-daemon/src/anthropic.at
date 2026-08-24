@@ -232,6 +232,8 @@ fn parse_usage_anthropic(value Value) ?Usage {
     }
     return Some(Usage(
         input_tokens: json.as_int(json.get(u, "input_tokens")),
-        output_tokens: json.as_int(json.get(u, "output_tokens"))
+        output_tokens: json.as_int(json.get(u, "output_tokens")),
+        cache_read_tokens: json.as_int(json.get(u, "cache_read_input_tokens")),
+        cache_write_tokens: json.as_int(json.get(u, "cache_creation_input_tokens"))
     ))
 }

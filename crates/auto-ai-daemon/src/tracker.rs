@@ -9,6 +9,10 @@ pub struct AppUsage {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub request_count: u64,
+    /// Plan 028: cache-hit accounting (prompt tokens served from cache).
+    pub total_cache_read_tokens: u64,
+    /// Plan 028: prompt tokens written into the cache.
+    pub total_cache_write_tokens: u64,
 }
 
 impl AppUsage {
@@ -27,12 +31,19 @@ impl UsageTracker {
         Self { apps: Mutex::new(HashMap::new()) }
     }
 
-    /// Record usage for an app.
+    /// Record usage for an app (Plan 028: cache dimensions included).
     pub fn record(&self, app: &str, input: u64, output: u64) {
+        self.record_full(app, input, output, 0, 0);
+    }
+
+    /// Record usage for an app with cache dimensions.
+    pub fn record_full(&self, app: &str, input: u64, output: u64, cache_read: u64, cache_write: u64) {
         let mut apps = self.apps.lock();
         let entry = apps.entry(app.to_string()).or_default();
         entry.total_input_tokens += input;
         entry.total_output_tokens += output;
+        entry.total_cache_read_tokens += cache_read;
+        entry.total_cache_write_tokens += cache_write;
         entry.request_count += 1;
     }
 

@@ -68,6 +68,20 @@ fn load_from_file() ?DaemonConfig {
 /// Exits the process if no provider can be built — a daemon with zero providers
 /// would just fail every request with NoProvider at runtime, so failing fast at
 /// startup is clearer (startup-time exit is acceptable per our conventions).
+/// Plan 028 model metadata helper: build a ModelDefinition with window /
+/// output cap / cost (micro-USD per Mtok) / capabilities. A dedicated fn (not
+/// an inline array literal) because a2r needs the typed return position to
+/// emit a struct literal instead of a positional tuple constructor.
+fn model_meta(id str, tier ai_config.ModelTier, window uint, max_out uint, cost_in uint, cost_out uint, cache_read uint, vision bool, thinking bool) ai_config.ModelDefinition {
+    return ai_config.ModelDefinition(
+        id: id, name: "", tier: tier,
+        context_window: Some(window),
+        max_output_tokens: Some(max_out),
+        cost_per_mtok: Some(ai_config.CostPerMtok(input: cost_in, output: cost_out, cache_read: cache_read)),
+        capabilities: Some(ai_config.ModelCapabilities(vision: vision, thinking: thinking))
+    )
+}
+
 fn load_from_env() DaemonConfig {
     var providers Map<str, ai_config.ProviderConfig> = Map.new()
 
@@ -75,8 +89,8 @@ fn load_from_env() DaemonConfig {
     let zhipu_key = env.get("ZHIPU_API_KEY")
     if zhipu_key.is_empty() == false {
         let models = [
-            ai_config.ModelDefinition.new("glm-4.6", ai_config.ModelTier.Mid),
-            ai_config.ModelDefinition.new("glm-4-flash", ai_config.ModelTier.Min)
+            model_meta("glm-4.6", ai_config.ModelTier.Mid, 200000, 32768, 800000, 3200000, 0, false, true),
+            model_meta("glm-4-flash", ai_config.ModelTier.Min, 128000, 8192, 0, 0, 0, false, false)
         ]
         providers.set("zhipu".to_string(), provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", zhipu_key, models))
     }
@@ -89,7 +103,7 @@ fn load_from_env() DaemonConfig {
     if key.is_empty() == false {
         let base = first_non_empty(anthropic_base, "https://api.anthropic.com")
         let models = [
-            ai_config.ModelDefinition.new("claude-3-5-sonnet-20241022", ai_config.ModelTier.Mid)
+            model_meta("claude-3-5-sonnet-20241022", ai_config.ModelTier.Mid, 200000, 8192, 3000000, 15000000, 300000, true, true)
         ]
         providers.set("anthropic".to_string(), provider_env("anthropic", base, key, models))
     }
@@ -100,7 +114,7 @@ fn load_from_env() DaemonConfig {
     if openai_key.is_empty() == false {
         let base = first_non_empty(openai_base, "https://api.openai.com/v1")
         let models = [
-            ai_config.ModelDefinition.new("gpt-4o", ai_config.ModelTier.Mid)
+            model_meta("gpt-4o", ai_config.ModelTier.Mid, 128000, 16384, 2500000, 10000000, 1250000, true, false)
         ]
         providers.set("openai".to_string(), provider_env("openai", base, openai_key, models))
     }

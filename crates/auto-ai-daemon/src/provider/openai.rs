@@ -149,11 +149,11 @@ impl AiProvider for OpenAiProvider {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        let usage = json.get("usage").map(|u| {
-            Usage {
-                input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-            }
+        let usage = json.get("usage").map(|u| Usage {
+            input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+            output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_write_tokens: 0,
         });
 
         let model = json["model"]
@@ -242,6 +242,8 @@ impl AiProvider for OpenAiProvider {
                 *usage = Some(Usage {
                     input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                     output_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                    cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
+                    cache_write_tokens: 0,
                 });
             }
             // Parse tool_calls deltas (incremental by index).
