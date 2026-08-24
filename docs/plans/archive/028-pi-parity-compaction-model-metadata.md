@@ -1,6 +1,7 @@
 # Plan 028: 上下文压缩与模型元数据——长会话生存与成本计量
 
-> **状态**：✅ 已实施（2026-08-23，分支 feat/028-compaction-metadata，三阶段双轨落地，workspace 203 绿）
+> **状态**：✅ 已实施并验证（2026-08-23 三阶段双轨落地，workspace 203 绿；2026-08-25 finish-plan 复审：workspace 236 测试全绿含 quota/retry 分类与溢出恢复压缩断言；live e2e 对拍由 026 复审的转译链路 e2e 覆盖 daemon 层）
+> **Phase 4 结案（2026-08-25）**：偏差 2「client→Agent 元数据透传」**已由 PLAN-031 Phase 1 落地，本计划无剩余代码工作**——`CompletionResponse.model_meta` 透传 `context_window`，agent 每次响应后回填 `compaction.context_window`（tier fallback 换模型即时刷新、显式 override pin 保护，agent.rs:545）；「compaction 用真实模型窗口」验收测试为 mvp_harness Harness 9（10k/3k 窗口跟随 + 溢出恢复经压缩重试）。KNOWN-DEBT 对应行已核销。
 > **实施记录与偏差**：
 > 1. `cost_per_mtok` 用整数微美元（u64 micro-USD/Mtok，如 3000000=$3.00/Mtok）——f64 会破坏 a2r 对
 >    ProviderConfig 自动生成的 Eq/Ord derive；/v1/models 手写轨输出时换算回小数。
