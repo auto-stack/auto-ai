@@ -14,7 +14,8 @@ use.rust serde_json::Value
 
 use ai_config: CompletionRequest, CompletionResponse, ContentBlock, ToolCall, ToolDefinition, Usage
 use error: LlmError
-use sse: SseParser
+use.rust crate::sse::SseParser
+use.rust crate::provider_glue
 use provider: AiProvider, StreamDelta
 
 /// One Anthropic provider instance.

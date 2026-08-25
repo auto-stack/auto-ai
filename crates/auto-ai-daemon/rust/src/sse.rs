@@ -45,7 +45,7 @@ impl SseParser {
             }
             let data = extract_data(frame.as_str());
             if data.is_empty() == false {
-                events.push(data.clone());
+                events.push(data.to_string());
             }
         }
         return events;
@@ -85,7 +85,7 @@ fn extract_data(frame: &str) -> String {
         }
         let data = data_field(line);
         if data.is_empty() == false {
-            parts.push(data.clone());
+            parts.push(data.to_string());
         }
     }
     if parts.is_empty() {

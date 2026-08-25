@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::ai_config::{CompletionRequest, CompletionResponse, ContentBlock, ToolCall, ToolDefinition, Usage};
 use crate::error::{LlmError};
 use crate::sse::SseParser;
+use crate::provider_glue;
 use crate::provider::{AiProvider, StreamDelta};
 /// Anthropic Claude provider.
 /// 
@@ -82,7 +83,7 @@ impl AiProvider for AnthropicProvider {
         return Ok(CompletionResponse { content: content, tool_calls: tool_calls, stop_reason: stop_reason, usage: usage, model: model, error: None, model_meta: None });
     }
     async fn complete_stream(&self, req: &CompletionRequest, on_delta: Arc<dyn Fn(StreamDelta) + Send + Sync>, cancel: CancellationToken) -> Result<CompletionResponse, LlmError> {
-        return crate::provider_glue::anthropic_complete_stream(self, req, on_delta, cancel).await;
+        return provider_glue::anthropic_complete_stream(self, req, on_delta, cancel).await;
     }
 }
 
@@ -208,5 +209,5 @@ fn parse_usage_anthropic(value: Value) -> Option<Usage> {
     if u.is_null() {
         return None;
     }
-    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32, cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_input_tokens")) as u32, cache_write_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_creation_input_tokens")) as u32 });
+    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32 as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32 as u32, cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_input_tokens")) as u32 as u32, cache_write_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_creation_input_tokens")) as u32 as u32 });
 }

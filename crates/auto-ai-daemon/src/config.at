@@ -17,6 +17,7 @@
 
 use.rust std::path::PathBuf
 use.rust std::process
+use.rust dirs
 
 use ai_config
 

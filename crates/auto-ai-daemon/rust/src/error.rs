@@ -114,7 +114,7 @@ impl LlmError {
         }
         return false;
     }
-    pub fn from_upstream_status(status: StatusCode, body: &str) -> LlmError {
+    pub fn from_upstream_status(mut status: StatusCode, body: &str) -> LlmError {
         let code = status.as_u16();
         if code == 429 {
             return LlmError::RateLimited;

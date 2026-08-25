@@ -373,7 +373,7 @@ fn ok_response(resp: CompletionResponse) -> Response {
 
 /// Read a header value as a string, or return the default. (Headers are ASCII;
 /// non-UTF8 falls back to default.)
-fn header_or(headers: HeaderMap, name: &str, default: &str) -> String {
+fn header_or(mut headers: HeaderMap, name: &str, default: &str) -> String {
     match headers.get(name) {
         Some(v) => {
             match v.to_str() {

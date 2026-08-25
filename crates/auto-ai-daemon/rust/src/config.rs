@@ -7,6 +7,7 @@ use a2r_std::*;
 
 use std::path::PathBuf;
 use std::process;
+use dirs;
 use crate::ai_config;
 use crate::ai_config::DaemonConfig;
 const DEFAULT_CONCURRENCY: usize = 4;
@@ -124,9 +125,9 @@ fn load_from_env() -> DaemonConfig {
 
 
     let mut cfg = ai_config::DaemonConfig::default();
-    cfg.providers = providers;
-    cfg.default_provider = default_provider;
-    cfg.default_model = default_model;
+    cfg.providers = providers.clone();
+    cfg.default_provider = default_provider.clone();
+    cfg.default_model = default_model.clone();
     return cfg;
 }
 

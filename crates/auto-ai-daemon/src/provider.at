@@ -21,6 +21,7 @@ use.rust std::collections::HashMap
 use.rust std::sync::Arc
 use.rust async_trait
 use.rust tokio_util::sync::CancellationToken
+use.rust crate::provider_glue
 
 use ai_config: CompletionRequest, CompletionResponse, DaemonConfig, ProviderConfig
 use error: LlmError

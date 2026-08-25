@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use serde_json;
 use serde_json::Value;
 
+use crate::provider_glue;
 use crate::ai_config::{CompletionRequest, CompletionResponse, ToolCall, Usage};
 use crate::error::{LlmError};
 use crate::sse::SseParser;
@@ -29,7 +30,7 @@ use crate::provider::{AiProvider, StreamDelta};
 /// STREAM NOTE: `complete_stream` (which uses `tokio::select!` for cancel +
 /// idle-timeout racing) is NOT transpiled — it lives in provider_glue.rs as
 /// hand-written Rust (select! has no .at syntax). This type's complete_stream
-/// method delegates to `crate::provider_glue::openai_complete_stream`.
+/// method delegates to `provider_glue.openai_complete_stream`.
 /// 
 /// JSON NOTE: `serde_json::json!({...})` is a macro a2r can't emit, so
 /// build_body uses `serde_json.Map.new()` + `.insert()` + `Value.Object(...)`
@@ -95,7 +96,7 @@ impl AiProvider for OpenAiProvider {
         return Ok(CompletionResponse { content: content, tool_calls: tool_calls, stop_reason: stop_reason, usage: usage, model: model, error: None, model_meta: None });
     }
     async fn complete_stream(&self, req: &CompletionRequest, on_delta: Arc<dyn Fn(StreamDelta) + Send + Sync>, cancel: CancellationToken) -> Result<CompletionResponse, LlmError> {
-        return crate::provider_glue::openai_complete_stream(self, req, on_delta, cancel).await;
+        return provider_glue::openai_complete_stream(self, req, on_delta, cancel).await;
     }
 }
 

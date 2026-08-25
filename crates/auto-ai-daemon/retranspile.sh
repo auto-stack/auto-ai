@@ -142,9 +142,8 @@ if [ -f "$RUST/config.rs" ]; then
     # `.as_str()` on a &str value uses the unstable `str_as_str` feature — drop
     # it (the bridged fns take &str; a2r auto-borrows).
     sed -i 's#path_str\.as_str()#path_str#g' "$RUST/config.rs"
-    # a2r renders the bridged static `dirs::home_dir` as `dirs.home_dir()` —
-    # convert `.` to `::` for associated-fn calls.
-    sed -i 's#return dirs\.home_dir();#return dirs::home_dir();#' "$RUST/config.rs"
+    # (graduated 2026-08-25, Plan 032 G3: config.at now declares `use.rust dirs`
+    # — a2r natively emits `dirs::home_dir()` for module-qualified calls.)
 fi
 
 # ── tracker.rs ──────────────────────────────────────────────────────────────
@@ -170,8 +169,8 @@ fi
 
 # ── tier_router.rs ──────────────────────────────────────────────────────────
 if [ -f "$RUST/tier_router.rs" ]; then
-    # Hand-written glue module — qualify the a2r-emitted bare `use tier_router_glue;`.
-    sed -i 's#^use tier_router_glue;#use crate::tier_router_glue;#' "$RUST/tier_router.rs"
+    # (graduated 2026-08-25, Plan 032 G3: tier_router.at's `use.rust` now says
+    # `crate::tier_router_glue` explicitly — bare `use.rust X` emits `use X;`.)
     # ModelTier::parse_name takes &str; tier_name is String (from .collect()).
     sed -i 's#ModelTier::parse_name(tier_name)#ModelTier::parse_name(tier_name.as_str())#g' "$RUST/tier_router.rs"
     # HashMap::get needs &K; a2r passes the owned key.
@@ -287,9 +286,11 @@ fi
 
 # ── provider.rs (Phase 2) ───────────────────────────────────────────────────
 if [ -f "$RUST/provider.rs" ]; then
-    # from_daemon_config delegates to the hand-written provider_glue.rs build
-    # fn; a2r renders the module-qualified call as a method (`.` → use `::`).
-    sed -i 's|return provider_glue\.build_registry(config);|return crate::provider_glue::build_registry(\&config);|' "$RUST/provider.rs"
+    # from_daemon_config delegates to the hand-written provider_glue.rs build fn.
+    # Path part graduated (Plan 032 G3: provider.at declares `use.rust
+    # crate::provider_glue` → native `provider_glue::build_registry`); the
+    # &config borrow remains (G2-class: big struct passed by value).
+    sed -i 's|return provider_glue::build_registry(config);|return provider_glue::build_registry(\&config);|' "$RUST/provider.rs"
     # default_provider / get return &Arc<dyn AiProvider> from map.get — clone.
     sed -i 's|Some(p) => return Ok(p),|Some(p) => return Ok(p.clone()),|' "$RUST/provider.rs"
     sed -i 's|Some(p) => return Some(p),|Some(p) => return Some(p.clone()),|' "$RUST/provider.rs"
@@ -315,12 +316,9 @@ fi
 # ── openai.rs (Phase 4) ─────────────────────────────────────────────────────
 if [ -f "$RUST/openai.rs" ]; then
     fix_provider_impl "$RUST/openai.rs"
-    # SseParser is crate-local (crate::sse), but a2r routes `use sse:` to
-    # a2r_std::sse (which doesn't exist). Restore the crate path.
-    sed -i 's|use a2r_std::sse::{SseParser};|use crate::sse::SseParser;|' "$RUST/openai.rs"
-    sed -i 's|use a2r_std::sse::SseParser;|use crate::sse::SseParser;|' "$RUST/openai.rs"
-    # complete_stream delegates to provider_glue (`.` → `::`).
-    sed -i 's|provider_glue\.openai_complete_stream|crate::provider_glue::openai_complete_stream|' "$RUST/openai.rs"
+    # (graduated 2026-08-25, Plan 032 G3: openai.at uses `use.rust
+    # crate::sse::SseParser` + `use.rust crate::provider_glue` — module paths
+    # and module-qualified calls now emit natively with `::`.)
     # build_body returns Value; provider_glue needs &serde_json::Value + mut index.
     # Value::Number(usize/f64) → Number::from (json! coerces implicitly).
     sed -i 's|Value::Number(n)|Value::Number(serde_json::Number::from(n))|g' "$RUST/openai.rs"
@@ -348,7 +346,7 @@ if [ -f "$RUST/openai.rs" ]; then
     # &t is &&ToolDefinition. tool_to_openai now takes &ToolDefinition — pass t.
     sed -i 's|tool_to_openai(&t)|tool_to_openai(t)|g' "$RUST/openai.rs"
     # complete_stream delegates to an async glue fn — the return needs .await.
-    sed -i 's|return crate::provider_glue::openai_complete_stream(self, req, on_delta, cancel);|return crate::provider_glue::openai_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/openai.rs"
+    sed -i 's|return provider_glue::openai_complete_stream(self, req, on_delta, cancel);|return provider_glue::openai_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/openai.rs"
     # from_upstream_status takes reqwest::StatusCode; resp.status_code() is u32.
     sed -i 's|from_upstream_status(status, \&text)|from_upstream_status(reqwest::StatusCode::from_u16(status as u16).unwrap_or(reqwest::StatusCode::BAD_GATEWAY), \&text)|g' "$RUST/openai.rs"
     # tool_to_openai takes owned ToolDefinition; the for-loop yields &ToolDefinition.
@@ -374,9 +372,8 @@ fi
 # ── anthropic.rs (Phase 4) ──────────────────────────────────────────────────
 if [ -f "$RUST/anthropic.rs" ]; then
     fix_provider_impl "$RUST/anthropic.rs"
-    sed -i 's|use a2r_std::sse::{SseParser};|use crate::sse::SseParser;|' "$RUST/anthropic.rs"
-    sed -i 's|use a2r_std::sse::SseParser;|use crate::sse::SseParser;|' "$RUST/anthropic.rs"
-    sed -i 's|provider_glue\.anthropic_complete_stream|crate::provider_glue::anthropic_complete_stream|' "$RUST/anthropic.rs"
+    # (graduated 2026-08-25, Plan 032 G3: anthropic.at uses `use.rust
+    # crate::sse::SseParser` + `use.rust crate::provider_glue` — paths native.)
     sed -i 's|Value::Number(n)|Value::Number(serde_json::Number::from(n))|g' "$RUST/anthropic.rs"
     sed -i 's|Value::Number(t)|Value::Number(serde_json::Number::from(t))|g' "$RUST/anthropic.rs"
     sed -i 's|Value::Number(serde_json::Number::from(t))|Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0)))|g' "$RUST/anthropic.rs"
@@ -407,7 +404,7 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # Make tool_to_anthropic take a reference instead.
     sed -i 's|fn tool_to_anthropic(t ToolDefinition)|fn tool_to_anthropic(t: \&ToolDefinition)|' "$RUST/anthropic.rs"
     # complete_stream + StatusCode (same fixes as openai).
-    sed -i 's|return crate::provider_glue::anthropic_complete_stream(self, req, on_delta, cancel);|return crate::provider_glue::anthropic_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/anthropic.rs"
+    sed -i 's|return provider_glue::anthropic_complete_stream(self, req, on_delta, cancel);|return provider_glue::anthropic_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/anthropic.rs"
     sed -i 's|from_upstream_status(status, \&text)|from_upstream_status(reqwest::StatusCode::from_u16(status as u16).unwrap_or(reqwest::StatusCode::BAD_GATEWAY), \&text)|g' "$RUST/anthropic.rs"
     # header() &str + build_body message loop (m is &Message).
     sed -i 's|.header("x-api-key", self.api_key)|.header("x-api-key", \&self.api_key)|g' "$RUST/anthropic.rs"

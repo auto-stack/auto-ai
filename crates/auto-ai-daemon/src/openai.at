@@ -23,10 +23,11 @@ use.rust std::sync::Arc
 use.rust tokio_util::sync::CancellationToken
 use.rust serde_json
 use.rust serde_json::Value
+use.rust crate::provider_glue
 
 use ai_config: CompletionRequest, CompletionResponse, ToolCall, Usage
 use error: LlmError
-use sse: SseParser
+use.rust crate::sse::SseParser
 use format: openai_content, OpenAiMsg, parse_openai_tool_calls, tool_to_openai
 use provider: AiProvider, StreamDelta
 

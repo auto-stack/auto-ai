@@ -42,7 +42,7 @@ pub enum OpenAiMsg {
 }
 
 
-pub fn openai_content(role: &str, blocks: Vec<ContentBlock>) -> OpenAiMsg {
+pub fn openai_content(role: &str, mut blocks: Vec<ContentBlock>) -> OpenAiMsg {
 
     if blocks.is_empty() == false && all_tool_results(&blocks) {
         let mut results: Vec<OpenAiToolResult> = vec![];

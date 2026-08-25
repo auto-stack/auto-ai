@@ -29,7 +29,7 @@ use ai_config: ModelTier, DaemonConfig
 use ai_config.loader: TierRouting, TierRouteCandidate
 // Hand-written glue (tier_router_glue.rs) — exposes `tier_routing.routes` as
 // an owned list, since `routes` is a reserved keyword in .at (see glue file).
-use.rust tier_router_glue
+use.rust crate::tier_router_glue
 
 /// A single candidate in a tier's routing chain.
 // Explicit derive (Debug, Clone) — no PartialEq (keeps parity with rust-ref and
@@ -145,8 +145,10 @@ ext TierRouter {
             None -> return base,
             Some(pref) -> {
                 // Find the preferred candidate's index; if present, move to front.
-                var chain = base
-                let idx = index_of_provider(chain, pref)
+                // Clones: master a2r no longer auto-clones struct args at
+                // call sites — `base` is used twice, `chain` again below.
+                var chain = base.clone()
+                let idx = index_of_provider(chain.clone(), pref)
                 if idx >= 0 {
                     let preferred = chain.remove(idx)
                     // Insert at front.

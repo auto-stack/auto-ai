@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use async_trait;
 use tokio_util::sync::CancellationToken;
+use crate::provider_glue;
 use crate::ai_config::{CompletionRequest, CompletionResponse, DaemonConfig, ProviderConfig};
 use crate::error::{LlmError};
 /// Provider trait + registry + concrete provider implementations.
@@ -63,7 +64,7 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn from_daemon_config(config: &DaemonConfig) -> Result<ProviderRegistry, LlmError> {
-        return crate::provider_glue::build_registry(&config);
+        return provider_glue::build_registry(&config);
     }
     pub fn from_entries(entries: Vec<(String, Arc<dyn AiProvider>)>, default_name: &str) -> ProviderRegistry {
         let mut providers = HashMap::new();

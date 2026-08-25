@@ -128,6 +128,8 @@ impl TierRouter {
             Some(pref) => {
                 
 
+
+
                 let mut chain = base.clone();
                 let idx = index_of_provider(chain.clone(), pref.as_str());
                 if idx >= 0 {
@@ -181,7 +183,7 @@ impl TierRouter {
 /// Append `tc` to the candidate list for `tier`, creating the list if absent.
 /// (Stands in for `routing.entry(tier).or_default().push(tc)`, which a2r can't
 /// express cleanly — entry-API chains don't transpile.)
-fn ensure_candidate(mut routing: HashMap<ModelTier, Vec<TierCandidate>>, tier: ModelTier, tc: TierCandidate) {
+fn ensure_candidate(mut routing: HashMap<ModelTier, Vec<TierCandidate>>, tier: ModelTier, mut tc: TierCandidate) {
     match routing.get(&tier) {
         Some(list) => {
             let mut updated = list.clone();
@@ -193,7 +195,7 @@ fn ensure_candidate(mut routing: HashMap<ModelTier, Vec<TierCandidate>>, tier: M
 }
 
 /// Does `routing[tier]` already contain a candidate for `provider`?
-fn has_provider_for_tier(routing: HashMap<ModelTier, Vec<TierCandidate>>, tier: ModelTier, provider: &str) -> bool {
+fn has_provider_for_tier(mut routing: HashMap<ModelTier, Vec<TierCandidate>>, tier: ModelTier, provider: &str) -> bool {
     match routing.get(&tier) {
         Some(cands) => {
             for c in cands {
