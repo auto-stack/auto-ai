@@ -1,5 +1,9 @@
 # Plan 032: a2r 语言能力缺陷根因修复清单——auto-lang 侧交付需求（消费端汇总）
 
+## Status: COMPLETE（首阶段收口 + 合并后复验收官，2026-08-25）
+
+G1/G2.1/G2.2/G2 核心首批/G3.1/G4 全部落地;daemon sed 160→80、client 8→5、agent 2→0;修复全部合入 auto-lang master(plan-032-g2-get-borrow 合并 c89253b18 + Phase 4 缺口修复 c3cb3dd4f)。残余主题(G2 核心其余族 / G3.2 extern-crate 跨 crate 类型知识 / G3.3 保留字转义)已在第 10 条定性移交后续立项,本计划按批维护模式随归档关闭——后续批次直接在 auto-lang 新计划开号,不再回写本文档。
+
 > **状态**：⏸ 首阶段收口（2026-08-25 七批落地 + 合并后复验：**G1 ✅ + G2.1 ✅ + G2.2 首滴 ✅ + G2 核心 get 引用族首批 ✅ + G3.1 ✅ + G4（Value 构造 + u32 强转）✅**；sed 蚕食 daemon 160→96→87→**80**、client 8→5、agent 2→0；`plan-032-g2-get-borrow` 已 rebase 至 master 并合入（c89253b18），合并后复验暴露 plan 016 Phase 4 三处试点缺口、当批修复入 master（c3cb3dd4f + 守卫 golden eb7abd0cb）；剩余收敛为 G2 核心其余族 / G3.2 两个架构主题 + G3.3 语言设计，本计划按批维护模式）
 > **实施记录（2026-08-25，auto-lang 分支 fix/a2r-p0-gaps，合入 70ed43575）**：
 > 1. **G1 ✅**：`infer/expr.rs` 对 comptime `#{read_text/read_to_string/include_str}` 推断为 StrSlice——`const SOUL: &str` 原生发射。golden：16_interop/017 扩 const 用例。
