@@ -97,7 +97,7 @@ impl ToolRegistry {
         }
         self.tools.insert(n, tool);
     }
-    pub fn register(&mut self, tool: Box<dyn Tool>) {
+    pub fn register(&mut self, mut tool: Box<dyn Tool>) {
         let n = tool.name();
         if self.tools.contains_key(&n) == false {
             self.names.push(n.to_string());
@@ -124,7 +124,7 @@ impl ToolRegistry {
     pub fn is_empty(&self) -> bool {
         return (self.names.len() as i64) == 0;
     }
-    pub fn filter(&self, filter: Vec<String>) -> Vec<Arc<dyn Tool>> {
+    pub fn filter(&self, mut filter: Vec<String>) -> Vec<Arc<dyn Tool>> {
         let mut out: Vec<Arc<dyn Tool>> = vec![];
         if (filter.len() as i64) == 0 {
             for n in self.names.clone() {

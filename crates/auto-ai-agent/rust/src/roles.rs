@@ -96,7 +96,7 @@ pub struct RoleDetail {
 /// UI/API can present built-ins uniformly alongside user roles.
 /// 
 /// (Ports the private profession_to_config helper from roles.rs.)
-fn profession_to_config(prof: Box<dyn Role>) -> RoleConfig {
+fn profession_to_config(mut prof: Box<dyn Role>) -> RoleConfig {
     let t = prof.allowed_tools();
     let at = prof.allowed_tiers();
     let s = prof.skills();
@@ -281,7 +281,7 @@ impl RoleRegistry {
         }
         return None;
     }
-    pub fn save(&self, mut name: &str, cfg: RoleConfig, soul_md: Option<String>) -> Result<(), AgentError> {
+    pub fn save(&self, mut name: &str, mut cfg: RoleConfig, soul_md: Option<String>) -> Result<(), AgentError> {
         if load_builtin(name).is_some() {
             return Err(AgentError::Config(format!("cannot overwrite built-in role '{}'; choose a different name or use inherit", name)));
         }
@@ -412,7 +412,7 @@ fn load_one_builtin(name: &str) -> Option<RoleDetail> {
 }
 
 /// True when path's extension is exactly "at".
-fn is_at_file(path: PathBuf) -> bool {
+fn is_at_file(mut path: PathBuf) -> bool {
     let ext = path.extension();
     match ext {
         Some(e) => return e == "at",
@@ -426,7 +426,7 @@ fn is_at_file(path: PathBuf) -> bool {
 /// caller (plan 014 gap). Read/parse failures → None (warned + skipped).
 /// Kept as a helper rather than inlined into load(): the full parse nests
 /// ~10 levels deep inline, past a2r's parser recursion limit (~9).
-fn load_user_at_file(path: PathBuf) -> Option<RoleDetail> {
+fn load_user_at_file(mut path: PathBuf) -> Option<RoleDetail> {
 
 
     let content = a2r_std::fs::read_to_string(&path);
@@ -478,7 +478,7 @@ struct SoulResolve {
 /// Resolve a role's Soul markdown: sidecar file first (if soul_file set and
 /// exists), else the inline system_prompt, else empty. Returns
 /// (markdown, came_from_file).
-fn resolve_soul(cfg: RoleConfig, at_path: PathBuf) -> SoulResolve {
+fn resolve_soul(cfg: RoleConfig, mut at_path: PathBuf) -> SoulResolve {
     match cfg.soul_file {
         Some(rel) => {
             

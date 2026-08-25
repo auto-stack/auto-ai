@@ -144,7 +144,7 @@ fn is_turn_boundary(m: Message) -> bool {
     }
 }
 
-pub fn find_cut_point(messages: Vec<Message>, keep_recent_tokens: u32) -> i64 {
+pub fn find_cut_point(mut messages: Vec<Message>, keep_recent_tokens: u32) -> i64 {
     if (messages.len() as i64) < 2 {
         return -1;
     }
@@ -270,7 +270,7 @@ pub fn extract_file_ops(messages: Vec<Message>) -> FileOps {
             kept.push(f.clone().clone());
         }
     }
-    ops.read = kept;
+    ops.read = kept.clone();
     return ops;
 }
 
@@ -342,7 +342,7 @@ fn update_system_prompt() -> String {
     return "You update an existing conversation summary with new messages. PRESERVE all still-relevant information from the previous summary; ADD new progress, decisions, and context; move finished items to done; drop what is no longer relevant. Keep the same sections:\n## Goal\n## Progress\n## Key Decisions\n## Next Steps\nNever invent facts; omit sections with no content. Do not list files — the file manifest is appended mechanically.".to_string();
 }
 
-pub async fn compact(memory: Memory, client: &Box<dyn Client>, model: &str, settings: CompactionSettings, previous_summary: Option<String>) -> Result<(Memory, String), AgentError> {
+pub async fn compact(mut memory: Memory, client: &Box<dyn Client>, model: &str, settings: CompactionSettings, previous_summary: Option<String>) -> Result<(Memory, String), AgentError> {
     let msgs = memory.messages();
     let cut = find_cut_point(msgs.clone(), settings.keep_recent_tokens);
     if cut < 1 {
@@ -417,7 +417,7 @@ pub async fn compact(memory: Memory, client: &Box<dyn Client>, model: &str, sett
     mut_memory.add("user", format!("[Compacted conversation summary — older turns were summarized to save context]
 
 {}", summary).as_str());
-    let mut k: i64 = cut.clone();
+    let mut k: i64 = cut;
     while k < ((msgs.len() as i64) as i64) {
         mut_memory.add_message(msgs[(k) as usize].clone());
         k = k + 1;

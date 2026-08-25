@@ -152,7 +152,7 @@ impl PipelineDriver {
         self.gate_handler = Some(handler);
     }
     pub async fn drive(&mut self, task_msg: &str, mut on_event: fn(PipelineEvent) -> ()) -> Result<(), AgentError> {
-        self.on_event = on_event;
+        self.on_event = on_event.clone();
         let mut last_handoff: Option<HandoffDocument> = None;
         loop {
             let result = self.engine.advance();
@@ -220,7 +220,7 @@ impl PipelineDriver {
     pub fn engine_mut(&self) -> PipelineEngine {
         return self.engine.clone();
     }
-    pub async fn drive_step(&mut self, task_msg: &str, step_id: &str, role_id: &str, last_handoff: Option<HandoffDocument>) -> Result<HandoffDocument, AgentError> {
+    pub async fn drive_step(&mut self, task_msg: &str, step_id: &str, role_id: &str, mut last_handoff: Option<HandoffDocument>) -> Result<HandoffDocument, AgentError> {
         let started = PipelineEvent::StepStarted(step_id.to_string(), role_id.to_string());
         (self.on_event)(started);
 
@@ -422,7 +422,7 @@ fn truncate_chars(s: &str, max: u32) -> String {
 }
 
 /// Extract the `path` field from a tool-call args JSON value, or "?" if absent.
-fn extract_path(args: JsonValue) -> String {
+fn extract_path(mut args: JsonValue) -> String {
     let p = args.get("path").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     if p.is_empty() {
         return "?".to_string();

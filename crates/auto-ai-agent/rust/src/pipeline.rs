@@ -237,7 +237,7 @@ impl PipelineEngine {
         self.resumed_step_id = None;
         return AdvanceResult::ExecuteStep(step.id, step.role_id);
     }
-    pub fn submit_handoff(&mut self, handoff: HandoffDocument) -> AdvanceResult {
+    pub fn submit_handoff(&mut self, mut handoff: HandoffDocument) -> AdvanceResult {
         let now = now_secs();
 
 
@@ -415,8 +415,8 @@ impl PipelineEngine {
                 kept_names.push(name.clone());
             }
         }
-        self.gate_feedback = kept;
-        self.gate_feedback_names = kept_names;
+        self.gate_feedback = kept.clone();
+        self.gate_feedback_names = kept_names.clone();
     }
     pub fn bump_loop_counter(&mut self, step_id: &str) -> u32 {
         let prev = self.loop_count(step_id);
@@ -499,7 +499,7 @@ impl PipelineEngine {
 /// Apply handoff target auto-correction in place: silently fill an empty
 /// target, or record a feedback note + correct when the caller named a wrong
 /// target. (Split out of submit_handoff to keep that body shallow.)
-fn correct_handoff_target(mut eng: PipelineEngine, mut h: HandoffDocument, step_id: &str, exit: ExitRouting) {
+fn correct_handoff_target(mut eng: PipelineEngine, mut h: HandoffDocument, step_id: &str, mut exit: ExitRouting) {
     let expected_role = expected_target_role(eng.clone(), exit.clone());
     match expected_role {
         Some(expected) => {

@@ -93,7 +93,7 @@ impl HandoffDocument {
 
 
         let header: String = format!("# Handoff: {} to {}", self.from, self.target);
-        lines.push(header);
+        lines.push(header.to_string());
         lines.push("".to_string());
 
         lines.push("## Summary".to_string());
@@ -104,10 +104,10 @@ impl HandoffDocument {
             lines.push("## Decisions Made".to_string());
             for d in self.decisions.clone() {
                 let line: String = format!("- **{}**: {}", d.status, d.title);
-                lines.push(line);
+                lines.push(line.to_string());
                 if d.rationale.is_empty() == false {
                     let rat: String = format!("  - Rationale: {}", d.rationale);
-                    lines.push(rat);
+                    lines.push(rat.to_string());
                 }
             }
             lines.push("".to_string());
@@ -126,7 +126,7 @@ impl HandoffDocument {
             for wp in self.work_product.clone() {
                 let size = format_size(wp.lines);
                 let line: String = format!("- `{}`{}{}", wp.path, size, wp.description);
-                lines.push(line);
+                lines.push(line.to_string());
             }
             lines.push("".to_string());
         }
@@ -156,7 +156,7 @@ impl HandoffDocument {
 - This step: {} tokens
 - Cumulative: {} tokens
 ", self.token_usage.step_tokens, self.token_usage.cumulative);
-        lines.push(spend);
+        lines.push(spend.to_string());
 
         return lines.join("\n");
     }

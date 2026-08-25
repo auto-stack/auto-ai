@@ -119,7 +119,7 @@ impl SkillRegistry {
             None => return None,
         }
     }
-    pub fn retain(&mut self, whitelist: Vec<String>) {
+    pub fn retain(&mut self, mut whitelist: Vec<String>) {
         let mut kept: std::collections::HashMap<String, Skill> = std::collections::HashMap::new();
         let mut kept_names: Vec<String> = vec![];
         for name in self.names.clone() {
@@ -138,8 +138,8 @@ impl SkillRegistry {
                 };
             }
         }
-        self.skills = kept;
-        self.names = kept_names;
+        self.skills = kept.clone();
+        self.names = kept_names.clone();
     }
     pub fn names(&self) -> Vec<String> {
         return self.names.clone();
@@ -371,12 +371,12 @@ impl Tool for SkillTool {
     fn parameters(&self) -> JsonValue {
         return self.parameters_cache.clone();
     }
-    async fn execute(&self, args: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, mut args: JsonValue) -> Result<ToolOutput, ToolError> {
         let v = args.get("skill_name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         if v.is_empty() {
             return Err(ToolError::Args("missing 'skill_name' argument".to_string()));
         }
-        let name = v.clone();
+        let name = v;
 
         match self.registry.get(name.as_str()) {
             Some(skill) => return Ok(ToolOutput::text(format!("# Skill: {}
@@ -425,7 +425,7 @@ impl SkillTool {
 /// Build the `<available_skills>` block appended to the system prompt so the
 /// model knows what skills it can invoke.
 /// Build the tool description string from the registry's skill list.
-fn build_description(registry: SkillRegistry) -> String {
+fn build_description(mut registry: SkillRegistry) -> String {
     let descs = registry.descriptions();
     if descs.is_empty() {
         return "Load a skill's instructions. No skills are currently configured.".to_string();
@@ -441,7 +441,7 @@ fn build_description(registry: SkillRegistry) -> String {
 /// Build the parameters JSON schema, embedding the registry's skill names as
 /// the `skill_name` enum. Uses json.parse over a stringified schema (the
 /// Auto VM's generic json.encode[T] is unreliable — plan 013 gotcha B4).
-fn build_parameters(registry: SkillRegistry) -> JsonValue {
+fn build_parameters(mut registry: SkillRegistry) -> JsonValue {
     let mut enum_parts: Vec<String> = vec![];
     for n in registry.names() {
         enum_parts.push(format!("\"{}\"", n));

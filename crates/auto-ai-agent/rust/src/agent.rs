@@ -310,7 +310,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new_shared(role: Box<dyn Role>, client: Box<dyn Client>) -> Agent {
+    pub fn new_shared(mut role: Box<dyn Role>, client: Box<dyn Client>) -> Agent {
         let limit = role.memory_limit();
         return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])), last_usage: None, compaction: default_compaction_settings(), compaction_on: true, compaction_window_pinned: false, last_summary: None };
     }
@@ -326,7 +326,7 @@ impl Agent {
     pub fn register_tool(&mut self, tool: Box<dyn Tool>) {
         self.tools.register(tool);
     }
-    pub fn register_skill_tool(&mut self, tool: SkillTool) {
+    pub fn register_skill_tool(&mut self, mut tool: SkillTool) {
         let block = tool.available_skills_block();
         match (block.len() as i64) == 0 {
             true => self.skills_block = None,
@@ -379,8 +379,8 @@ impl Agent {
     pub async fn run_stream(&mut self, task_msg: &str, cancel: Arc<AtomicBool>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
         return self.run_inner(task_msg, Some(cancel), sink).await;
     }
-    pub fn set_compaction_settings(&mut self, settings: CompactionSettings) {
-        self.compaction = settings;
+    pub fn set_compaction_settings(&mut self, mut settings: CompactionSettings) {
+        self.compaction = settings.clone();
         self.compaction_window_pinned = true;
     }
     pub fn compaction_settings(&self) -> CompactionSettings {
@@ -472,7 +472,7 @@ impl Agent {
         }
         return Err(AgentError::Config("request_with_recovery: unreachable".to_string()));
     }
-    pub async fn run_inner(&mut self, task_msg: &str, cancel: Option<Arc<AtomicBool>>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
+    pub async fn run_inner(&mut self, task_msg: &str, mut cancel: Option<Arc<AtomicBool>>, sink: a2r_std::task::TaskRef<StreamEvent>) -> Result<AgentResult, AgentError> {
 
 
         if self.compaction_on {
@@ -827,7 +827,7 @@ fn record_usage(result: AgentResult, resp: CompletionResponse) -> u32 {
 }
 
 /// A Cancelled event carrying a snapshot of the current result.
-fn cancelled_event(result: AgentResult) -> StreamEvent {
+fn cancelled_event(mut result: AgentResult) -> StreamEvent {
     return StreamEvent::Cancelled(clone_result(result.clone()));
 }
 
@@ -840,7 +840,7 @@ fn cancelled_event(result: AgentResult) -> StreamEvent {
 /// arrow closure (a2r parses `(ev) => expr`, not block-body move closures).
 /// `@TaskRef` (by ref): TaskRef is not Clone; send takes &self, so a borrow
 /// suffices and avoids a2r's move-reuse clone inference (Plan 019 class D).
-fn forward_sse_delta(ev: JsonValue, sink: &a2r_std::task::TaskRef<StreamEvent>) {
+fn forward_sse_delta(mut ev: JsonValue, sink: &a2r_std::task::TaskRef<StreamEvent>) {
     let mut ty: String = "".to_string();
     match ev.get("type") {
         Some(t) => ty = t.as_str().unwrap_or_default().to_string(),
@@ -880,7 +880,7 @@ fn clone_result(result: AgentResult) -> AgentResult {
 }
 
 /// Build the model id: a pinned id if set, else a "tier:<tier>" token.
-fn build_model_id(pinned: &str, tier: ModelTier) -> String {
+fn build_model_id(pinned: &str, mut tier: ModelTier) -> String {
     if pinned.is_empty() == false {
         return pinned.to_string();
     }

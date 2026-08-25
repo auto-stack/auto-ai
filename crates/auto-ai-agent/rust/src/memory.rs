@@ -38,7 +38,7 @@ impl Memory {
         }
 
     }
-    pub fn add_message(&mut self, msg: Message) {
+    pub fn add_message(&mut self, mut msg: Message) {
         self.messages.push(msg.clone());
         self.trim();
     }
@@ -94,7 +94,7 @@ impl Memory {
                     kept.push(m.clone());
                 }
             }
-            self.messages = kept;
+            self.messages = kept.clone();
             return;
         }
 
@@ -105,7 +105,7 @@ impl Memory {
             if start < 0 {
                 break;
             }
-            let s = start.clone();
+            let s = start;
             
 
 
@@ -128,7 +128,7 @@ impl Memory {
                 self.messages = self.insert_at(first, Message::user("（更早的对话历史因上下文限制被裁剪，请基于现有上下文继续。）"));
             }        }
     }
-    pub fn insert_at(&self, idx: i64, msg: Message) -> Vec<Message> {
+    pub fn insert_at(&self, idx: i64, mut msg: Message) -> Vec<Message> {
         let mut out: Vec<Message> = vec![];
         let mut i: i64 = 0;
         for m in self.messages.clone() {

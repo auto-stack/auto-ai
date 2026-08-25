@@ -81,7 +81,7 @@ impl RoleConfig {
     pub fn empty() -> RoleConfig {
         return RoleConfig { name: None, description: None, model: None, model_tier: None, temperature: None, max_turns: None, system_prompt: None, system_prompt_append: None, tools: None, tools_append: None, inherit: None, memory_limit: None, allowed_tiers: None, skills: None, token_budget: None, soul_file: None };
     }
-    pub fn merge_over(&self, base: RoleConfig) -> RoleConfig {
+    pub fn merge_over(&self, mut base: RoleConfig) -> RoleConfig {
         let mut r: RoleConfig = base.clone();
 
         match self.name.clone() {

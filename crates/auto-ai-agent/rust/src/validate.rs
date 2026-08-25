@@ -11,7 +11,7 @@ use dirs;
 use crate::error::{AgentError};
 use crate::role_def::{Role};
 use crate::ai_config;
-pub fn validate_role_model(role: Box<dyn Role>) -> Result<(), AgentError> {
+pub fn validate_role_model(mut role: Box<dyn Role>) -> Result<(), AgentError> {
     match load_client_config() {
         Ok(cfg) => {
             

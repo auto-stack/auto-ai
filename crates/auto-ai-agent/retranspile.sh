@@ -152,12 +152,9 @@ else
     echo "  [skip] lib.at failed to transpile — keeping existing lib.rs"
 fi
 
-# Plan 016 3.1: fix const SOUL type — comptime read_text produces a string
-# literal but a2r infers the const type as /* unknown */. Replace with &str.
-for f in "$RUST"/builtin_role_*.rs; do
-    [ -f "$f" ] || continue
-    sed -i 's#const SOUL: /\* unknown \*/#const SOUL: \&str#' "$f"
-done
+# Plan 016 3.1 → GRADUATED 2026-08-25 (auto-lang Plan 032 G1): a2r now types
+# comptime #{read_text(...)} as a string slice, emitting `const SOUL: &str`
+# natively (infer/expr.rs). Sed verified no-op and removed.
 
 # Plan 019 Phase 2 (B/C/D/E) — GRADUATED 2026-08-20 (auto-lang Plan 396):
 # all four sed classes verified as no-ops against the fixed a2r and removed.
@@ -170,14 +167,12 @@ done
 # Map<K> / struct-variant patterns / colon enum fields). Full regeneration
 # is GREEN again: retranspile skip=0, cargo check passes.
 
-# Plan 021: a2r (auto-lang Plan 387 §16 aftermath) now renders Auto's
-# `mut eng PipelineEngine` parameter as `&mut PipelineEngine` (borrow inference
-# change), and the call site as `&mut self.clone()` / `&mut h.clone()`. Align
-# both back to by-value to match the .at source intent.
-if [ -f "$RUST/pipeline.rs" ]; then
-    sed -i 's#fn correct_handoff_target(eng: &mut PipelineEngine, mut h: &mut HandoffDocument,#fn correct_handoff_target(mut eng: PipelineEngine, mut h: HandoffDocument,#g;
-            s#correct_handoff_target(\&mut self.clone(), \&mut h.clone(),#correct_handoff_target(self.clone(), h.clone(),#g' "$RUST/pipeline.rs"
-fi
+# Plan 021 (387 §16 aftermath) → GRADUATED 2026-08-25 (auto-ai Plan 032 G2.1):
+# the `mut p T` param was an intentional a2r in-out design (auto-lang Plan 018
+# C11), not a defect. pipeline.at's correct_handoff_target dropped `mut` (the
+# rust-ref original is by-value and the caller passes clones anyway), so a2r
+# now emits `mut eng: PipelineEngine`-style by-value bindings natively (params
+# auto-gain `mut` when the body mutates them). Sed verified no-op and removed.
 
 # Plan 021 缺口 3 (post-Plan 395): turbofish is now native Auto syntax
 # (`node.deserialize<RoleDecl>()`), so no sed injection is needed.
@@ -192,7 +187,9 @@ fi
 # shape (Plan 031 added the previous_summary arg; the call now lives in
 # try_compact).
 if [ -f "$RUST/agent.rs" ]; then
-    sed -i 's#compact(self.memory.clone(), self.client.clone(), model, self.compaction.clone(), self.last_summary.clone())#compact(self.memory.clone(), \&self.client, model.as_str(), self.compaction.clone(), self.last_summary.clone())#' "$RUST/agent.rs"
+    # 2026-08-25: narrowed the anchor — a2r (master) now emits `model.as_str()`
+    # itself, only the Box<dyn Client> borrow fix remains.
+    sed -i 's#compact(self.memory.clone(), self.client.clone(),#compact(self.memory.clone(), \&self.client,#' "$RUST/agent.rs"
     # Plan 031: 'static-str literal .as_str() hits unstable str_as_str; the
     # fn takes &str and a literal is already one.
     sed -i 's#"overflow"\.as_str()#"overflow"#g; s#"threshold"\.as_str()#"threshold"#g' "$RUST/agent.rs"

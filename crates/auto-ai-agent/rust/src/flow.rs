@@ -100,11 +100,11 @@ impl FlowStep {
         return FlowStep { id: id.to_string(), role_id: role_id.to_string(), gate: GateType::Auto, max_turns: None, exit: ExitRouting::Next, token_budget: None };
     }
     pub fn with_gate(&mut self, mut gate: GateType) -> FlowStep {
-        self.gate = gate;
+        self.gate = gate.clone();
         return self.clone();
     }
     pub fn with_exit(&mut self, mut exit: ExitRouting) -> FlowStep {
-        self.exit = exit;
+        self.exit = exit.clone();
         return self.clone();
     }
     pub fn with_budget(&mut self, budget: u32) -> FlowStep {
@@ -132,7 +132,7 @@ impl FlowSpec {
     pub fn new(id: &str) -> FlowSpec {
         return FlowSpec { id: id.to_string(), steps: vec![] };
     }
-    pub fn add_step(&mut self, step: FlowStep) -> FlowSpec {
+    pub fn add_step(&mut self, mut step: FlowStep) -> FlowSpec {
         self.steps.push(step.clone());
         return self.clone();
     }
