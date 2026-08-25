@@ -198,7 +198,7 @@ impl PipelineEngine {
         return PipelineEngine::with_budget(flow, run_id, TokenBudget::default());
     }
     pub fn with_budget(flow: FlowSpec, run_id: &str, run_budget: TokenBudget) -> PipelineEngine {
-        return PipelineEngine { flow: flow, current_step: 0, status: PipelineStatus::Idle, run_id: run_id.to_string(), step_history: vec![], loop_counters: std::collections::HashMap::new(), loop_counter_names: vec![], pending_gate: None, gate_feedback: std::collections::HashMap::new(), gate_feedback_names: vec![], gate_resolved_for_step: None, resumed_step_id: None, cumulative_tokens: 0, budget_tracker: BudgetTracker::new(run_budget), mode: PipelineMode::Auto };
+        return PipelineEngine { flow: flow, current_step: 0 as u32, status: PipelineStatus::Idle, run_id: run_id.to_string(), step_history: vec![], loop_counters: std::collections::HashMap::new(), loop_counter_names: vec![], pending_gate: None, gate_feedback: std::collections::HashMap::new(), gate_feedback_names: vec![], gate_resolved_for_step: None, resumed_step_id: None, cumulative_tokens: 0 as u32, budget_tracker: BudgetTracker::new(run_budget), mode: PipelineMode::Auto };
     }
     pub fn fail(&mut self, error: &str) -> AdvanceResult {
         self.status = PipelineStatus::Failed(error.to_string());

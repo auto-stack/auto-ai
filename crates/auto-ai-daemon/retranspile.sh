@@ -158,8 +158,8 @@ fi
 
 # ── tracker.rs ──────────────────────────────────────────────────────────────
 if [ -f "$RUST/tracker.rs" ]; then
-    # HashMap::get returns Option<&V>; clone the borrow before returning.
-    sed -i 's#Some(entry) => return entry,#Some(entry) => return entry.clone(),#' "$RUST/tracker.rs"
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
     # `guard.get(&name)` — name is &String; HashMap wants Borrow<str>. Use as_str.
     # (Only the `all()` loop hits this; leave other .get(name) calls — they pass
     # the loop var which is already &String there. Target the &&String form.)
@@ -183,21 +183,21 @@ if [ -f "$RUST/tier_router.rs" ]; then
     # `crate::tier_router_glue` explicitly — bare `use.rust X` emits `use X;`.)
     # ModelTier::parse_name takes &str; tier_name is String (from .collect()).
     sed -i 's#ModelTier::parse_name(tier_name)#ModelTier::parse_name(tier_name.as_str())#g' "$RUST/tier_router.rs"
-    # HashMap::get needs &K; a2r passes the owned key.
-    sed -i 's#self\.routing\.get(tier)#self.routing.get(\&tier)#g' "$RUST/tier_router.rs"
-    sed -i 's#routing\.get(tier)#routing.get(\&tier)#g' "$RUST/tier_router.rs"
-    # candidates() returns Vec but map value is &Vec — clone.
-    sed -i 's#Some(v) => return v,#Some(v) => return v.clone(),#' "$RUST/tier_router.rs"
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
     # Vec::remove takes usize; a2r emits the i32 index verbatim.
     sed -i 's#chain\.remove(idx)#chain.remove(idx as usize)#' "$RUST/tier_router.rs"
-    # resolve() returns Option<&TierCandidate> from a borrow — clone.
-    sed -i 's#return Some(c);#return Some(c.clone());#' "$RUST/tier_router.rs"
-    # ensure_candidate: `list` from map.get is &Vec; clone before mutating.
-    sed -i 's#let mut updated = list;#let mut updated = list.clone();#' "$RUST/tier_router.rs"
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
     sed -i 's#routing\.insert(tier, updated\.clone());#routing.insert(tier, updated);#' "$RUST/tier_router.rs"
-    # ensure_candidate match arms: Some block ends with `;` (→ ()) but None arm
-    # `routing.insert(...)` returns Option — wrap None in a block to match ().
-    sed -i 's#None => routing\.insert(tier, vec!\[tc\]),#None => { routing.insert(tier, vec![tc]); },#' "$RUST/tier_router.rs"
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
     # candidates_preferred: index_of_provider(chain, ...) moves chain, but chain
     # is reused after — pass a clone.
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
@@ -298,9 +298,8 @@ if [ -f "$RUST/provider.rs" ]; then
     # crate::provider_glue` → native `provider_glue::build_registry`); the
     # &config borrow remains (G2-class: big struct passed by value).
     sed -i 's|return provider_glue::build_registry(config);|return provider_glue::build_registry(\&config);|' "$RUST/provider.rs"
-    # default_provider / get return &Arc<dyn AiProvider> from map.get — clone.
-    sed -i 's|Some(p) => return Ok(p),|Some(p) => return Ok(p.clone()),|' "$RUST/provider.rs"
-    sed -i 's|Some(p) => return Some(p),|Some(p) => return Some(p.clone()),|' "$RUST/provider.rs"
+# (graduated 2026-08-25, Plan 032 G2-core batch 7: a2r get-ref family fixed —
+#  native output now carries this text; verified no-op then removed.)
     # from_daemon_config is a constructor, but a2r adds `&self` to `ext`
     # methods AND takes config by value. Make it an associated fn taking
     # &DaemonConfig (Phase 3 — server.at passes &config, config is reused).

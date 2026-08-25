@@ -26,7 +26,7 @@ pub struct CompactionSettings {
 }
 
 pub fn default_compaction_settings() -> CompactionSettings {
-    return CompactionSettings { context_window: 128000, reserve_tokens: 16384, keep_recent_tokens: 20000 };
+    return CompactionSettings { context_window: 128000 as u32, reserve_tokens: 16384 as u32, keep_recent_tokens: 20000 as u32 };
 }
 
 pub fn should_compact(tokens: u32, s: CompactionSettings) -> bool {

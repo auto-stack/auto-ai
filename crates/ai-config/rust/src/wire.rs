@@ -169,7 +169,7 @@ impl CompletionRequest {
         return self;
     }
     pub fn with_tools(mut self, mut tools: Vec<ToolDefinition>) -> CompletionRequest {
-        self.tools = tools;
+        self.tools = tools.clone();
         return self;
     }
 }

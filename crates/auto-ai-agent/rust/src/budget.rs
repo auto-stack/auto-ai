@@ -117,7 +117,7 @@ pub struct BudgetTracker {
 
 impl BudgetTracker {
     pub fn new(run_budget: TokenBudget) -> BudgetTracker {
-        return BudgetTracker { run_budget: run_budget, step_budgets: std::collections::HashMap::new(), step_names: vec![], cumulative: 0, per_step: std::collections::HashMap::new(), per_step_names: vec![] };
+        return BudgetTracker { run_budget: run_budget, step_budgets: std::collections::HashMap::new(), step_names: vec![], cumulative: 0 as u32, per_step: std::collections::HashMap::new(), per_step_names: vec![] };
     }
     pub fn record(&mut self, step: &str, input: u32, output: u32) {
         let total: u32 = input + output;

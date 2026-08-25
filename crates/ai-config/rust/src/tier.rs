@@ -146,7 +146,7 @@ pub fn all_tiers() -> Vec<ModelTier> {
     return vec![ModelTier::Min, ModelTier::Lite, ModelTier::Mid, ModelTier::Pro, ModelTier::Max];
 }
 
-pub fn resolve_model_id(desired: ModelTier, models: Vec<ModelDefinition>) -> Option<String> {
+pub fn resolve_model_id(mut desired: ModelTier, mut models: Vec<ModelDefinition>) -> Option<String> {
     if (models.len() as i64) == 0 {
         return None;
     }

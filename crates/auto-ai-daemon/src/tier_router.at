@@ -177,7 +177,7 @@ ext TierRouter {
             Some(pref) -> {
                 for c in cands {
                     if c.provider == pref {
-                        return Some(c)
+                        return Some(c.clone())
                     }
                 }
             },

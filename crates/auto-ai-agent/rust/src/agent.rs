@@ -272,7 +272,7 @@ pub struct AgentResult {
 
 impl AgentResult {
     pub fn default() -> AgentResult {
-        return AgentResult { output: "".to_string(), turns: 0, tool_calls: vec![], total_tokens: 0 };
+        return AgentResult { output: "".to_string(), turns: 0 as u32, tool_calls: vec![], total_tokens: 0 as u32 };
     }
     pub fn content(&self) -> String {
         return self.output.clone();

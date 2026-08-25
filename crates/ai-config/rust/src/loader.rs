@@ -114,7 +114,7 @@ pub struct DaemonConfig {
 
 impl DaemonConfig {
     pub fn default() -> DaemonConfig {
-        return DaemonConfig { listen_addr: "127.0.0.1:17654".to_string(), idle_timeout_min: 10, log_level: "info".to_string(), providers: std::collections::HashMap::new(), provider_names: vec![], default_provider: "".to_string(), default_model: "".to_string(), tier_routing: TierRouting::empty() };
+        return DaemonConfig { listen_addr: "127.0.0.1:17654".to_string(), idle_timeout_min: 10 as u32, log_level: "info".to_string(), providers: std::collections::HashMap::new(), provider_names: vec![], default_provider: "".to_string(), default_model: "".to_string(), tier_routing: TierRouting::empty() };
     }
 }
 
@@ -339,7 +339,7 @@ fn kind_prop_is_empty(v: Value) -> bool {
 }
 
 /// Collect the names of each `name { … }` child block of `node` (in order).
-fn provider_keys(node: Node) -> Vec<String> {
+fn provider_keys(mut node: Node) -> Vec<String> {
     let mut names: Vec<String> = vec![];
     for (_key, kid) in node.kids_iter() {
         match kid {
@@ -363,7 +363,7 @@ fn provider_keys(node: Node) -> Vec<String> {
 /// provider whose scalars fail to deserialize (a garbage-typed value such as
 /// `auth_required : "maybe"`) is a **config error**, not a silent skip: a
 /// provider must never quietly vanish from the registry (Plan 381).
-fn parse_provider_blocks(node: Node) -> Result<std::collections::HashMap<String, ProviderConfig>, ConfigError> {
+fn parse_provider_blocks(mut node: Node) -> Result<std::collections::HashMap<String, ProviderConfig>, ConfigError> {
     let mut providers: std::collections::HashMap<String, ProviderConfig> = std::collections::HashMap::new();
     for (_key, kid) in node.kids_iter() {
         match kid {
@@ -391,7 +391,7 @@ fn parse_provider_blocks(node: Node) -> Result<std::collections::HashMap<String,
 }
 
 /// Parse the `tier_routing { … }` child block from a daemon config.
-fn parse_tier_routing(node: Node) -> TierRouting {
+fn parse_tier_routing(mut node: Node) -> TierRouting {
     let mut routing = TierRouting::empty();
     for (_key, kid) in node.kids_iter() {
         match kid {
@@ -456,7 +456,7 @@ fn parse_candidates(val: Value) -> Vec<TierRouteCandidate> {
 /// - `Obj { id, name?, tier }` — full, preferred.
 /// - `Str "glm-5.2"` — bare model id, defaults to [ModelTier.Mid].
 /// Legacy: a comma-separated bare string `glm-4.6,glm-flash` → all Mid.
-fn opt_models(node: Node, key: &str) -> Vec<ModelDefinition> {
+fn opt_models(mut node: Node, key: &str) -> Vec<ModelDefinition> {
     let val = node.get_prop_of(key);
     let mut out: Vec<ModelDefinition> = vec![];
     match val {
@@ -511,7 +511,7 @@ fn parse_tier(s: &str) -> ModelTier {
 }
 
 /// Read a string field from an Obj, or "" if absent / not a string.
-fn obj_get_str(o: Obj, key: &str) -> String {
+fn obj_get_str(mut o: Obj, key: &str) -> String {
     match o.get(key) {
         Some(v) => {
             match v {

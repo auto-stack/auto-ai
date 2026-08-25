@@ -26,7 +26,7 @@ pub struct AppUsage {
 
 impl AppUsage {
     pub fn new() -> AppUsage {
-        return AppUsage { total_input_tokens: 0, total_output_tokens: 0, request_count: 0, total_cache_read_tokens: 0, total_cache_write_tokens: 0 };
+        return AppUsage { total_input_tokens: 0 as u32, total_output_tokens: 0 as u32, request_count: 0 as u32, total_cache_read_tokens: 0 as u32, total_cache_write_tokens: 0 as u32 };
     }
     pub fn total_tokens(&self) -> u32 {
         return self.total_input_tokens + self.total_output_tokens;

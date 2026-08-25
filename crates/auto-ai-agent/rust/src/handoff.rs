@@ -59,7 +59,7 @@ pub struct TokenUsage {
 
 impl TokenUsage {
     pub fn default() -> TokenUsage {
-        return TokenUsage { step_tokens: 0, cumulative: 0, budget_remaining: 0 };
+        return TokenUsage { step_tokens: 0 as u32, cumulative: 0 as u32, budget_remaining: 0 as u32 };
     }
 }
 
