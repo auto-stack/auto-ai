@@ -100,7 +100,7 @@ impl AiClient {
             Err(e) => return Err(ClientError::Api(format!("parse response: {}", e))),
         }
     }
-    pub async fn complete_stream(&self, req: CompletionRequest, on_event: Arc<dyn Fn(JsonValue) + Send + Sync>) -> Result<CompletionResponse, ClientError> {
+    pub async fn complete_stream(&self, mut req: CompletionRequest, on_event: Arc<dyn Fn(JsonValue) + Send + Sync>) -> Result<CompletionResponse, ClientError> {
         let mut sreq: CompletionRequest = req.clone();
         sreq.stream = true;
 
@@ -222,7 +222,7 @@ impl SseBuffer {
             for line in block.split("\n").collect::<Vec<_>>() {
                 let data = strip_data_prefix(line);
                 if data.is_empty() == false && data != "[DONE]" {
-                    out.push(data.clone());
+                    out.push(data.to_string());
                 }
             }
         }
@@ -238,7 +238,7 @@ impl SseBuffer {
         for line in block.split("\n").collect::<Vec<_>>() {
             let data = strip_data_prefix(line);
             if data.is_empty() == false && data != "[DONE]" {
-                out.push(data.clone());
+                out.push(data.to_string());
             }
         }
         return out;
@@ -261,12 +261,12 @@ fn strip_data_prefix(line: &str) -> String {
 }
 
 /// The `text` field of a delta event, or "" if absent.
-fn text_of(value: JsonValue) -> String {
+fn text_of(mut value: JsonValue) -> String {
     return value.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string();
 }
 
 /// An optional string field, or None if absent/empty.
-fn opt_str_field(value: JsonValue, key: &str) -> Option<String> {
+fn opt_str_field(mut value: JsonValue, key: &str) -> Option<String> {
     let s = value.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
     if s.is_empty() {
         return None;
@@ -293,7 +293,7 @@ fn parse_usage(value: JsonValue) -> Option<Usage> {
     if u.is_null() {
         return None;
     }
-    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32, cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_tokens")) as u32, cache_write_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_write_tokens")) as u32 });
+    return Some(Usage { input_tokens: (a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens")) as u32), output_tokens: (a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens")) as u32), cache_read_tokens: (a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_tokens")) as u32), cache_write_tokens: (a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_write_tokens")) as u32) });
 }
 
 /// Parse `model_meta` object from a done event, or None if absent (Plan 031).

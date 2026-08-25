@@ -240,9 +240,9 @@ fn parse_usage_openai(value Value) ?Usage {
         return None
     }
     return Some(Usage(
-        input_tokens: json.as_int(json.get(u, "prompt_tokens")),
-        output_tokens: json.as_int(json.get(u, "completion_tokens")),
-        cache_read_tokens: json.as_int(json.get(json.get(u, "prompt_tokens_details"), "cached_tokens")),
+        input_tokens: json.as_int(json.get(u, "prompt_tokens")).as(uint),
+        output_tokens: json.as_int(json.get(u, "completion_tokens")).as(uint),
+        cache_read_tokens: json.as_int(json.get(json.get(u, "prompt_tokens_details"), "cached_tokens")).as(uint),
         cache_write_tokens: 0
     ))
 }

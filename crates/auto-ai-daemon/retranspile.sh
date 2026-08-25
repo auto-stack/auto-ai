@@ -114,6 +114,10 @@ echo "  [lib] assembled lib.rs (shim + pub mod decls)"
 find "$SRC" -name "*.a2r.rs" -delete
 
 # ═══════════════════════════════════════════════════════════════════════════
+# (graduated 2026-08-25, Plan 032 G4b: a2r struct_init now appends `as u32`
+#  for uint fields fed i64 exprs (json.as_int / int literals / i64 locals) —
+#  all Usage-token widening seds removed; error.rs LlmError enum-variant
+#  status cast remains: enum construction path not yet covered.)
 # (graduated 2026-08-25, Plan 032 G4: a2r now natively emits serde_json::Value
 #  variant construction — String → .to_string(), Number → Number::from /
 #  from_f64(...).unwrap_or — all Value::String/Value::Number seds removed.)
@@ -332,8 +336,6 @@ if [ -f "$RUST/openai.rs" ]; then
     sed -i 's|from_upstream_status(status, text)|from_upstream_status(status, \&text)|g' "$RUST/openai.rs"
     # Usage tokens: json.as_int returns i64; Usage.input_tokens is u32 — cast.
     # (Match the a2r-fully-qualified form a2r_std::json::as_int(&a2r_std::json::get(...)).)
-    sed -i 's|input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "prompt_tokens"))|input_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "prompt_tokens")) as u32|' "$RUST/openai.rs"
-    sed -i 's|output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "completion_tokens"))|output_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "completion_tokens")) as u32|' "$RUST/openai.rs"
     # tool_calls list binding: raw_tool_calls.as_array() is serde_json's
     # (Option<&Vec>); use a2r-std json::as_array (→ owned Vec).
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
@@ -371,8 +373,6 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # crate::sse::SseParser` + `use.rust crate::provider_glue` — paths native.)
     sed -i 's|from_upstream_status(status, text)|from_upstream_status(status, \&text)|g' "$RUST/anthropic.rs"
     # Usage tokens i64 → u32.
-    sed -i 's|input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens"))|input_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "input_tokens")) as u32|' "$RUST/anthropic.rs"
-    sed -i 's|output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "output_tokens"))|output_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "output_tokens")) as u32|' "$RUST/anthropic.rs"
     # content blocks: `blocks.as_array()` resolves to serde_json::Value::as_array
     # (→ Option<&Vec>), not a2r-std's json::as_array (→ Vec owned). Use the
     # a2r-std fn so for-in yields owned Value elements; &b is then &Value.
@@ -413,16 +413,6 @@ if [ -f "$RUST/anthropic.rs" ]; then
 fi
 
 # ── ollama.rs (Phase 4) ─────────────────────────────────────────────────────
-# Plan 028: cache-dimension parses need the same as u32 widening as the
-# input/output tokens above, and the quota classifier's status compare needs a
-# deref (match bindings are references).
-if [ -f "$RUST/anthropic.rs" ]; then
-    sed -i 's#cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_read_input_tokens"))#cache_read_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "cache_read_input_tokens")) as u32#;
-            s#cache_write_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "cache_creation_input_tokens"))#cache_write_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "cache_creation_input_tokens")) as u32#' "$RUST/anthropic.rs"
-fi
-if [ -f "$RUST/openai.rs" ]; then
-    sed -i 's#cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&a2r_std::json::get(&u, "prompt_tokens_details"), "cached_tokens")),#cache_read_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&a2r_std::json::get(\&u, "prompt_tokens_details"), "cached_tokens")) as u32,#' "$RUST/openai.rs"
-fi
 if [ -f "$RUST/error.rs" ]; then
     sed -i 's#if status == 402 {#if *status == 402 {#' "$RUST/error.rs"
 fi

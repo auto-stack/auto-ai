@@ -159,12 +159,12 @@ fn is_windows() -> bool {
     }
     let comspec = a2r_std::env::get("ComSpec");
     if comspec.is_empty() == false {
-        if a2r_std::str_contains(comspec.as_str(), "cmd.exe") || a2r_std::str_contains(comspec.as_str(), "COMMAND.COM") {
+        if comspec.contains("cmd.exe") || comspec.contains("COMMAND.COM") {
             return true;
         }    }
 
     let path = a2r_std::env::get("PATH");
-    if a2r_std::str_contains(path.as_str(), ";") && a2r_std::str_contains(path.as_str(), ":") == false {
+    if path.contains(";") && path.contains(":") == false {
         return true;
     }
     return false;

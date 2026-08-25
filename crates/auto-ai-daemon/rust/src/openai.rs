@@ -218,5 +218,5 @@ fn parse_usage_openai(value: Value) -> Option<Usage> {
     if u.is_null() {
         return None;
     }
-    return Some(Usage { input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "prompt_tokens")) as u32, output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "completion_tokens")) as u32, cache_read_tokens: a2r_std::json::as_int(&a2r_std::json::get(&a2r_std::json::get(&u, "prompt_tokens_details"), "cached_tokens")) as u32, cache_write_tokens: 0 });
+    return Some(Usage { input_tokens: (a2r_std::json::as_int(&a2r_std::json::get(&u, "prompt_tokens")) as u32), output_tokens: (a2r_std::json::as_int(&a2r_std::json::get(&u, "completion_tokens")) as u32), cache_read_tokens: (a2r_std::json::as_int(&a2r_std::json::get(&a2r_std::json::get(&u, "prompt_tokens_details"), "cached_tokens")) as u32), cache_write_tokens: 0 });
 }
