@@ -255,11 +255,11 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
                     let cfg = state.cfg();
                     match resolve_tier_model(&req.model, &*cfg) {
                         Some(resolved) => candidates.push((cfg.default_provider.clone(), resolved)),
-                        None => return error_response(StatusCode::BAD_REQUEST, format!("{}{}", format!("{}{}", "could not resolve tier '", req.model), "' — no candidates").as_str()),
+                        None => return error_response(StatusCode::BAD_REQUEST.clone(), format!("{}{}", format!("{}{}", "could not resolve tier '", req.model), "' — no candidates").as_str()),
                     };
                 }
             },
-            None => return error_response(StatusCode::BAD_REQUEST, format!("{}{}", format!("{}{}", "unknown tier '", tier_name), "'").as_str()),
+            None => return error_response(StatusCode::BAD_REQUEST.clone(), format!("{}{}", format!("{}{}", "unknown tier '", tier_name), "'").as_str()),
         };
     } else {
         
@@ -319,7 +319,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
 
 
                                 if e.is_quota_exhausted() {
-                                    return error_response(StatusCode::PAYMENT_REQUIRED, format!("{}{}", "quota/billing exhausted: ", e.message()).as_str());
+                                    return error_response(StatusCode::PAYMENT_REQUIRED.clone(), format!("{}{}", "quota/billing exhausted: ", e.message()).as_str());
                                 }
                                 let retryable = e.is_retryable();
                                 last_error = Some(e.message());
@@ -327,7 +327,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
                                     
 
                                 } else {
-                                    return error_response(StatusCode::BAD_GATEWAY, format!("{}{}", "upstream error: ", e.message()).as_str());
+                                    return error_response(StatusCode::BAD_GATEWAY.clone(), format!("{}{}", "upstream error: ", e.message()).as_str());
                                 }
 
                             },
@@ -342,7 +342,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
 
 
     let msg = match last_error { Some(e) => e, None => "unknown".to_string(), };
-    return error_response(StatusCode::BAD_GATEWAY, format!("{}{}", "all providers failed; last error: ", msg).as_str());
+    return error_response(StatusCode::BAD_GATEWAY.clone(), format!("{}{}", "all providers failed; last error: ", msg).as_str());
 }
 
 /// `POST /v1/chat/completions` — receive a canonical request, resolve a

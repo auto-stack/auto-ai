@@ -190,7 +190,7 @@ fn ensure_candidate(mut routing: HashMap<ModelTier, Vec<TierCandidate>>, tier: M
             updated.push(tc.clone());
             routing.insert(tier, updated);
         },
-        None => { routing.insert(tier, vec![tc]); },
+        None => { routing.insert(tier, vec![tc.clone()]); },
     };
 }
 

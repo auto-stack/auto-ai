@@ -124,7 +124,7 @@ impl HandoffDocument {
         if self.work_product.is_empty() == false {
             lines.push("## Work Product".to_string());
             for wp in self.work_product.clone() {
-                let size = format_size(wp.lines);
+                let size = format_size(wp.lines.clone());
                 let line: String = format!("- `{}`{}{}", wp.path, size, wp.description);
                 lines.push(line.to_string());
             }

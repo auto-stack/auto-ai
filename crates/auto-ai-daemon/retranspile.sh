@@ -219,22 +219,9 @@ fi
 
 # ── format.rs ───────────────────────────────────────────────────────────────
 if [ -f "$RUST/format.rs" ]; then
-    # Helpers all_tool_results/has_tool_use move `blocks`; borrow at the call
-    # site and in the signature so openai_content keeps owning it.
-    sed -i 's#all_tool_results(blocks)#all_tool_results(\&blocks)#' "$RUST/format.rs"
-    sed -i 's#has_tool_use(blocks)#has_tool_use(\&blocks)#' "$RUST/format.rs"
-    sed -i 's#fn all_tool_results(blocks: Vec<ContentBlock>)#fn all_tool_results(blocks: \&Vec<ContentBlock>)#' "$RUST/format.rs"
-    sed -i 's#fn has_tool_use(blocks: Vec<ContentBlock>)#fn has_tool_use(blocks: \&Vec<ContentBlock>)#' "$RUST/format.rs"
-    # With blocks now &Vec in the helpers, `for b in &blocks` is &&Vec. Fix the
-    # two helper loops (lines shift per transpile; target by the surrounding
-    # signature context via awk).
-    awk '
-        /^fn all_tool_results/ { in_altr=1 }
-        /^fn has_tool_use/     { in_hast=1 }
-        in_altr && /for b in &blocks \{/ { sub(/&blocks/, "blocks"); in_altr=0 }
-        in_hast  && /for b in &blocks \{/ { sub(/&blocks/, "blocks"); in_hast=0 }
-        { print }
-    ' "$RUST/format.rs" > "$RUST/format.rs.tmp" && mv "$RUST/format.rs.tmp" "$RUST/format.rs"
+# (graduated 2026-08-25, Plan 032 第七批合并后复验: plan 016 Phase 4 now
+#  clones the moved Vec at call sites — the by-value form compiles natively;
+#  the &Vec signature rewrite became counterproductive (E0308 vs clone).)
     # tier_router.rs has_provider_for_tier: same &&Vec issue (cands from map.get).
     if [ -f "$RUST/tier_router.rs" ]; then
         awk '
@@ -376,9 +363,9 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # (→ Option<&Vec>), not a2r-std's json::as_array (→ Vec owned). Use the
     # a2r-std fn so for-in yields owned Value elements; &b is then &Value.
     sed -i 's|for b in blocks.as_array() {|for b in a2r_std::json::as_array(\&blocks) {|' "$RUST/anthropic.rs"
-    # content_blocks_to_anthropic: blocks param is now &Vec; iterate blocks
-    # directly (not &blocks — that's &&Vec).
-    sed -i 's|for b in &blocks {|for b in blocks {|g' "$RUST/anthropic.rs"
+# (graduated 2026-08-25, Plan 032 第七批合并后复验: plan 016 Phase 4 now
+#  clones the moved Vec at call sites — the by-value form compiles natively;
+#  the &Vec signature rewrite became counterproductive (E0308 vs clone).)
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # Value::Bool(&bool) → deref.
     sed -i 's|Value::Bool(is_error)|Value::Bool(*is_error)|g' "$RUST/anthropic.rs"
@@ -393,10 +380,9 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # header() &str + build_body message loop (m is &Message).
     sed -i 's|.header("x-api-key", self.api_key)|.header("x-api-key", \&self.api_key)|g' "$RUST/anthropic.rs"
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
-    # content_blocks_to_anthropic takes &Vec<ContentBlock>; m.content is Vec.
-    sed -i 's|content_blocks_to_anthropic(m.content)|content_blocks_to_anthropic(\&m.content)|g' "$RUST/anthropic.rs"
-    # And update the fn signature to match (&Vec, not owned Vec).
-    sed -i 's|fn content_blocks_to_anthropic(blocks: Vec<ContentBlock>)|fn content_blocks_to_anthropic(blocks: \&Vec<ContentBlock>)|' "$RUST/anthropic.rs"
+# (graduated 2026-08-25, Plan 032 第七批合并后复验: plan 016 Phase 4 now
+#  clones the moved Vec at call sites — the by-value form compiles natively;
+#  the &Vec signature rewrite became counterproductive (E0308 vs clone).)
     # tool_to_anthropic: same as openai's tool_to_openai — take &ToolDefinition,
     # pass t directly (for-in yields &ToolDefinition).
     sed -i 's|fn tool_to_anthropic(t: ToolDefinition)|fn tool_to_anthropic(t: \&ToolDefinition)|' "$RUST/anthropic.rs"

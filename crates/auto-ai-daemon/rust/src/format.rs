@@ -44,7 +44,7 @@ pub enum OpenAiMsg {
 
 pub fn openai_content(role: &str, mut blocks: Vec<ContentBlock>) -> OpenAiMsg {
 
-    if blocks.is_empty() == false && all_tool_results(&blocks) {
+    if blocks.is_empty() == false && all_tool_results(blocks.clone()) {
         let mut results: Vec<OpenAiToolResult> = vec![];
         for b in &blocks {
             match b {
@@ -57,7 +57,7 @@ pub fn openai_content(role: &str, mut blocks: Vec<ContentBlock>) -> OpenAiMsg {
     }
 
 
-    if has_tool_use(&blocks) {
+    if has_tool_use(blocks.clone()) {
         let mut text_parts: Vec<String> = vec![];
         let mut tool_calls: Vec<Value> = vec![];
         for b in &blocks {
@@ -118,8 +118,8 @@ pub fn parse_openai_tool_calls(arr: Vec<Value>) -> Vec<ToolCall> {
 /// Translate our ToolDefinition to OpenAI's tool object.
 /// Parse OpenAI's `tool_calls` array into our ToolCall list.
 /// True if every block is a ToolResult.
-fn all_tool_results(blocks: &Vec<ContentBlock>) -> bool {
-    for b in blocks {
+fn all_tool_results(blocks: Vec<ContentBlock>) -> bool {
+    for b in &blocks {
         match b {
             ContentBlock::ToolResult { tool_use_id, content, is_error } => {},
             ContentBlock::Text { text } => return false,
@@ -130,8 +130,8 @@ fn all_tool_results(blocks: &Vec<ContentBlock>) -> bool {
 }
 
 /// True if any block is a ToolUse.
-fn has_tool_use(blocks: &Vec<ContentBlock>) -> bool {
-    for b in blocks {
+fn has_tool_use(blocks: Vec<ContentBlock>) -> bool {
+    for b in &blocks {
         match b {
             ContentBlock::ToolUse { id, name, input } => return true,
             ContentBlock::Text { text } => {},

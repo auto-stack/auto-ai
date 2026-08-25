@@ -85,7 +85,7 @@ fn load_from_env() -> DaemonConfig {
 
     let zhipu_key = a2r_std::env::get("ZHIPU_API_KEY");
     if zhipu_key.is_empty() == false {
-        let models = vec![model_meta("glm-4.6", ai_config::ModelTier::Mid, 200000, 32768, 800000, 3200000, 0, false, true), model_meta("glm-4-flash", ai_config::ModelTier::Min, 128000, 8192, 0, 0, 0, false, false)];
+        let models = vec![model_meta("glm-4.6", ai_config::ModelTier::Mid.clone(), 200000, 32768, 800000, 3200000, 0, false, true), model_meta("glm-4-flash", ai_config::ModelTier::Min.clone(), 128000, 8192, 0, 0, 0, false, false)];
         providers.insert("zhipu".to_string(), provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", zhipu_key.as_str(), models));
     }
 
@@ -96,7 +96,7 @@ fn load_from_env() -> DaemonConfig {
     let key = first_non_empty(anthropic_key.as_str(), anthropic_token.as_str());
     if key.is_empty() == false {
         let base = first_non_empty(anthropic_base.as_str(), "https://api.anthropic.com");
-        let models = vec![model_meta("claude-3-5-sonnet-20241022", ai_config::ModelTier::Mid, 200000, 8192, 3000000, 15000000, 300000, true, true)];
+        let models = vec![model_meta("claude-3-5-sonnet-20241022", ai_config::ModelTier::Mid.clone(), 200000, 8192, 3000000, 15000000, 300000, true, true)];
         providers.insert("anthropic".to_string(), provider_env("anthropic", base.as_str(), key.as_str(), models));
     }
 
@@ -105,7 +105,7 @@ fn load_from_env() -> DaemonConfig {
     let openai_base = a2r_std::env::get("OPENAI_BASE_URL");
     if openai_key.is_empty() == false {
         let base = first_non_empty(openai_base.as_str(), "https://api.openai.com/v1");
-        let models = vec![model_meta("gpt-4o", ai_config::ModelTier::Mid, 128000, 16384, 2500000, 10000000, 1250000, true, false)];
+        let models = vec![model_meta("gpt-4o", ai_config::ModelTier::Mid.clone(), 128000, 16384, 2500000, 10000000, 1250000, true, false)];
         providers.insert("openai".to_string(), provider_env("openai", base.as_str(), openai_key.as_str(), models));
     }
 

@@ -414,7 +414,7 @@ fn parse_tier_routing(mut node: Node) -> TierRouting {
 
 
                                 routing.entries.insert(tier_name.clone(), cands);
-                                routing.tier_names.push(tier_name.clone());
+                                routing.tier_names.push(tier_name.to_string());
                             }                        }
 
                     }

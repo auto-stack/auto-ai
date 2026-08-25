@@ -45,7 +45,7 @@ impl ConcurrencyManager {
 
                     let limit = provider.max_concurrency.unwrap_or(4);
                     pools.insert(name.clone(), Arc::new(Semaphore::new(limit)));
-                    limits.insert(name.clone(), limit.clone());
+                    limits.insert(name.clone(), limit);
                     names.push(name.clone());
                 },
                 None => {},

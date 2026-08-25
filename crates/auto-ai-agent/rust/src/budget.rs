@@ -59,7 +59,7 @@ impl TokenBudget {
         return TokenBudget::new(100000000);
     }
     pub fn new(limit: u32) -> TokenBudget {
-        return TokenBudget { limit: limit, warning_at: warn_threshold(limit), strategy: BudgetStrategy::HardStop };
+        return TokenBudget { limit: limit, warning_at: warn_threshold(limit), strategy: BudgetStrategy::HardStop.clone() };
     }
     pub fn with_strategy(limit: u32, strategy: BudgetStrategy) -> TokenBudget {
         return TokenBudget { limit: limit, warning_at: warn_threshold(limit), strategy: strategy };

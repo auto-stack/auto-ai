@@ -107,7 +107,7 @@ impl AnthropicProvider {
         for m in &req.messages {
             let mut obj = serde_json::Map::new();
             obj.insert("role".to_string(), Value::String(m.role.to_string()));
-            obj.insert("content".to_string(), content_blocks_to_anthropic(&m.content));
+            obj.insert("content".to_string(), content_blocks_to_anthropic(m.content.clone()));
             messages.push(Value::Object(obj));
         }
 
@@ -151,9 +151,9 @@ impl AnthropicProvider {
 /// The `/v1/messages` endpoint URL.
 /// Build the Anthropic Messages API request body.
 /// Translate our content blocks into Anthropic's content block array.
-fn content_blocks_to_anthropic(blocks: &Vec<ContentBlock>) -> Value {
+fn content_blocks_to_anthropic(blocks: Vec<ContentBlock>) -> Value {
     let mut out: Vec<Value> = vec![];
-    for b in blocks {
+    for b in &blocks {
         match b {
             ContentBlock::Text { text } => {
                 let mut obj = serde_json::Map::new();

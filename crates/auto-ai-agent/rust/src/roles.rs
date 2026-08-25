@@ -75,7 +75,7 @@ pub struct RoleSummary {
 
 impl RoleSummary {
     pub fn empty() -> RoleSummary {
-        return RoleSummary { name: "".to_string(), description: "".to_string(), tier: ModelTier::Mid, allowed_tiers: vec![], skills: vec![], token_budget: None, is_builtin: false };
+        return RoleSummary { name: "".to_string(), description: "".to_string(), tier: ModelTier::Mid.clone(), allowed_tiers: vec![], skills: vec![], token_budget: None, is_builtin: false };
     }
 }
 

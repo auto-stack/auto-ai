@@ -373,7 +373,7 @@ pub async fn compact(mut memory: Memory, client: &Box<dyn Client>, model: &str, 
         prefix.push(msgs[(pi) as usize].clone());
         pi = pi + 1;
     }
-    let file_manifest = format_file_operations(extract_file_ops(prefix));
+    let file_manifest = format_file_operations(extract_file_ops(prefix.clone()));
 
 
     let mut system = summary_system_prompt();

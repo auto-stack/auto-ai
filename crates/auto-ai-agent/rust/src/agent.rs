@@ -876,7 +876,7 @@ fn pop_front(q: Arc<Mutex<Vec<String>>>) -> Option<String> {
 /// Copy an AgentResult (used for event payloads, so the returned result stays
 /// independent of the running accumulator).
 fn clone_result(result: AgentResult) -> AgentResult {
-    return AgentResult { output: result.output.to_string(), turns: result.turns, tool_calls: result.tool_calls, total_tokens: result.total_tokens };
+    return AgentResult { output: result.output.to_string(), turns: result.turns, tool_calls: result.tool_calls.clone(), total_tokens: result.total_tokens };
 }
 
 /// Build the model id: a pinned id if set, else a "tier:<tier>" token.
