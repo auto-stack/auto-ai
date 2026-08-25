@@ -1,6 +1,6 @@
 # Plan 032: a2r 语言能力缺陷根因修复清单——auto-lang 侧交付需求（消费端汇总）
 
-> **状态**：🔧 进行中（2026-08-25 两批落地：**G1 ✅ + G2.1 ✅ + G3.1 ✅**，见各节标记与「实施记录」；G2.2-2.4 / G3.2-3.3 / G4-G8 待续）
+> **状态**：⏸ 首阶段收口（2026-08-25 六批落地：**G1 ✅ + G2.1 ✅ + G2.2 首滴 ✅ + G3.1 ✅ + G4（Value 构造 + u32 强转）✅**；sed 蚕食阶段结束——daemon 160→96、client 8→5、agent 2→0；剩余收敛为 G2 核心/G3.2 两个架构主题 + G3.3 语言设计，移交 auto-lang 独立立项，本计划转入按批维护模式）
 > **实施记录（2026-08-25，auto-lang 分支 fix/a2r-p0-gaps，合入 70ed43575）**：
 > 1. **G1 ✅**：`infer/expr.rs` 对 comptime `#{read_text/read_to_string/include_str}` 推断为 StrSlice——`const SOUL: &str` 原生发射。golden：16_interop/017 扩 const 用例。
 > 2. **G2.1 ✅（性质修正 + 双侧修复）**：`mut p T` 的 `&mut` 渲染是 auto-lang Plan 018 C11 的**有意 in-out 设计而非缺陷**（消费端语义本应按值）。修复：① auto-ai `pipeline.at` 的 `correct_handoff_target` 去掉两个参数的 `mut`（rust-ref 原版按值、调用方传 clone，语义无损）；② auto-lang `trans/rust.rs` 参数 mut 后处理扫描新增「自有非基本类型参数的任意方法调用 → 保守自动 `mut`」（自定义方法如 `push_gate_feedback` 无法在转译期判定 &mut self）。golden：02_types/011_param_auto_mut。
