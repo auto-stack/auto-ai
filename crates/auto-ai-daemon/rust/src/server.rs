@@ -81,7 +81,7 @@ pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         let available = entry.1;
         let max = entry.2;
         let mut m = serde_json::Map::new();
-        m.insert("provider".to_string(), Value::String(name));
+        m.insert("provider".to_string(), Value::String(name.to_string()));
         m.insert("available_permits".to_string(), Value::Number(serde_json::Number::from(available)));
         m.insert("max_concurrency".to_string(), Value::Number(serde_json::Number::from(max)));
         m.insert("in_use".to_string(), Value::Number(serde_json::Number::from(max - available)));
@@ -91,7 +91,7 @@ pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let current_model = state.current_model.lock().clone();
     let mut root = serde_json::Map::new();
     root.insert("status".to_string(), Value::String("running".to_string()));
-    root.insert("current_model".to_string(), Value::String(current_model));
+    root.insert("current_model".to_string(), Value::String(current_model.to_string()));
     root.insert("pools".to_string(), Value::Array(pools));
     return Json(Value::Object(root));
 }
@@ -102,23 +102,23 @@ pub async fn models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     for (name, models) in crate::server_glue::config_provider_models(&cfg) {
         for m in &models {
             let mut entry = serde_json::Map::new();
-            entry.insert("provider".to_string(), Value::String(name.clone()));
+            entry.insert("provider".to_string(), Value::String(name.clone().to_string()));
             entry.insert("model".to_string(), Value::String(m.id.to_string()));
             
 
 
             if m.context_window.is_some() {
-                entry.insert("context_window".to_string(), Value::Number(serde_json::Number::from(m.context_window.clone().unwrap())));
+                entry.insert("context_window".to_string(), Value::Number(serde_json::Number::from(serde_json::Number::from(m.context_window.clone().unwrap()))));
             }
             if m.max_output_tokens.is_some() {
-                entry.insert("max_output_tokens".to_string(), Value::Number(serde_json::Number::from(m.max_output_tokens.clone().unwrap())));
+                entry.insert("max_output_tokens".to_string(), Value::Number(serde_json::Number::from(serde_json::Number::from(m.max_output_tokens.clone().unwrap()))));
             }
             if m.cost_per_mtok.is_some() {
                 let c = m.cost_per_mtok.clone().unwrap();
                 let mut cost = serde_json::Map::new();
-                cost.insert("input".to_string(), Value::Number(serde_json::Number::from(c.input)));
-                cost.insert("output".to_string(), Value::Number(serde_json::Number::from(c.output)));
-                cost.insert("cache_read".to_string(), Value::Number(serde_json::Number::from(c.cache_read)));
+                cost.insert("input".to_string(), Value::Number(serde_json::Number::from(serde_json::Number::from(c.input))));
+                cost.insert("output".to_string(), Value::Number(serde_json::Number::from(serde_json::Number::from(c.output))));
+                cost.insert("cache_read".to_string(), Value::Number(serde_json::Number::from(serde_json::Number::from(c.cache_read))));
                 entry.insert("cost_per_mtok".to_string(), Value::Object(cost));
             }
             if m.capabilities.is_some() {
@@ -140,14 +140,14 @@ pub async fn usage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut apps: Vec<Value> = vec![];
     for (name, u) in state.tracker.all() {
         let mut entry = serde_json::Map::new();
-        entry.insert("app".to_string(), Value::String(name.clone()));
+        entry.insert("app".to_string(), Value::String(name.clone().to_string()));
         entry.insert("input_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_input_tokens)));
         entry.insert("output_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_output_tokens)));
         entry.insert("total_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_tokens())));
         entry.insert("requests".to_string(), Value::Number(serde_json::Number::from(u.request_count)));
         
-        entry.insert("cache_read_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_cache_read_tokens)));
-        entry.insert("cache_write_tokens".to_string(), Value::Number(serde_json::Number::from(u.total_cache_write_tokens)));
+        entry.insert("cache_read_tokens".to_string(), Value::Number(serde_json::Number::from(serde_json::Number::from(u.total_cache_read_tokens))));
+        entry.insert("cache_write_tokens".to_string(), Value::Number(serde_json::Number::from(serde_json::Number::from(u.total_cache_write_tokens))));
         apps.push(Value::Object(entry));
     }
     let mut root = serde_json::Map::new();

@@ -115,7 +115,7 @@ impl OpenAiProvider {
             match openai_content(m.role.as_str(), m.content.clone()) {
                 OpenAiMsg::Text(role, content) => {
                     let mut obj = serde_json::Map::new();
-                    obj.insert("role".to_string(), Value::String(role));
+                    obj.insert("role".to_string(), Value::String(role.to_string()));
                     obj.insert("content".to_string(), Value::String(content.to_string()));
                     messages.push(Value::Object(obj));
                 },
@@ -123,7 +123,7 @@ impl OpenAiProvider {
                     let mut obj = serde_json::Map::new();
                     obj.insert("role".to_string(), Value::String("assistant".to_string()));
                     if text.is_empty() == false {
-                        obj.insert("content".to_string(), Value::String(text));
+                        obj.insert("content".to_string(), Value::String(text.to_string()));
                     }
                     obj.insert("tool_calls".to_string(), Value::Array(tool_calls));
                     messages.push(Value::Object(obj));
@@ -141,7 +141,7 @@ impl OpenAiProvider {
         }
 
         let mut body = serde_json::Map::new();
-        body.insert("model".to_string(), Value::String(req.model));
+        body.insert("model".to_string(), Value::String(req.model.to_string()));
         body.insert("stream".to_string(), Value::Bool(false));
 
 
@@ -151,7 +151,7 @@ impl OpenAiProvider {
             let mut all_msgs: Vec<Value> = vec![];
             let mut sys_obj = serde_json::Map::new();
             sys_obj.insert("role".to_string(), Value::String("system".to_string()));
-            sys_obj.insert("content".to_string(), Value::String(sys));
+            sys_obj.insert("content".to_string(), Value::String(sys.to_string()));
             all_msgs.push(Value::Object(sys_obj));
             for m in &messages {
                 all_msgs.push(m.clone().clone());

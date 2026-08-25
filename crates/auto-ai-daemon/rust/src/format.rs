@@ -86,8 +86,8 @@ pub fn openai_content(role: &str, mut blocks: Vec<ContentBlock>) -> OpenAiMsg {
 
 pub fn tool_to_openai(t: &ToolDefinition) -> Value {
     let mut func = serde_json::Map::new();
-    func.insert("name".to_string(), Value::String(t.name.clone()));
-    func.insert("description".to_string(), Value::String(t.description.clone()));
+    func.insert("name".to_string(), Value::String(t.name.to_string()));
+    func.insert("description".to_string(), Value::String(t.description.to_string()));
     func.insert("parameters".to_string(), t.parameters.clone());
     let mut outer = serde_json::Map::new();
     outer.insert("type".to_string(), Value::String("function".to_string()));
@@ -146,7 +146,7 @@ fn has_tool_use(blocks: &Vec<ContentBlock>) -> bool {
 fn tool_call_obj(id: &str, name: &str, input: Value) -> Value {
     let mut fn_obj = serde_json::Map::new();
     fn_obj.insert("name".to_string(), Value::String(name.to_string()));
-    fn_obj.insert("arguments".to_string(), Value::String(a2r_std::json::to_string(&input)));
+    fn_obj.insert("arguments".to_string(), Value::String(a2r_std::json::to_string(&input).to_string()));
     let mut outer = serde_json::Map::new();
     outer.insert("id".to_string(), Value::String(id.to_string()));
     outer.insert("type".to_string(), Value::String("function".to_string()));

@@ -106,13 +106,13 @@ impl AnthropicProvider {
             }        }
         for m in &req.messages {
             let mut obj = serde_json::Map::new();
-            obj.insert("role".to_string(), Value::String(m.role.clone()));
+            obj.insert("role".to_string(), Value::String(m.role.to_string()));
             obj.insert("content".to_string(), content_blocks_to_anthropic(&m.content));
             messages.push(Value::Object(obj));
         }
 
         let mut body = serde_json::Map::new();
-        body.insert("model".to_string(), Value::String(req.model));
+        body.insert("model".to_string(), Value::String(req.model.to_string()));
 
 
         if req.max_tokens.is_some() {
@@ -126,7 +126,7 @@ impl AnthropicProvider {
 
         if req.system_prompt.is_some() {
             let sys = req.system_prompt.unwrap();
-            body.insert("system".to_string(), Value::String(sys));
+            body.insert("system".to_string(), Value::String(sys.to_string()));
         }
         if req.temperature.is_some() {
             let t = req.temperature.unwrap();
@@ -185,8 +185,8 @@ fn content_blocks_to_anthropic(blocks: &Vec<ContentBlock>) -> Value {
 /// Translate our ToolDefinition to Anthropic's tool object.
 fn tool_to_anthropic(t: &ToolDefinition) -> Value {
     let mut obj = serde_json::Map::new();
-    obj.insert("name".to_string(), Value::String(t.name.clone()));
-    obj.insert("description".to_string(), Value::String(t.description.clone()));
+    obj.insert("name".to_string(), Value::String(t.name.to_string()));
+    obj.insert("description".to_string(), Value::String(t.description.to_string()));
     obj.insert("input_schema".to_string(), t.parameters.clone());
     return Value::Object(obj);
 }

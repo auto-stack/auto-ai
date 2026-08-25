@@ -114,6 +114,12 @@ echo "  [lib] assembled lib.rs (shim + pub mod decls)"
 find "$SRC" -name "*.a2r.rs" -delete
 
 # ═══════════════════════════════════════════════════════════════════════════
+# (graduated 2026-08-25, Plan 032 G4: a2r now natively emits serde_json::Value
+#  variant construction — String → .to_string(), Number → Number::from /
+#  from_f64(...).unwrap_or — all Value::String/Value::Number seds removed.)
+# Residual (G2-class): `temperature`'s `t` binding comes from a match on an
+# EXTERNAL type's field — its float-ness is unknowable at transpile time, so
+# the from()→from_f64() fix stays here (openai/anthropic build_body).
 # Plan 025 Phase 1: a2r codegen workarounds (mechanical post-fixes per file).
 # Each targets a specific a2r defect; becomes a no-op once a2r is fixed.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -215,9 +221,6 @@ if [ -f "$RUST/format.rs" ]; then
     sed -i 's#has_tool_use(blocks)#has_tool_use(\&blocks)#' "$RUST/format.rs"
     sed -i 's#fn all_tool_results(blocks: Vec<ContentBlock>)#fn all_tool_results(blocks: \&Vec<ContentBlock>)#' "$RUST/format.rs"
     sed -i 's#fn has_tool_use(blocks: Vec<ContentBlock>)#fn has_tool_use(blocks: \&Vec<ContentBlock>)#' "$RUST/format.rs"
-    # Value::String(name/id) — name/id are &str from enum destructuring.
-    sed -i 's#Value::String(name)#Value::String(name.to_string())#g' "$RUST/format.rs"
-    sed -i 's#Value::String(id)#Value::String(id.to_string())#g' "$RUST/format.rs"
     # With blocks now &Vec in the helpers, `for b in &blocks` is &&Vec. Fix the
     # two helper loops (lines shift per transpile; target by the surrounding
     # signature context via awk).
@@ -315,25 +318,18 @@ fi
 
 # ── openai.rs (Phase 4) ─────────────────────────────────────────────────────
 if [ -f "$RUST/openai.rs" ]; then
+    sed -i 's|serde_json::Number::from(t)|serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0))|g' "$RUST/openai.rs"
     fix_provider_impl "$RUST/openai.rs"
     # (graduated 2026-08-25, Plan 032 G3: openai.at uses `use.rust
     # crate::sse::SseParser` + `use.rust crate::provider_glue` — module paths
     # and module-qualified calls now emit natively with `::`.)
     # build_body returns Value; provider_glue needs &serde_json::Value + mut index.
-    # Value::Number(usize/f64) → Number::from (json! coerces implicitly).
-    sed -i 's|Value::Number(n)|Value::Number(serde_json::Number::from(n))|g' "$RUST/openai.rs"
-    sed -i 's|Value::Number(t)|Value::Number(serde_json::Number::from(t))|g' "$RUST/openai.rs"
     # temperature (t) is f64 — Number::from(f64) doesn't exist; use from_f64.
-    sed -i 's|Value::Number(serde_json::Number::from(t))|Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0)))|g' "$RUST/openai.rs"
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # from_upstream_status takes (&StatusCode, &str); status is u32 (resp.status_
     # code()), text is String — pass &text. Also status is u32 not StatusCode:
     # error.at's from_upstream_status bridges to the real signature post-sed.
     sed -i 's|from_upstream_status(status, text)|from_upstream_status(status, \&text)|g' "$RUST/openai.rs"
-    # Value::String(<&str/&String>) needs owned String — .to_string() at each.
-    sed -i 's|Value::String(content)|Value::String(content.to_string())|g' "$RUST/openai.rs"
-    sed -i 's|Value::String(r.tool_call_id)|Value::String(r.tool_call_id.to_string())|g' "$RUST/openai.rs"
-    sed -i 's|Value::String(r.content)|Value::String(r.content.to_string())|g' "$RUST/openai.rs"
     # Usage tokens: json.as_int returns i64; Usage.input_tokens is u32 — cast.
     # (Match the a2r-fully-qualified form a2r_std::json::as_int(&a2r_std::json::get(...)).)
     sed -i 's|input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "prompt_tokens"))|input_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "prompt_tokens")) as u32|' "$RUST/openai.rs"
@@ -355,8 +351,6 @@ if [ -f "$RUST/openai.rs" ]; then
     # t is &ToolDefinition (for-in &req.tools); pass it directly (no extra &).
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # tool_to_openai body: t is now &ToolDefinition — clone the borrowed fields.
-    sed -i 's|Value::String(t.name)|Value::String(t.name.clone())|g' "$RUST/format.rs"
-    sed -i 's|Value::String(t.description)|Value::String(t.description.clone())|g' "$RUST/format.rs"
     sed -i 's|func.insert("parameters".to_string(), t.parameters)|func.insert("parameters".to_string(), t.parameters.clone())|' "$RUST/format.rs"
     # header() takes &str; self.api_key is String — borrow it (& the f-string
     # Bearer interpolation already produces a String, but a2r wraps it; pass &).
@@ -371,13 +365,10 @@ fi
 
 # ── anthropic.rs (Phase 4) ──────────────────────────────────────────────────
 if [ -f "$RUST/anthropic.rs" ]; then
+    sed -i 's|serde_json::Number::from(t)|serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0))|g' "$RUST/anthropic.rs"
     fix_provider_impl "$RUST/anthropic.rs"
     # (graduated 2026-08-25, Plan 032 G3: anthropic.at uses `use.rust
     # crate::sse::SseParser` + `use.rust crate::provider_glue` — paths native.)
-    sed -i 's|Value::Number(n)|Value::Number(serde_json::Number::from(n))|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::Number(t)|Value::Number(serde_json::Number::from(t))|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::Number(serde_json::Number::from(t))|Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0)))|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::Number(4096)|Value::Number(serde_json::Number::from(4096))|g' "$RUST/anthropic.rs"
     sed -i 's|from_upstream_status(status, text)|from_upstream_status(status, \&text)|g' "$RUST/anthropic.rs"
     # Usage tokens i64 → u32.
     sed -i 's|input_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "input_tokens"))|input_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "input_tokens")) as u32|' "$RUST/anthropic.rs"
@@ -389,13 +380,7 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # content_blocks_to_anthropic: blocks param is now &Vec; iterate blocks
     # directly (not &blocks — that's &&Vec).
     sed -i 's|for b in &blocks {|for b in blocks {|g' "$RUST/anthropic.rs"
-    # Value::String(&str/&String fields) → owned.
-    sed -i 's|Value::String(text)|Value::String(text.to_string())|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::String(id)|Value::String(id.to_string())|g' "$RUST/anthropic.rs"
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
-    sed -i 's|Value::String(tool_use_id)|Value::String(tool_use_id.to_string())|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::String(content)|Value::String(content.to_string())|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::String(name)|Value::String(name.to_string())|g' "$RUST/anthropic.rs"
     # Value::Bool(&bool) → deref.
     sed -i 's|Value::Bool(is_error)|Value::Bool(*is_error)|g' "$RUST/anthropic.rs"
     # tool_to_anthropic takes &ToolDefinition; the for-loop yields &ToolDefinition
@@ -422,12 +407,9 @@ if [ -f "$RUST/anthropic.rs" ]; then
     sed -i 's|tool_to_anthropic(t.clone())|tool_to_anthropic(t)|g' "$RUST/anthropic.rs"
     sed -i 's|tool_to_openai(t.clone())|tool_to_openai(t)|g' "$RUST/openai.rs"
     # tool_to_anthropic body: t is now &ToolDefinition — clone borrowed fields.
-    sed -i 's|Value::String(t.name)|Value::String(t.name.clone())|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::String(t.description)|Value::String(t.description.clone())|g' "$RUST/anthropic.rs"
     sed -i 's|obj.insert("input_schema".to_string(), t.parameters)|obj.insert("input_schema".to_string(), t.parameters.clone())|' "$RUST/anthropic.rs"
     # req.model + m.role can't move out of &req/&Message — clone.
     sed -i 's|true => req.model,|true => req.model.clone(),|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::String(m.role)|Value::String(m.role.clone())|g' "$RUST/anthropic.rs"
 fi
 
 # ── ollama.rs (Phase 4) ─────────────────────────────────────────────────────
@@ -481,15 +463,7 @@ if [ -f "$RUST/server.rs" ]; then
     sed -i 's|-> IntoResponse {|-> impl IntoResponse {|g' "$RUST/server.rs"
     # serde_json::Value::Number takes a `serde_json::Number`, not a raw integer
     # (the json! macro coerces implicitly; we build Value by hand). Wrap each
-    # Value::Number(<expr>) in serde_json::Number::from(...). The sed targets
     # the exact expressions we emit in server.at.
-    sed -i 's|Value::Number(available)|Value::Number(serde_json::Number::from(available))|g' "$RUST/server.rs"
-    sed -i 's|Value::Number(max)|Value::Number(serde_json::Number::from(max))|g' "$RUST/server.rs"
-    sed -i 's|Value::Number(max - available)|Value::Number(serde_json::Number::from(max - available))|g' "$RUST/server.rs"
-    sed -i 's|Value::Number(u.total_input_tokens)|Value::Number(serde_json::Number::from(u.total_input_tokens))|g' "$RUST/server.rs"
-    sed -i 's|Value::Number(u.total_output_tokens)|Value::Number(serde_json::Number::from(u.total_output_tokens))|g' "$RUST/server.rs"
-    sed -i 's|Value::Number(u.total_tokens())|Value::Number(serde_json::Number::from(u.total_tokens()))|g' "$RUST/server.rs"
-    sed -i 's|Value::Number(u.request_count)|Value::Number(serde_json::Number::from(u.request_count))|g' "$RUST/server.rs"
     # resolve_tier_model: ModelTier::parse_name takes &str; tier_name is String
     # (from .to_ascii_lowercase()). Same borrow class as tier_router.
     sed -i 's|ModelTier::parse_name(tier_name)|ModelTier::parse_name(tier_name.as_str())|g' "$RUST/server.rs"
@@ -499,8 +473,6 @@ if [ -f "$RUST/server.rs" ]; then
     sed -i 's|let models = provider::models;|let models = provider.models.clone();|' "$RUST/server.rs"
     # models handler: `m` is &ModelDefinition (from iterating &Vec); m.id is a
     # borrowed String — Value::String needs owned. Same .to_string() class as
-    # format.rs's Value::String(name).
-    sed -i 's|Value::String(m.id)|Value::String(m.id.to_string())|' "$RUST/server.rs"
     # ── chat_completions (Phase 3.4) ──
     # `var req = req` picks up the Json<CompletionRequest> type from the
     # extractor param, but the extractor already unwrapped it to CompletionRequest.
@@ -542,7 +514,6 @@ if [ -f "$RUST/server.rs" ]; then
     # tracker.record(app_name, ...): app_name is String, record takes &str.
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # error_response: message is &str, Value::String needs owned String.
-    sed -i 's|Value::String(message)|Value::String(message.to_string())|g' "$RUST/server.rs"
     # ok_response: serde_json::to_value returns Result — unwrap it.
     sed -i 's|let body = serde_json::to_value(resp);|let body = serde_json::to_value(\&resp).unwrap_or(Value::Null);|' "$RUST/server.rs"
     # resolve_tier_model signature: config by value, but caller passes &DaemonConfig
