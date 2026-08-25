@@ -1,11 +1,13 @@
 # Plan 032: a2r 语言能力缺陷根因修复清单——auto-lang 侧交付需求（消费端汇总）
 
-> **状态**：🔧 进行中（2026-08-25 首批落地：**G1 ✅ + G2.1 ✅**，见各节 ✅ 标记与「实施记录」；G2.2-2.4 / G3-G8 待续）
+> **状态**：🔧 进行中（2026-08-25 两批落地：**G1 ✅ + G2.1 ✅ + G3.1 ✅**，见各节标记与「实施记录」；G2.2-2.4 / G3.2-3.3 / G4-G8 待续）
 > **实施记录（2026-08-25，auto-lang 分支 fix/a2r-p0-gaps，合入 70ed43575）**：
 > 1. **G1 ✅**：`infer/expr.rs` 对 comptime `#{read_text/read_to_string/include_str}` 推断为 StrSlice——`const SOUL: &str` 原生发射。golden：16_interop/017 扩 const 用例。
 > 2. **G2.1 ✅（性质修正 + 双侧修复）**：`mut p T` 的 `&mut` 渲染是 auto-lang Plan 018 C11 的**有意 in-out 设计而非缺陷**（消费端语义本应按值）。修复：① auto-ai `pipeline.at` 的 `correct_handoff_target` 去掉两个参数的 `mut`（rust-ref 原版按值、调用方传 clone，语义无损）；② auto-lang `trans/rust.rs` 参数 mut 后处理扫描新增「自有非基本类型参数的任意方法调用 → 保守自动 `mut`」（自定义方法如 `push_gate_feedback` 无法在转译期判定 &mut self）。golden：02_types/011_param_auto_mut。
 > 3. **消费端 sed 毕业**：agent `retranspile.sh` 的 SOUL 段与 handoff 段验证 no-op 后替换为 GRADUATED 注释删除；另收窄 compact() 调用 sed 锚点（master a2r 已原生发 `model.as_str()`，旧锚点失配）。
 > 4. **验证**：auto-lang 3172 单测 + golden 套件（含 2 个新用例）全绿；auto-ai 转译轨 24 测试全绿 + 重生成后编译干净。注意：本次重转译引入 master a2r 的正常漂移（`push(x)` → `push(x.to_string())` 等），随批接受。
+> 5. **G3.1 ✅（第二批，消费端源码规范化 + golden 钉桩）**：路径类缺陷**根因不在 a2r**——`use.rust X` 声明后模块限定调用 `X.fn()` 本就原生发 `X::fn()`（tier_router.at 是正确范例），daemon 的 8 条路径 sed 全因 .at 源码漏声明：config.at 补 `use.rust dirs`；provider/openai/anthropic.at 补 `use.rust crate::provider_glue`；`use sse: SseParser` 改 `use.rust crate::sse::SseParser`；tier_router.at 改 `use.rust crate::tier_router_glue`。daemon sed 160→152，live e2e（转译 daemon 全链路 hello world + TurnStart 断言）通过。auto-lang 侧新增 golden 16_interop/018（钉住该行为防回归）。**G3.2 extern-crate shim 与 G3.3 `routes` 保留字仍待续**（前者是单文件转译缺项目上下文的架构问题，后者需 .at 保留字转义机制）。
+> 6. **master a2r 漂移暴露的回归**：master 停止在调用点对结构体参数自动 `.clone()`（tier_router 的 `base` 被移动两次）——按 G4 哲学在 .at 源码显式写 `base.clone()` 修复；`.await` 两处保留为 sed（手写 glue 函数的异步性对 a2r 不可知）。
 > **仓库**：auto-ai（本文档；零代码改动）/ auto-lang（修复实施方）
 > **背景**：KNOWN-DEBT-AND-RISKS.md 中十余行债务同根因——a2r（Auto→Rust 转译器）语言能力缺口。它们目前分散在各 crate 的 `retranspile.sh` sed 段与 4 个手写 glue 文件里，每行各自记录、视角零碎。本计划把它们收拢成一份按缺陷类别组织的清单，供 auto-lang 统一立项、分批修复。
 > **产出**：修复完成后，本文档的验收节逐项勾销，KNOWN-DEBT 对应行核销。
@@ -38,7 +40,9 @@ a2r 借用推理是历史重灾区（Plan 396 修了 B/C/D/E 四类），现存�
 3. **owned field 被 move**：方法内把字段传给自由函数报 E0507，需手工 borrow（daemon sed：`str_find(self.buf, ...)`）。
 4. **`&String` 入集合前 clone**：push 前需显式 clone（daemon sed）。
 
-### G3 路径与命名（P0）
+### G3 路径与命名（P0）→ **G3.1 ✅ 毕业（消费端源码规范化）**
+
+> **2026-08-25 结论**：G3.1（`.`→`::`）不是 a2r 缺陷——`use.rust X` 声明后模块限定调用原生发 `::`（daemon 8 条路径 sed 已因 .at 补声明毕业删除，golden 16_interop/018 钉桩）。裸 `use.rust X` 发 `use X;` 不带 `crate::`，本地手写模块需显式写 `use.rust crate::X`。**剩余**：
 
 1. **成员访问 `.` 误发模块路径**：应 `use a::b` 却发 `use a.b`，需 sed `.`→`::`（daemon、provider_glue/tier_router_glue 同类）。
 2. **extern-crate 引用**：a2r 发射 `use crate::ai_config::...`，跨 crate 符号解析不了，靠 extern-crate shim 垫（daemon retranspile 首段）。
