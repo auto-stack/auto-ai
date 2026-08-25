@@ -1,6 +1,11 @@
 # Plan 032: a2r 语言能力缺陷根因修复清单——auto-lang 侧交付需求（消费端汇总）
 
-> **状态**：📋 需求汇总（draft）——修复实施在 **auto-lang 仓库**，本文件是 auto-ai 消费端的单一汇总清单与验收基准
+> **状态**：🔧 进行中（2026-08-25 首批落地：**G1 ✅ + G2.1 ✅**，见各节 ✅ 标记与「实施记录」；G2.2-2.4 / G3-G8 待续）
+> **实施记录（2026-08-25，auto-lang 分支 fix/a2r-p0-gaps，合入 70ed43575）**：
+> 1. **G1 ✅**：`infer/expr.rs` 对 comptime `#{read_text/read_to_string/include_str}` 推断为 StrSlice——`const SOUL: &str` 原生发射。golden：16_interop/017 扩 const 用例。
+> 2. **G2.1 ✅（性质修正 + 双侧修复）**：`mut p T` 的 `&mut` 渲染是 auto-lang Plan 018 C11 的**有意 in-out 设计而非缺陷**（消费端语义本应按值）。修复：① auto-ai `pipeline.at` 的 `correct_handoff_target` 去掉两个参数的 `mut`（rust-ref 原版按值、调用方传 clone，语义无损）；② auto-lang `trans/rust.rs` 参数 mut 后处理扫描新增「自有非基本类型参数的任意方法调用 → 保守自动 `mut`」（自定义方法如 `push_gate_feedback` 无法在转译期判定 &mut self）。golden：02_types/011_param_auto_mut。
+> 3. **消费端 sed 毕业**：agent `retranspile.sh` 的 SOUL 段与 handoff 段验证 no-op 后替换为 GRADUATED 注释删除；另收窄 compact() 调用 sed 锚点（master a2r 已原生发 `model.as_str()`，旧锚点失配）。
+> 4. **验证**：auto-lang 3172 单测 + golden 套件（含 2 个新用例）全绿；auto-ai 转译轨 24 测试全绿 + 重生成后编译干净。注意：本次重转译引入 master a2r 的正常漂移（`push(x)` → `push(x.to_string())` 等），随批接受。
 > **仓库**：auto-ai（本文档；零代码改动）/ auto-lang（修复实施方）
 > **背景**：KNOWN-DEBT-AND-RISKS.md 中十余行债务同根因——a2r（Auto→Rust 转译器）语言能力缺口。它们目前分散在各 crate 的 `retranspile.sh` sed 段与 4 个手写 glue 文件里，每行各自记录、视角零碎。本计划把它们收拢成一份按缺陷类别组织的清单，供 auto-lang 统一立项、分批修复。
 > **产出**：修复完成后，本文档的验收节逐项勾销，KNOWN-DEBT 对应行核销。
