@@ -8,6 +8,7 @@
 > 4. **验证**：auto-lang 3172 单测 + golden 套件（含 2 个新用例）全绿；auto-ai 转译轨 24 测试全绿 + 重生成后编译干净。注意：本次重转译引入 master a2r 的正常漂移（`push(x)` → `push(x.to_string())` 等），随批接受。
 > 5. **G3.1 ✅（第二批，消费端源码规范化 + golden 钉桩）**：路径类缺陷**根因不在 a2r**——`use.rust X` 声明后模块限定调用 `X.fn()` 本就原生发 `X::fn()`（tier_router.at 是正确范例），daemon 的 8 条路径 sed 全因 .at 源码漏声明：config.at 补 `use.rust dirs`；provider/openai/anthropic.at 补 `use.rust crate::provider_glue`；`use sse: SseParser` 改 `use.rust crate::sse::SseParser`；tier_router.at 改 `use.rust crate::tier_router_glue`。daemon sed 160→152，live e2e（转译 daemon 全链路 hello world + TurnStart 断言）通过。auto-lang 侧新增 golden 16_interop/018（钉住该行为防回归）。**G3.2 extern-crate shim 与 G3.3 `routes` 保留字仍待续**（前者是单文件转译缺项目上下文的架构问题，后者需 .at 保留字转义机制）。
 > 6. **master a2r 漂移暴露的回归**：master 停止在调用点对结构体参数自动 `.clone()`（tier_router 的 `base` 被移动两次）——按 G4 哲学在 .at 源码显式写 `base.clone()` 修复；`.await` 两处保留为 sed（手写 glue 函数的异步性对 a2r 不可知）。
+> 7. **第三批（同日）：daemon sed 活性审计**——用「禁全部 sed 生成原始输出 + 真 sed 按序回放逐条检测」的方法论（python 仿真 sed 不可靠，弃用），对 151 条 sed 逐条判定：**125 活 / 21 死 / 5 函数体**。21 条死行（master a2r 演进后的 no-op：`&t` 实参、entry 元组 clone、usize 推断等）删除，`as u32 as u32` 双重应用顺带修正。daemon sed **152 → 131**。验证：重生成输出与 HEAD 仅差该双重应用一行（语义等价）、编译零错误、live e2e 通过。剩余 131 条（125+5 函数体+1 毕业注释误差）均为活 sed，属 G2.2-2.4/G4 借用与类型根因批次。
 > **仓库**：auto-ai（本文档；零代码改动）/ auto-lang（修复实施方）
 > **背景**：KNOWN-DEBT-AND-RISKS.md 中十余行债务同根因——a2r（Auto→Rust 转译器）语言能力缺口。它们目前分散在各 crate 的 `retranspile.sh` sed 段与 4 个手写 glue 文件里，每行各自记录、视角零碎。本计划把它们收拢成一份按缺陷类别组织的清单，供 auto-lang 统一立项、分批修复。
 > **产出**：修复完成后，本文档的验收节逐项勾销，KNOWN-DEBT 对应行核销。
