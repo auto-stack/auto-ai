@@ -138,7 +138,7 @@ if [ -f "$RUST/config.rs" ]; then
     # ProviderConfig: a2r emits a positional tuple ctor; the type is a struct.
     sed -i 's#return ai_config::ProviderConfig(kind, base_url, Some(key), None, models, Some(DEFAULT_CONCURRENCY), true);#return ai_config::ProviderConfig { kind: kind.to_string(), base_url: base_url.to_string(), api_key: Some(key.to_string()), key_env: None, models: models, max_concurrency: Some(DEFAULT_CONCURRENCY), auth_required: true };#' "$RUST/config.rs"
     # const inferred as i32; rust-ref's max_concurrency is Option<usize>.
-    sed -i 's#const DEFAULT_CONCURRENCY: i32 = 4;#const DEFAULT_CONCURRENCY: usize = 4;#' "$RUST/config.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # `.as_str()` on a &str value uses the unstable `str_as_str` feature — drop
     # it (the bridged fns take &str; a2r auto-borrows).
     sed -i 's#path_str\.as_str()#path_str#g' "$RUST/config.rs"
@@ -153,14 +153,14 @@ if [ -f "$RUST/tracker.rs" ]; then
     # `guard.get(&name)` — name is &String; HashMap wants Borrow<str>. Use as_str.
     # (Only the `all()` loop hits this; leave other .get(name) calls — they pass
     # the loop var which is already &String there. Target the &&String form.)
-    sed -i 's#match guard.get(&name) {#match guard.get(name) {#' "$RUST/tracker.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # Tuple push with borrowed elements — clone both. (Use | delimiter: the
     # replacement contains ( ) and , which clash with the usual # separator.)
     sed -i 's|Some(u) => out.push((name, u)),|Some(u) => out.push((name.clone(), u.clone())),|' "$RUST/tracker.rs"
     # record is called via &Arc<AppState> (state.tracker.record) — it can't be
     # &mut self. The body only uses the inner parking_lot Mutex (interior
     # mutability), so &self suffices. a2r made it &mut self by default.
-    sed -i 's|pub fn record(&mut self, app: &str|pub fn record(\&self, app: \&str|' "$RUST/tracker.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # all() iterates `names`, which is now a MutexGuard<Vec<String>> (Phase 3.4
     # wrapped names in Mutex for &self record). Iterate via .iter() — the guard
     # derefs to Vec but for-in needs an explicit iterator.
@@ -190,7 +190,7 @@ if [ -f "$RUST/tier_router.rs" ]; then
     sed -i 's#None => routing\.insert(tier, vec!\[tc\]),#None => { routing.insert(tier, vec![tc]); },#' "$RUST/tier_router.rs"
     # candidates_preferred: index_of_provider(chain, ...) moves chain, but chain
     # is reused after — pass a clone.
-    sed -i 's#let idx = index_of_provider(chain,#let idx = index_of_provider(chain.clone(),#' "$RUST/tier_router.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # Provider-loop .collect() has no type hint → HashMap::get Q infer fails.
     # (Use | delimiter; the turbofish contains < > that confuse the # form.)
     sed -i 's|for name in config\.providers\.keys()\.cloned()\.collect() {|for name in config.providers.keys().cloned().collect::<Vec<String>>() {|' "$RUST/tier_router.rs"
@@ -245,8 +245,8 @@ fi
 if [ -f "$RUST/pool.rs" ]; then
     sed -i 's|for name in config\.providers\.keys()\.cloned()\.collect() {|for name in config.providers.keys().cloned().collect::<Vec<String>>() {|' "$RUST/pool.rs"
     sed -i 's|match config\.providers\.get(&name) {|match config.providers.get(name.as_str()) {|' "$RUST/pool.rs"
-    sed -i 's|match self\.pools\.get(&name) {|match self.pools.get(name.as_str()) {|' "$RUST/pool.rs"
-    sed -i 's|let max = self\.limits\.get(&name)\.copied()\.unwrap_or(0);|let max = self.limits.get(name.as_str()).copied().unwrap_or(0);|' "$RUST/pool.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     sed -i 's|out\.push((name, sem\.available_permits(), max));|out.push((name.clone(), sem.available_permits(), max));|' "$RUST/pool.rs"
     # from_config is a constructor (returns Self), but a2r adds `&self` to every
     # `ext` method AND takes config by value. rust-ref's from_config takes
@@ -308,9 +308,9 @@ if [ -f "$RUST/provider.rs" ]; then
     sed -i 's|async fn complete_stream(&self, req: CompletionRequest,|async fn complete_stream(\&self, req: \&CompletionRequest,|' "$RUST/provider.rs"
     # from_entries iterates `for entry in &entries` (Phase 4) — entry.0/.1 are
     # behind a shared ref (String / Arc). Clone before moving into insert/push.
-    sed -i 's|providers.insert(name.clone(), provider)|providers.insert(name.clone(), provider.clone())|' "$RUST/provider.rs"
-    sed -i 's|let name = entry.0;|let name = entry.0.clone();|' "$RUST/provider.rs"
-    sed -i 's|let provider = entry.1;|let provider = entry.1.clone();|' "$RUST/provider.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
 fi
 
 # ── openai.rs (Phase 4) ─────────────────────────────────────────────────────
@@ -325,7 +325,7 @@ if [ -f "$RUST/openai.rs" ]; then
     sed -i 's|Value::Number(t)|Value::Number(serde_json::Number::from(t))|g' "$RUST/openai.rs"
     # temperature (t) is f64 — Number::from(f64) doesn't exist; use from_f64.
     sed -i 's|Value::Number(serde_json::Number::from(t))|Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0)))|g' "$RUST/openai.rs"
-    sed -i 's|Value::Number(4096)|Value::Number(serde_json::Number::from(4096))|g' "$RUST/openai.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # from_upstream_status takes (&StatusCode, &str); status is u32 (resp.status_
     # code()), text is String — pass &text. Also status is u32 not StatusCode:
     # error.at's from_upstream_status bridges to the real signature post-sed.
@@ -340,11 +340,11 @@ if [ -f "$RUST/openai.rs" ]; then
     sed -i 's|output_tokens: a2r_std::json::as_int(&a2r_std::json::get(&u, "completion_tokens"))|output_tokens: a2r_std::json::as_int(\&a2r_std::json::get(\&u, "completion_tokens")) as u32|' "$RUST/openai.rs"
     # tool_calls list binding: raw_tool_calls.as_array() is serde_json's
     # (Option<&Vec>); use a2r-std json::as_array (→ owned Vec).
-    sed -i 's|parse_openai_tool_calls(raw_tool_calls.as_array().clone())|parse_openai_tool_calls(a2r_std::json::as_array(\&raw_tool_calls))|' "$RUST/openai.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     sed -i 's|parse_openai_tool_calls(raw_tool_calls.as_array())|parse_openai_tool_calls(a2r_std::json::as_array(\&raw_tool_calls))|' "$RUST/openai.rs"
     # tool_to_openai(&t): t is already &ToolDefinition (iterating &req.tools),
     # &t is &&ToolDefinition. tool_to_openai now takes &ToolDefinition — pass t.
-    sed -i 's|tool_to_openai(&t)|tool_to_openai(t)|g' "$RUST/openai.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # complete_stream delegates to an async glue fn — the return needs .await.
     sed -i 's|return provider_glue::openai_complete_stream(self, req, on_delta, cancel);|return provider_glue::openai_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/openai.rs"
     # from_upstream_status takes reqwest::StatusCode; resp.status_code() is u32.
@@ -353,7 +353,7 @@ if [ -f "$RUST/openai.rs" ]; then
     # Match the a2r-emitted form `t: ToolDefinition` (with colon).
     sed -i 's|fn tool_to_openai(t: ToolDefinition)|fn tool_to_openai(t: \&ToolDefinition)|' "$RUST/format.rs"
     # t is &ToolDefinition (for-in &req.tools); pass it directly (no extra &).
-    sed -i 's|tool_to_openai(&t)|tool_to_openai(t)|g' "$RUST/openai.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # tool_to_openai body: t is now &ToolDefinition — clone the borrowed fields.
     sed -i 's|Value::String(t.name)|Value::String(t.name.clone())|g' "$RUST/format.rs"
     sed -i 's|Value::String(t.description)|Value::String(t.description.clone())|g' "$RUST/format.rs"
@@ -392,7 +392,7 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # Value::String(&str/&String fields) → owned.
     sed -i 's|Value::String(text)|Value::String(text.to_string())|g' "$RUST/anthropic.rs"
     sed -i 's|Value::String(id)|Value::String(id.to_string())|g' "$RUST/anthropic.rs"
-    sed -i 's|Value::String(tc_name)|Value::String(tc_name.to_string())|g' "$RUST/anthropic.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     sed -i 's|Value::String(tool_use_id)|Value::String(tool_use_id.to_string())|g' "$RUST/anthropic.rs"
     sed -i 's|Value::String(content)|Value::String(content.to_string())|g' "$RUST/anthropic.rs"
     sed -i 's|Value::String(name)|Value::String(name.to_string())|g' "$RUST/anthropic.rs"
@@ -402,13 +402,13 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # (a2r borrows), so pass t directly (already a ref). The .at call is
     # tool_to_anthropic(t) where t is &ToolDefinition — but the fn takes owned.
     # Make tool_to_anthropic take a reference instead.
-    sed -i 's|fn tool_to_anthropic(t ToolDefinition)|fn tool_to_anthropic(t: \&ToolDefinition)|' "$RUST/anthropic.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # complete_stream + StatusCode (same fixes as openai).
     sed -i 's|return provider_glue::anthropic_complete_stream(self, req, on_delta, cancel);|return provider_glue::anthropic_complete_stream(self, req, on_delta, cancel).await;|' "$RUST/anthropic.rs"
     sed -i 's|from_upstream_status(status, \&text)|from_upstream_status(reqwest::StatusCode::from_u16(status as u16).unwrap_or(reqwest::StatusCode::BAD_GATEWAY), \&text)|g' "$RUST/anthropic.rs"
     # header() &str + build_body message loop (m is &Message).
     sed -i 's|.header("x-api-key", self.api_key)|.header("x-api-key", \&self.api_key)|g' "$RUST/anthropic.rs"
-    sed -i 's|obj.insert("role".to_string(), Value.String(m.role))|obj.insert("role".to_string(), Value::String(m.role.clone()))|g' "$RUST/anthropic.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # content_blocks_to_anthropic takes &Vec<ContentBlock>; m.content is Vec.
     sed -i 's|content_blocks_to_anthropic(m.content)|content_blocks_to_anthropic(\&m.content)|g' "$RUST/anthropic.rs"
     # And update the fn signature to match (&Vec, not owned Vec).
@@ -416,7 +416,7 @@ if [ -f "$RUST/anthropic.rs" ]; then
     # tool_to_anthropic: same as openai's tool_to_openai — take &ToolDefinition,
     # pass t directly (for-in yields &ToolDefinition).
     sed -i 's|fn tool_to_anthropic(t: ToolDefinition)|fn tool_to_anthropic(t: \&ToolDefinition)|' "$RUST/anthropic.rs"
-    sed -i 's|tool_to_anthropic(&t)|tool_to_anthropic(t)|g' "$RUST/anthropic.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # a2r may auto-clone the loop var (for t in req.tools → tool_to_anthropic(t.clone()));
     # tool_to_anthropic now takes &ToolDefinition — drop the clone.
     sed -i 's|tool_to_anthropic(t.clone())|tool_to_anthropic(t)|g' "$RUST/anthropic.rs"
@@ -530,7 +530,7 @@ if [ -f "$RUST/server.rs" ]; then
     sed -i 's|state.registry.get(provider_name)|state.registry.get(provider_name.as_str())|' "$RUST/server.rs"
     # ok_response(resp.clone()): resp is owned (from provider.complete), no
     # clone needed.
-    sed -i 's|ok_response(resp.clone())|ok_response(resp)|' "$RUST/server.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # req.model[5..].to_string(): a2r renders slice(5) as [5..] on a &str field —
     # borrow issues. Use the .slice() → [5..] form but it needs the right type.
     # (Leave as-is; [5..] on String works after the mut req fix above.)
@@ -540,7 +540,7 @@ if [ -f "$RUST/server.rs" ]; then
     # &DaemonConfig — deref-coerce with &*cfg.
     sed -i 's|resolve_tier_model(&req.model, &cfg)|resolve_tier_model(\&req.model, \&*cfg)|' "$RUST/server.rs"
     # tracker.record(app_name, ...): app_name is String, record takes &str.
-    sed -i 's|state.tracker.record(app_name,|state.tracker.record(app_name.as_str(),|g' "$RUST/server.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # error_response: message is &str, Value::String needs owned String.
     sed -i 's|Value::String(message)|Value::String(message.to_string())|g' "$RUST/server.rs"
     # ok_response: serde_json::to_value returns Result — unwrap it.
@@ -557,8 +557,8 @@ if [ -f "$RUST/server.rs" ]; then
     sed -i 's|found = name;|found = name.clone();|' "$RUST/server.rs"
     # `for entry in &candidates` — entry is &(String, String); entry.0/.1 are
     # behind a shared ref. Clone before binding.
-    sed -i 's|let provider_name = entry.0;|let provider_name = entry.0.clone();|' "$RUST/server.rs"
-    sed -i 's|let model_id = entry.1;|let model_id = entry.1.clone();|' "$RUST/server.rs"
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
+    # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # req.preferred_provider is moved into candidates_preferred, but req is reused
     # after — clone the field.
     sed -i 's|candidates_preferred(tier, req.preferred_provider)|candidates_preferred(tier, req.preferred_provider.clone())|' "$RUST/server.rs"
