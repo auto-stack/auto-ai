@@ -10,6 +10,7 @@ use.rust auto_atom
 dep auto_val
 use.rust auto_val
 use.rust serde::Deserialize
+use.rust serde::Serialize
 
 use error: AgentError
 use role_def: Role
@@ -20,30 +21,34 @@ use ai_config: ModelTier
 // RoleDecl — serde deserialization view (Plan 021 缺口 3 / Plan 381)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Deserialization view for `role { … }` blocks. Field names map 1:1 to `.at`
-/// props; `#[serde(default)]` makes every field optional. `temperature` /
-/// `tools` / `tools_append` / `allowed_tiers` / `skills` use `deserialize_with`
-/// helpers from auto-val (lenient parsing). Tier-typed fields are deserialized
-/// as raw strings and run through `parse_tier_field` after (ModelTier is
-/// ai-config domain logic, not a serde helper). Mirrors rust-ref RoleDecl.
-#[derive(Debug, Deserialize)]
+/// Serde wire view for `role { … }` blocks — **both directions** (deserialize:
+/// Plan 021 缺口 3 / Plan 381; serialize: Plan 332 S2). Field names map 1:1 to
+/// `.at` props; `#[serde(default)]` makes every field optional and
+/// `skip_serializing_if` omits None fields on the way out (matching the old
+/// hand-written emitter's shape). `temperature` / `tools` / `tools_append` /
+/// `allowed_tiers` / `skills` use `deserialize_with` helpers from auto-val
+/// (lenient parsing; ignored by Serialize). Tier-typed fields are wire strings:
+/// deserialized then run through `parse_tier_field`, serialized from
+/// `display_name()` (ModelTier is ai-config domain logic, not a serde helper).
+/// Mirrors rust-ref RoleDecl.
+#[derive(Debug, Deserialize, Serialize)]
 type RoleDecl {
-    #[serde(default)] name ?str
-    #[serde(default)] description ?str
-    #[serde(default)] model ?str
-    #[serde(default)] model_tier ?str
-    #[serde(default, deserialize_with = "auto_val::lenient_f64_opt")] temperature ?float
-    #[serde(default)] max_turns ?uint
-    #[serde(default)] memory_limit ?uint
-    #[serde(default)] system_prompt ?str
-    #[serde(default)] system_prompt_append ?str
-    #[serde(default)] inherit ?str
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] tools ?List<str>
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] tools_append ?List<str>
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] allowed_tiers ?List<str>
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")] skills ?List<str>
-    #[serde(default)] token_budget ?uint
-    #[serde(default)] soul_file ?str
+    #[serde(default, skip_serializing_if = "Option::is_none")] name ?str
+    #[serde(default, skip_serializing_if = "Option::is_none")] description ?str
+    #[serde(default, skip_serializing_if = "Option::is_none")] model ?str
+    #[serde(default, skip_serializing_if = "Option::is_none")] model_tier ?str
+    #[serde(default, deserialize_with = "auto_val::lenient_f64_opt", skip_serializing_if = "Option::is_none")] temperature ?float
+    #[serde(default, skip_serializing_if = "Option::is_none")] max_turns ?uint
+    #[serde(default, skip_serializing_if = "Option::is_none")] memory_limit ?uint
+    #[serde(default, skip_serializing_if = "Option::is_none")] system_prompt ?str
+    #[serde(default, skip_serializing_if = "Option::is_none")] system_prompt_append ?str
+    #[serde(default, skip_serializing_if = "Option::is_none")] inherit ?str
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")] tools ?List<str>
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")] tools_append ?List<str>
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")] allowed_tiers ?List<str>
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")] skills ?List<str>
+    #[serde(default, skip_serializing_if = "Option::is_none")] token_budget ?uint
+    #[serde(default, skip_serializing_if = "Option::is_none")] soul_file ?str
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -408,35 +413,53 @@ pub fn parse_tier_field(s str) ?ModelTier {
 }
 
 /// Serialize a RoleConfig back to `.at` format.
+/// Plan 332 S2: serialize via RoleDecl (serde derive) + auto-val's Serializer
+/// bridge (`node_to_at_source`) instead of hand-written f-string lines. Three
+/// wins over the old emitter: strings are escaped (quotes/newlines in
+/// system_prompt used to corrupt the output), all 16 fields round-trip (the
+/// old one silently dropped 9: description/tools/skills/…), and None fields
+/// are omitted (`skip_serializing_if`), matching the old output shape. Tiers
+/// serialize as `display_name()` strings — the wire form parse_tier_field
+/// accepts back.
 pub fn serialize_at_role(cfg RoleConfig) str {
-    var lines List<str> = ["role {"]
-    is cfg.name { Some(v) -> lines.push(f"    name : \"${v}\""), None -> {} }
-    is cfg.model { Some(v) -> lines.push(f"    model : \"${v}\""), None -> {} }
+    // Wire view: RoleDecl (all-Option wire strings); ModelTier fields map to
+    // display_name strings, mirroring the deserialize-side post-processing.
+    var d RoleDecl = RoleDecl(
+        name: cfg.name, description: cfg.description, model: cfg.model,
+        model_tier: None, temperature: cfg.temperature, max_turns: cfg.max_turns,
+        memory_limit: cfg.memory_limit, system_prompt: cfg.system_prompt,
+        system_prompt_append: cfg.system_prompt_append,
+        tools: cfg.tools, tools_append: cfg.tools_append,
+        inherit: cfg.inherit, allowed_tiers: None, skills: cfg.skills,
+        token_budget: cfg.token_budget, soul_file: cfg.soul_file
+    )
     is cfg.model_tier {
-        Some(t) -> lines.push(f"    model_tier : ${t.display_name()}"),
+        Some(t) -> d.model_tier = Some(f"${t.display_name()}"),
         None -> {}
     }
-    is cfg.temperature {
-        Some(v) -> lines.push(f"    temperature : ${v}"),
+    is cfg.allowed_tiers {
+        Some(tiers) -> {
+            var names List<str> = []
+            for t in tiers {
+                names.push(f"${t.display_name()}")
+            }
+            d.allowed_tiers = Some(names)
+        },
         None -> {}
     }
-    is cfg.max_turns {
-        Some(v) -> lines.push(f"    max_turns : ${v}"),
-        None -> {}
+    // Serialize + wrap as `role { … }` + emit escaped source in one step.
+    // RoleDecl is all-Option wire primitives — serialization cannot
+    // realistically fail; the empty-node fallback keeps the signature total
+    // (str, not Result) for the .at-side consumers.
+    is auto_val.node_to_at_source("role", d) {
+        Ok(src) -> return src,
+        Err(_) -> return "role { }"
     }
-    is cfg.system_prompt {
-        Some(v) -> lines.push(f"    system_prompt : \"${v}\""),
-        None -> {}
-    }
-    is cfg.inherit {
-        Some(v) -> lines.push(f"    inherit : \"${v}\""),
-        None -> {}
-    }
-    lines.push("}")
-    return lines.join("\n")
 }
 
 // ─── bridge helpers (same pattern as loader.at) ────────────────────────────
 // Plan 021 缺口 3: opt_str/opt_float/opt_uint/opt_str_list removed — parse_at_role
 // now uses node.deserialize::<RoleDecl>() (serde derive). parse_tier_field stays
 // (tier post-processing).
+// Plan 332 S2: serialize_at_role moved to the serde bridge too (RoleDecl is
+// now the bidirectional wire view; hand-written f-string emitter removed).

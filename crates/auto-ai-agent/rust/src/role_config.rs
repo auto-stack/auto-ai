@@ -3,6 +3,7 @@
 use auto_atom::*;
 use auto_val::*;
 use serde::Deserialize;
+use serde::Serialize;
 use crate::error::{AgentError};
 use crate::role_def::{Role};
 use crate::builtin_roles::{load_builtin};
@@ -13,45 +14,49 @@ use crate::ai_config::{ModelTier};
 /// 
 /// BRIDGE NOTE (plan 013): like loader.at, this bridges auto_atom/auto_val.
 /// a2r-first — AutoVM can't resolve the bridged types; runs under cargo.
-/// Deserialization view for `role { … }` blocks. Field names map 1:1 to `.at`
-/// props; `#[serde(default)]` makes every field optional. `temperature` /
-/// `tools` / `tools_append` / `allowed_tiers` / `skills` use `deserialize_with`
-/// helpers from auto-val (lenient parsing). Tier-typed fields are deserialized
-/// as raw strings and run through `parse_tier_field` after (ModelTier is
-/// ai-config domain logic, not a serde helper). Mirrors rust-ref RoleDecl.
-#[derive(Debug, Deserialize)]
+/// Serde wire view for `role { … }` blocks — **both directions** (deserialize:
+/// Plan 021 缺口 3 / Plan 381; serialize: Plan 332 S2). Field names map 1:1 to
+/// `.at` props; `#[serde(default)]` makes every field optional and
+/// `skip_serializing_if` omits None fields on the way out (matching the old
+/// hand-written emitter's shape). `temperature` / `tools` / `tools_append` /
+/// `allowed_tiers` / `skills` use `deserialize_with` helpers from auto-val
+/// (lenient parsing; ignored by Serialize). Tier-typed fields are wire strings:
+/// deserialized then run through `parse_tier_field`, serialized from
+/// `display_name()` (ModelTier is ai-config domain logic, not a serde helper).
+/// Mirrors rust-ref RoleDecl.
+#[derive(Debug, Deserialize, Serialize)]
 struct RoleDecl {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_tier: Option<String>,
-    #[serde(default, deserialize_with = "auto_val::lenient_f64_opt")]
+    #[serde(default, deserialize_with = "auto_val::lenient_f64_opt", skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherit: Option<String>,
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")]
     pub tools_append: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")]
     pub allowed_tiers: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "auto_val::string_or_list_opt")]
+    #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub soul_file: Option<String>,
 }
 
@@ -361,35 +366,29 @@ pub fn parse_tier_field(s: &str) -> Option<ModelTier> {
 }
 
 pub fn serialize_at_role(cfg: RoleConfig) -> String {
-    let mut lines: Vec<String> = vec!["role {".to_string()];
-    match cfg.name {
-        Some(v) => lines.push(format!("    name : \"{}\"", v)),
-        None => {},
-    };
-    match cfg.model {
-        Some(v) => lines.push(format!("    model : \"{}\"", v)),
-        None => {},
-    };
+
+
+    let mut d: RoleDecl = RoleDecl { name: cfg.name.clone(), description: cfg.description.clone(), model: cfg.model.clone(), model_tier: None, temperature: cfg.temperature.clone(), max_turns: cfg.max_turns.clone(), memory_limit: cfg.memory_limit.clone(), system_prompt: cfg.system_prompt.clone(), system_prompt_append: cfg.system_prompt_append.clone(), tools: cfg.tools.clone(), tools_append: cfg.tools_append.clone(), inherit: cfg.inherit.clone(), allowed_tiers: None, skills: cfg.skills.clone(), token_budget: cfg.token_budget.clone(), soul_file: cfg.soul_file.clone() };
     match cfg.model_tier {
-        Some(t) => lines.push(format!("    model_tier : {}", t.display_name())),
+        Some(t) => d.model_tier = Some(format!("{}", t.display_name())),
         None => {},
     };
-    match cfg.temperature {
-        Some(v) => lines.push(format!("    temperature : {}", v)),
+    match cfg.allowed_tiers {
+        Some(tiers) => {
+            let mut names: Vec<String> = vec![];
+            for t in &tiers {
+                names.push(format!("{}", t.display_name()));
+            }
+            d.allowed_tiers = Some(names);
+        },
         None => {},
     };
-    match cfg.max_turns {
-        Some(v) => lines.push(format!("    max_turns : {}", v)),
-        None => {},
-    };
-    match cfg.system_prompt {
-        Some(v) => lines.push(format!("    system_prompt : \"{}\"", v)),
-        None => {},
-    };
-    match cfg.inherit {
-        Some(v) => lines.push(format!("    inherit : \"{}\"", v)),
-        None => {},
-    };
-    lines.push("}".to_string());
-    return lines.join("\n");
+
+
+
+
+    match auto_val::node_to_at_source("role", d) {
+        Ok(src) => return src,
+        Err(_) => return "role { }".to_string(),
+    }
 }
