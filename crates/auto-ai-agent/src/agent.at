@@ -302,6 +302,10 @@ pub type Agent {
     /// Plan 031: the summary produced by the most recent compaction (seed for
     /// the incremental UPDATE template on the next compaction).
     last_summary ?str
+    /// PLAN-064: per-run thinking level override ("off"|"low"|"high"|"max").
+    /// None = follow the role's thinking_level() (itself None → provider
+    /// default).
+    thinking_override ?str
 }
 
 ext Agent {
@@ -323,7 +327,8 @@ ext Agent {
             compaction: default_compaction_settings(),
             compaction_on: true,
             compaction_window_pinned: false,
-            last_summary: None
+            last_summary: None,
+            thinking_override: None
         )
     }
 
@@ -821,8 +826,23 @@ ext Agent {
             system_prompt: Some(system_prompt),
             tools: tool_defs,
             stream: false,
-            preferred_provider: self.role.preferred_provider()
+            preferred_provider: self.role.preferred_provider(),
+            // PLAN-064: per-run override wins over the role default; both
+            // None → no thinking parameter (provider default).
+            thinking_level: self.thinking_override.clone().or(self.role.thinking_level())
         )
+    }
+
+    /// PLAN-064: per-run thinking level override. Some("off"|"low"|"high"|
+    /// "max") wins over the role default; None = follow the role. Hosts call
+    /// this between runs (e.g. musk chats per-conversation picker).
+    pub mut fn set_thinking_level_override(level ?str) void {
+        self.thinking_override = level
+    }
+
+    /// The live thinking override (tests / host introspection).
+    pub fn thinking_level_override() ?str {
+        return self.thinking_override.clone()
     }
 }
 

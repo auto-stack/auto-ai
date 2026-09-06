@@ -203,6 +203,11 @@ pub struct Agent {
     /// the incremental UPDATE template on the next compaction). Cleared when
     /// a fresh (non-incremental) summary is produced.
     last_summary: Option<String>,
+    /// PLAN-064: per-run thinking level override ("off"|"low"|"high"|"max").
+    /// `None` = follow the role's `thinking_level()` (itself None → provider
+    /// default). Set by hosts (e.g. musk chats) so a UI picker can win over
+    /// the role config without rebuilding the agent.
+    thinking_override: Option<String>,
 }
 
 impl Agent {
@@ -224,6 +229,7 @@ impl Agent {
             compaction_enabled: true,
             compaction_window_pinned: false,
             last_summary: None,
+            thinking_override: None,
         }
     }
 
@@ -409,6 +415,21 @@ impl Agent {
     /// Enable/disable auto-compaction (Plan 028; on by default).
     pub fn set_compaction_enabled(&mut self, on: bool) {
         self.compaction_enabled = on;
+    }
+
+    /// PLAN-064: per-run thinking level override. `Some("off"|"low"|"high"|
+    /// "max")` wins over the role's `thinking_level()` default; `None` (also
+    /// the initial state) = follow the role. Hosts call this between runs —
+    /// e.g. musk chats threading a per-conversation picker — without
+    /// rebuilding the agent. Validation is deferred to the daemon's injection
+    /// (unknown names warn and are skipped there).
+    pub fn set_thinking_level_override(&mut self, level: Option<String>) {
+        self.thinking_override = level;
+    }
+
+    /// The live thinking override (tests / host introspection).
+    pub fn thinking_level_override(&self) -> Option<&str> {
+        self.thinking_override.as_deref()
     }
 
     /// Plan 026: cancel drops any queued steering messages; report the loss so
@@ -919,7 +940,12 @@ impl Agent {
             tools: tool_defs,
             stream: false,
             preferred_provider: self.role.preferred_provider(),
-            thinking_level: None,
+            // PLAN-064: per-run override wins over the role default; both
+            // None → no thinking parameter (provider default).
+            thinking_level: self
+                .thinking_override
+                .clone()
+                .or_else(|| self.role.thinking_level()),
         }
     }
 }
@@ -1211,6 +1237,50 @@ mod tests {
 
         let req = agent.build_request();
         assert!(req.preferred_provider.is_none());
+    }
+
+    // ── PLAN-064: thinking level wiring ─────────────────────────────────────
+
+    /// A role declaring a default thinking level.
+    struct ThinkingRole;
+    impl Role for ThinkingRole {
+        fn name(&self) -> &str { "thinker" }
+        fn system_prompt(&self) -> &str { "think hard" }
+        fn thinking_level(&self) -> Option<String> { Some("high".to_string()) }
+    }
+
+    #[test]
+    fn build_request_thinking_role_default_and_override_precedence() {
+        let client = mock_client(vec![]);
+        let mut agent = Agent::new(ThinkingRole, client);
+        agent.memory.add("user", "hi");
+        // Role default flows through when no override is set.
+        let req = agent.build_request();
+        assert_eq!(req.thinking_level.as_deref(), Some("high"));
+        // Override wins over the role default.
+        agent.set_thinking_level_override(Some("off".into()));
+        assert_eq!(agent.thinking_level_override(), Some("off"));
+        let req = agent.build_request();
+        assert_eq!(req.thinking_level.as_deref(), Some("off"));
+        // Clearing the override falls back to the role default.
+        agent.set_thinking_level_override(None);
+        let req = agent.build_request();
+        assert_eq!(req.thinking_level.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn build_request_thinking_none_by_default_and_override_only() {
+        // MockRole declares no thinking level and no override → None (no
+        // thinking parameter, provider default — pre-PLAN-064 behavior).
+        let client = mock_client(vec![]);
+        let mut agent = Agent::new(MockRole, client);
+        agent.memory.add("user", "hi");
+        let req = agent.build_request();
+        assert!(req.thinking_level.is_none());
+        // An override alone (role default None) still reaches the request.
+        agent.set_thinking_level_override(Some("low".into()));
+        let req = agent.build_request();
+        assert_eq!(req.thinking_level.as_deref(), Some("low"));
     }
 
     #[test]
