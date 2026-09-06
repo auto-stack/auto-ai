@@ -103,4 +103,11 @@ pub spec Role: Send + Sync {
     fn preferred_provider() ?str {
         return None
     }
+
+    /// PLAN-064: default thinking level for this role's LLM requests:
+    /// Some("off"|"low"|"high"|"max"). None = provider default (no thinking
+    /// parameter sent). The Agent's per-run override takes precedence.
+    fn thinking_level() ?str {
+        return None
+    }
 }

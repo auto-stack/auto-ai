@@ -330,6 +330,7 @@ fn profession_to_config(prof: &dyn Role) -> RoleConfig {
         },
         token_budget: prof.token_budget(),
         soul_file: None,
+        thinking_level: prof.thinking_level(),
     }
 }
 

@@ -48,6 +48,9 @@ pub struct RoleConfig {
     /// Sidecar Soul markdown file (same dir as the .at). When set, the Soul
     /// comes from this file instead of the inline `system_prompt`.
     pub soul_file: Option<String>,
+    /// PLAN-064: default thinking level ("off"|"low"|"high"|"max") for agents
+    /// running this role. None = provider default (no thinking parameter).
+    pub thinking_level: Option<String>,
 }
 
 /// Deserialization view for a `role { … }` block (Plan 381 migration).
@@ -86,6 +89,9 @@ struct RoleDecl {
     skills: Option<Vec<String>>,
     #[serde(default)] token_budget: Option<u64>,
     #[serde(default)] soul_file: Option<String>,
+    /// PLAN-064: raw thinking level name; validated leniently (unknown names
+    /// are kept and rejected at injection time with a warning).
+    #[serde(default)] thinking_level: Option<String>,
 }
 
 impl RoleConfig {
@@ -112,6 +118,7 @@ impl RoleConfig {
         base.skills = self.skills.take().or(base.skills);
         base.token_budget = self.token_budget.take().or(base.token_budget);
         base.soul_file = self.soul_file.take().or(base.soul_file);
+        base.thinking_level = self.thinking_level.take().or(base.thinking_level);
 
         // system_prompt_append accumulates (base append, then self append).
         if let Some(extra) = base.system_prompt_append.take() {
@@ -188,6 +195,7 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
         skills: d.skills,
         token_budget: d.token_budget,
         soul_file: d.soul_file,
+        thinking_level: d.thinking_level,
     })
 }
 
@@ -255,6 +263,9 @@ pub fn serialize_at_role(cfg: &RoleConfig) -> String {
             "allowed_tiers",
             Value::Array(auto_val::Array { values: names }),
         );
+    }
+    if let Some(v) = &cfg.thinking_level {
+        node.set_prop("thinking_level", Value::str(v.as_str()));
     }
     node.to_at_source()
 }
@@ -348,6 +359,9 @@ impl Role for ConfigRole {
     fn skills(&self) -> Vec<String> {
         self.cfg.skills.clone().unwrap_or_default()
     }
+    fn thinking_level(&self) -> Option<String> {
+        self.cfg.thinking_level.clone()
+    }
 }
 
 /// Load a Role from `.at` source text, resolving `inherit` against the
@@ -419,6 +433,7 @@ pub fn load_role(content: &str) -> Result<Arc<dyn Role>, AgentError> {
             skills: Some(merged.skills.clone().unwrap_or_else(|| base_builtin.skills())),
             token_budget: merged.token_budget.or(base_builtin.token_budget()),
             soul_file: merged.soul_file.clone(),
+            thinking_level: merged.thinking_level.clone().or_else(|| base_builtin.thinking_level()),
         };
 
         Ok(Arc::new(ConfigRole::new(resolved, prompt)))
@@ -598,6 +613,33 @@ mod tests {
         assert_eq!(p.max_turns(), 40);
         assert!((p.temperature() - 0.3).abs() < 1e-9);
         assert!(p.system_prompt().contains("Soul of the Coder"));
+    }
+
+    #[test]
+    fn thinking_level_parses_inherits_and_roundtrips() {
+        // PLAN-064: explicit level parses and shines through ConfigRole.
+        let p = load_role(
+            r#"
+            role {
+                name : "thinker"
+                inherit : "coder"
+                thinking_level : "high"
+            }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(p.thinking_level().as_deref(), Some("high"));
+        // Unset → builtin default (None: provider default, nothing injected).
+        let p2 = load_role(r#"role { name : "x" inherit : "coder" }"#).unwrap();
+        assert_eq!(p2.thinking_level(), None);
+        // Serialize → re-parse round-trip.
+        let cfg = RoleConfig {
+            name: Some("t".into()),
+            thinking_level: Some("off".into()),
+            ..Default::default()
+        };
+        let reparsed = parse_at_role(&serialize_at_role(&cfg)).unwrap();
+        assert_eq!(reparsed.thinking_level.as_deref(), Some("off"));
     }
 
     #[test]

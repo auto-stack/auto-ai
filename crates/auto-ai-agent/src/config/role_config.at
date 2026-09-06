@@ -49,6 +49,8 @@ type RoleDecl {
     #[serde(default, deserialize_with = "auto_val::string_or_list_opt", skip_serializing_if = "Option::is_none")] skills ?List<str>
     #[serde(default, skip_serializing_if = "Option::is_none")] token_budget ?uint
     #[serde(default, skip_serializing_if = "Option::is_none")] soul_file ?str
+    /// PLAN-064: raw thinking level name ("off"|"low"|"high"|"max").
+    #[serde(default, skip_serializing_if = "Option::is_none")] thinking_level ?str
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -74,6 +76,8 @@ pub type RoleConfig {
     skills ?List<str>
     token_budget ?uint
     soul_file ?str
+    /// PLAN-064: default thinking level for agents running this role.
+    thinking_level ?str
 }
 
 ext RoleConfig {
@@ -83,7 +87,8 @@ ext RoleConfig {
             temperature: None, max_turns: None, system_prompt: None,
             system_prompt_append: None, tools: None, tools_append: None,
             inherit: None, memory_limit: None, allowed_tiers: None,
-            skills: None, token_budget: None, soul_file: None
+            skills: None, token_budget: None, soul_file: None,
+            thinking_level: None
         )
     }
 
@@ -107,6 +112,7 @@ ext RoleConfig {
         is self.skills { Some(v) -> r.skills = Some(v), None -> {} }
         is self.token_budget { Some(v) -> r.token_budget = Some(v), None -> {} }
         is self.soul_file { Some(v) -> r.soul_file = Some(v), None -> {} }
+        is self.thinking_level { Some(v) -> r.thinking_level = Some(v), None -> {} }
         // system_prompt_append: accumulate (base append, then self append).
         is base.system_prompt_append {
             Some(extra) -> {
@@ -205,6 +211,11 @@ pub type ConfigRole has Role {
     pub fn skills() List<str> {
         return self.cfg.skills.clone() ?? []
     }
+
+    /// PLAN-064: role thinking level default.
+    pub fn thinking_level() ?str {
+        return self.cfg.thinking_level.clone()
+    }
 }
 
 /// Factory: create a ConfigRole from a parsed config.
@@ -265,6 +276,11 @@ ext ConfigRole {
 
     pub fn skills() List<str> {
         return self.cfg.skills.clone() ?? []
+    }
+
+    /// PLAN-064: role thinking level default.
+    pub fn thinking_level() ?str {
+        return self.cfg.thinking_level.clone()
     }
 }
 
@@ -346,6 +362,7 @@ pub fn parse_at_role(content str) Result<RoleConfig, AgentError> {
                             cfg.soul_file = d.soul_file
                             cfg.token_budget = d.token_budget
                             cfg.skills = d.skills
+                            cfg.thinking_level = d.thinking_level
                             is d.allowed_tiers {
                                 Some(names) -> {
                                     var tiers List<ModelTier> = []
@@ -431,7 +448,8 @@ pub fn serialize_at_role(cfg RoleConfig) str {
         system_prompt_append: cfg.system_prompt_append,
         tools: cfg.tools, tools_append: cfg.tools_append,
         inherit: cfg.inherit, allowed_tiers: None, skills: cfg.skills,
-        token_budget: cfg.token_budget, soul_file: cfg.soul_file
+        token_budget: cfg.token_budget, soul_file: cfg.soul_file,
+        thinking_level: cfg.thinking_level
     )
     is cfg.model_tier {
         Some(t) -> d.model_tier = Some(f"${t.display_name()}"),

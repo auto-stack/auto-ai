@@ -116,6 +116,15 @@ pub trait Role: Send + Sync {
     fn preferred_provider(&self) -> Option<String> {
         None
     }
+
+    /// PLAN-064: default thinking level for this role's LLM requests:
+    /// `Some("off"|"low"|"high"|"max")`. `None` = provider default (no
+    /// thinking parameter sent). The Agent's per-run override
+    /// ([`crate::Agent::set_thinking_level_override`]) takes precedence over
+    /// this role default.
+    fn thinking_level(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -154,5 +163,7 @@ mod tests {
         assert!(p.allowed_tiers().is_empty()); // no tier restriction
         assert_eq!(p.token_budget(), None); // unbounded / not enforced yet
         assert!(p.skills().is_empty()); // no skill whitelist
+        // PLAN-064: no thinking level unless declared.
+        assert_eq!(p.thinking_level(), None);
     }
 }

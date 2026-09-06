@@ -75,6 +75,7 @@ mod tests {
                 )],
                 max_concurrency: None,
                 auth_required: true,
+                accepts_thinking_param: false,
             },
         );
 
