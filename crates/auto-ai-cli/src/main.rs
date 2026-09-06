@@ -377,6 +377,9 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
 
     let stdin = io::stdin();
     let turn = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    // /think state: the print-path agent is owned directly by this loop, so
+    // the override is applied to it in place.
+    let mut thinking: Option<String> = None;
 
     loop {
         print!("\n你> ");
@@ -409,6 +412,29 @@ async fn chat_loop(mode: &str) -> Result<(), String> {
                             tier = format!("{:?}", s.tier).to_lowercase(),
                             kind = kind,
                         );
+                    }
+                    continue;
+                }
+                "/think" | "/thinking" => {
+                    let current = thinking.clone()
+                        .unwrap_or_else(|| "default (follow role/provider)".into());
+                    println!("\nThinking level: {current}");
+                    println!("Usage: /think <off|low|high|max>  (off=disabled low=low high=high max=max)");
+                    continue;
+                }
+                other if other.starts_with("/think ")
+                    || other.starts_with("/thinking ") =>
+                {
+                    let arg = other.split_once(' ').map(|(_, rest)| rest).unwrap_or("");
+                    match crate::agent_task::normalize_thinking_level(arg) {
+                        Some(level) => {
+                            thinking = Some(level.clone());
+                            agent.set_thinking_level_override(thinking.clone());
+                            println!("\nThinking level → {level}");
+                        }
+                        None => {
+                            println!("\nUsage: /think <off|low|high|max>");
+                        }
                     }
                     continue;
                 }
@@ -851,6 +877,7 @@ fn print_slash_help() {
     println!("\n  Slash commands:");
     println!("    /config   Open AutoOS Settings in browser");
     println!("    /roles    List available built-in roles");
+    println!("    /think [off|low|high|max]  Thinking level (no arg = show current)");
     println!("    /help     Show this help");
     println!("    exit/quit Leave the chat");
 }

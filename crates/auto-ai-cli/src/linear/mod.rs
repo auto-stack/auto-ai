@@ -83,6 +83,9 @@ pub struct LinearState {
     pub dirty: bool,
     /// Open in-place selector (replaces preview+editor in the tail).
     pub selector: Option<SelectorState>,
+    /// PLAN-064 follow-up: current thinking level (`/think`), mirrored for
+    /// bare `/think` display. The agent task keeps the authoritative copy.
+    pub thinking: Option<String>,
 }
 
 impl LinearState {
@@ -110,6 +113,7 @@ impl LinearState {
             should_quit: false,
             dirty: true,
             selector: None,
+            thinking: None,
         }
     }
 
@@ -565,7 +569,7 @@ fn handle_slash_command(
     match cmd {
         "/help" => {
             term.commit(system_lines(
-                "命令:\n  /help          显示本帮助\n  /roles         选择角色（切换后重建 agent）\n  /expand <id>   展开某次工具调用的完整结果（id 见 + 行尾 #N）\n  /config        打开 AutoOS 设置\n  /clear         清空会话与终端回滚区\n  q              退出\n  ↑/↓            历史回溯\n  流式中 Enter   插话：工具批后注入（»）或回合结束后继续（»»）",
+                "命令:\n  /help          显示本帮助\n  /roles         选择角色（切换后重建 agent）\n  /think [档位]  思考档位：off|low|high|max（省略参数查看当前档位）\n  /expand <id>   展开某次工具调用的完整结果（id 见 + 行尾 #N）\n  /config        打开 AutoOS 设置\n  /clear         清空会话与终端回滚区\n  q              退出\n  ↑/↓            历史回溯\n  流式中 Enter   插话：工具批后注入（»）或回合结束后继续（»»）",
             ))
             .ok();
         }
@@ -593,6 +597,28 @@ fn handle_slash_command(
                 items,
                 selected: current,
             });
+        }
+        "/think" | "/thinking" => {
+            let current = s.thinking
+                .clone()
+                .unwrap_or_else(|| "default（跟随角色/提供方）".into());
+            term.commit(system_lines(&format!(
+                "思考档位: {current}\n用法: /think <off|low|high|max>  （off=关闭 low=低 high=高 max=最高）"
+            )))
+            .ok();
+        }
+        other if other.starts_with("/think ") || other.starts_with("/thinking ") => {
+            let arg = other.split_once(' ').map(|(_, rest)| rest).unwrap_or("");
+            match crate::agent_task::normalize_thinking_level(arg) {
+                Some(level) => {
+                    s.thinking = Some(level.clone());
+                    let _ = cmd_tx.send(AgentCommand::SetThinking(Some(level.clone())));
+                    s.tip = format!("思考档位 → {level}");
+                }
+                None => {
+                    s.tip = "用法: /think <off|low|high|max>".into();
+                }
+            }
         }
         "/clear" => {
             if s.is_streaming {

@@ -63,6 +63,9 @@ pub struct App {
     /// Manual scroll offset (top line index into the chat). Used when
     /// [`Self::auto_scroll`] is false (i.e. the user is reviewing history).
     pub scroll_offset: usize,
+    /// PLAN-064 follow-up: current thinking level (`/think`), mirrored for
+    /// bare `/think` display. The agent task keeps the authoritative copy.
+    pub thinking: Option<String>,
 }
 
 impl App {
@@ -84,6 +87,7 @@ impl App {
             last_spinner_tick: now,
             current_cancel: None,
             scroll_offset: 0,
+            thinking: None,
         }
     }
 
@@ -262,7 +266,7 @@ fn handle_key(
             return;
         }
         if text.starts_with('/') {
-            handle_slash_command(app, &text);
+            handle_slash_command(app, &text, &input_tx);
             return;
         }
         app.chat.add_user(&text);
@@ -371,12 +375,33 @@ fn jump_to_bottom(app: &mut App) {
     app.auto_scroll = true;
 }
 
-fn handle_slash_command(app: &mut App, cmd: &str) {
+fn handle_slash_command(app: &mut App, cmd: &str, input_tx: &mpsc::UnboundedSender<AgentCommand>) {
     match cmd {
         "/help" => {
             app.chat.add_system(
-                "Commands:\n  /help    Show this help\n  /roles   List available roles\n  /config  Open AutoOS Settings\n  /clear   Clear chat history\n  q        Quit\n  Tab      Toggle tool block\n  Up/Down  History recall"
+                "Commands:\n  /help    Show this help\n  /roles   List available roles\n  /think [off|low|high|max]  Thinking level (no arg = show current)\n  /config  Open AutoOS Settings\n  /clear   Clear chat history\n  q        Quit\n  Tab      Toggle tool block\n  Up/Down  History recall"
             );
+        }
+        "/think" | "/thinking" => {
+            let current = app.thinking
+                .clone()
+                .unwrap_or_else(|| "default (follow role/provider)".into());
+            app.chat.add_system(&format!(
+                "Thinking level: {current}\nUsage: /think <off|low|high|max>  (off=disabled low=low high=high max=max)"
+            ));
+        }
+        other if other.starts_with("/think ") || other.starts_with("/thinking ") => {
+            let arg = other.split_once(' ').map(|(_, rest)| rest).unwrap_or("");
+            match crate::agent_task::normalize_thinking_level(arg) {
+                Some(level) => {
+                    app.thinking = Some(level.clone());
+                    let _ = input_tx.send(AgentCommand::SetThinking(Some(level.clone())));
+                    app.chat.add_system(&format!("Thinking level → {level}"));
+                }
+                None => {
+                    app.chat.add_system("Usage: /think <off|low|high|max>");
+                }
+            }
         }
         "/roles" => {
             let registry = auto_ai_agent::RoleRegistry::load();

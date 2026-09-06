@@ -37,6 +37,17 @@ pub enum AgentCommand {
     /// old memory is saved to the session file first so `-c` history isn't
     /// lost across a role switch.
     SetRole(String),
+    /// PLAN-064 follow-up: set the thinking level override
+    /// (`"off"|"low"|"high"|"max"`, pre-normalized). The task remembers the
+    /// value and re-applies it after `/clear`/`/role` agent rebuilds.
+    SetThinking(Option<String>),
+}
+
+/// Validate a `/think` argument into the canonical lowercase wire value
+/// (`"off"|"low"|"high"|"max"`). `None` = not one of the four levels.
+pub fn normalize_thinking_level(arg: &str) -> Option<String> {
+    let lowered = arg.trim().to_ascii_lowercase();
+    matches!(lowered.as_str(), "off" | "low" | "high" | "max").then_some(lowered)
 }
 
 /// Spawn the resident agent task. Returns the command sender; dropping it
@@ -51,6 +62,9 @@ pub fn spawn(
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentCommand>();
     tokio::spawn(async move {
         let mut role = role;
+        // /think state: remembered here so /clear and /role rebuilds re-apply
+        // it on the fresh agent (the override would otherwise be lost).
+        let mut thinking: Option<String> = None;
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 AgentCommand::Run { text, cancel } => {
@@ -67,12 +81,17 @@ pub fn spawn(
                 }
                 AgentCommand::Steer(text) => agent.steer(text),
                 AgentCommand::FollowUp(text) => agent.follow_up(text),
+                AgentCommand::SetThinking(level) => {
+                    thinking = level.clone();
+                    agent.set_thinking_level_override(thinking.clone());
+                }
                 AgentCommand::Reset => {
                     // `/clear`: wipe memory *and* the persisted session so a
                     // later `-c` doesn't resurrect the cleared conversation.
                     crate::session::save(&cwd, "session", &[]);
                     if let Ok(fresh) = crate::build_agent(&role, client.clone(), true) {
                         agent = fresh;
+                        agent.set_thinking_level_override(thinking.clone());
                     }
                 }
                 AgentCommand::SetRole(new_role) => {
@@ -80,6 +99,7 @@ pub fn spawn(
                     crate::session::save(&cwd, "session", agent.memory_messages());
                     if let Ok(fresh) = crate::build_agent(&new_role, client.clone(), true) {
                         agent = fresh;
+                        agent.set_thinking_level_override(thinking.clone());
                         role = new_role;
                     }
                 }
