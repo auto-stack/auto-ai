@@ -35,6 +35,15 @@ pub struct ProviderConfig {
     /// Authorization header, instead of failing with NoApiKey. (review-003 W1)
     #[serde(default = "default_auth_required")]
     pub auth_required: bool,
+    /// PLAN-064 gate: whether this provider's endpoint accepts the
+    /// Anthropic-style `thinking` parameter block
+    /// (`{"type":"disabled"}` / `{"type":"enabled","budget_tokens":N}`).
+    /// Defaults to `false` — third-party anthropic-compatible endpoints
+    /// (deepseek etc.) are unverified, so a closed gate keeps their request
+    /// bodies byte-identical to pre-PLAN-064. Set `true` only after the
+    /// upstream is verified to accept the parameter (zhipu: verified).
+    #[serde(default)]
+    pub accepts_thinking_param: bool,
 }
 
 fn default_auth_required() -> bool {
@@ -86,6 +95,7 @@ mod tests {
             models: vec![],
             max_concurrency: None,
             auth_required: true,
+            accepts_thinking_param: false,
         }
     }
 

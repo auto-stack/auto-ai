@@ -102,6 +102,7 @@ mod tests {
                 models: vec![],
                 max_concurrency: Some(2),
                 auth_required: true,
+                accepts_thinking_param: false,
             },
         );
         DaemonConfig {
@@ -143,6 +144,7 @@ mod tests {
                 models: vec![],
                 max_concurrency: None,
                 auth_required: true,
+                accepts_thinking_param: false,
             },
         );
         let cfg = DaemonConfig {

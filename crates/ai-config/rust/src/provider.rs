@@ -30,6 +30,7 @@ pub struct ProviderConfig {
     pub models: Vec<ModelDefinition>,
     pub max_concurrency: Option<u32>,
     pub auth_required: bool,
+    pub accepts_thinking_param: bool,
 }
 
 impl ProviderConfig {

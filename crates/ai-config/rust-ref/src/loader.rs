@@ -112,6 +112,9 @@ struct ProviderScalars {
     /// auth_required accepts bool / 0,1 / "yes","on",… (loader.rs opt_bool).
     #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")]
     auth_required: Option<bool>,
+    /// PLAN-064 gate: anthropic-style `thinking` parameter accepted upstream.
+    #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")]
+    accepts_thinking_param: Option<bool>,
 }
 
 /// Parse `ai-client.at` content (root must be `client { … }`).
@@ -293,6 +296,7 @@ fn parse_provider_blocks(node: &Node) -> Result<HashMap<String, ProviderConfig>,
                 models: opt_models(child, "models"),
                 max_concurrency: s.max_concurrency,
                 auth_required: s.auth_required.unwrap_or(true),
+                accepts_thinking_param: s.accepts_thinking_param.unwrap_or(false),
             };
             if !pc.kind.is_empty() {
                 providers.insert(child.name.to_string(), pc);

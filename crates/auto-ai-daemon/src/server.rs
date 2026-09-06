@@ -711,6 +711,7 @@ mod tests {
                 models: vec![model_def("model-a", ai_config::ModelTier::Mid, Some(32_000))],
                 max_concurrency: Some(4),
                 auth_required: true,
+                accepts_thinking_param: false,
             },
         );
         providers.insert(
@@ -723,6 +724,7 @@ mod tests {
                 models: vec![model_def("model-b", ai_config::ModelTier::Mid, Some(200_000))],
                 max_concurrency: Some(4),
                 auth_required: true,
+                accepts_thinking_param: false,
             },
         );
         DaemonConfig {

@@ -38,16 +38,27 @@ pub struct AnthropicProvider {
     base_url: String,
     api_key: String,
     models_list: Vec<String>,
+    /// PLAN-064 gate (ProviderConfig.accepts_thinking_param): when false the
+    /// request body never carries a `thinking` block, regardless of
+    /// req.thinking_level — unverified upstreams stay byte-identical.
+    accepts_thinking_param: bool,
     client: reqwest::Client,
 }
 
 impl AnthropicProvider {
-    pub fn new(name: String, base_url: String, api_key: String, models: Vec<String>) -> Self {
+    pub fn new(
+        name: String,
+        base_url: String,
+        api_key: String,
+        models: Vec<String>,
+        accepts_thinking_param: bool,
+    ) -> Self {
         Self {
             name,
             base_url,
             api_key,
             models_list: models,
+            accepts_thinking_param,
             client: reqwest::Client::new(),
         }
     }
@@ -77,9 +88,16 @@ impl AnthropicProvider {
             })
         }));
 
+        // PLAN-064: thinking budget requires max_tokens > budget_tokens
+        // (Anthropic contract). Lift max_tokens when the requested thinking
+        // budget doesn't fit, keeping ≥1k answer headroom — this is the
+        // architecture section's "必要时抬 max_tokens" clause, so the high/max
+        // presets survive the default 4096 instead of clamping down to it.
+        let mut max_tokens = req.max_tokens.unwrap_or(4096);
+
         let mut body = serde_json::json!({
             "model": req.model,
-            "max_tokens": req.max_tokens.unwrap_or(4096),
+            "max_tokens": max_tokens,
             "messages": messages,
         });
 
@@ -93,6 +111,36 @@ impl AnthropicProvider {
             body["tools"] = serde_json::Value::Array(
                 req.tools.iter().map(tool_to_anthropic).collect(),
             );
+        }
+
+        // PLAN-064: thinking level injection, gated per provider
+        // (ProviderConfig.accepts_thinking_param). Closed gate (default) →
+        // no `thinking` key at all, whatever the request asks for.
+        if self.accepts_thinking_param {
+            if let Some(raw) = req.thinking_level.as_deref() {
+                match super::parse_thinking_level(raw) {
+                    Some(super::ThinkingLevel::Off) => {
+                        body["thinking"] = serde_json::json!({ "type": "disabled" });
+                    }
+                    Some(level) => {
+                        let budget = level.budget_tokens() as usize;
+                        if max_tokens <= budget {
+                            max_tokens = budget + 1024;
+                            body["max_tokens"] = serde_json::json!(max_tokens);
+                        }
+                        body["thinking"] = serde_json::json!({
+                            "type": "enabled",
+                            "budget_tokens": budget,
+                        });
+                    }
+                    None => {
+                        tracing::warn!(
+                            "provider '{}': unknown thinking_level '{raw}', skipping thinking injection",
+                            self.name
+                        );
+                    }
+                }
+            }
         }
         body
     }
@@ -449,6 +497,7 @@ mod tests {
             "https://api.anthropic.com".into(),
             "key".into(),
             vec!["claude-3-5-sonnet-20241022".into()],
+            false,
         );
         let req = CompletionRequest::single("claude-3-5-sonnet-20241022", "hi");
         let body = p.build_body(&req);
@@ -457,15 +506,100 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "user");
     }
 
+    // ── PLAN-064: thinking level injection (gate matrix) ───────────────────
+
+    #[test]
+    fn thinking_gate_closed_never_injects() {
+        // accepts_thinking_param=false (default): no thinking key whatever
+        // the request asks for — unverified upstreams stay byte-identical.
+        let p = AnthropicProvider::new(
+            "deepseek".into(),
+            "https://api.deepseek.com/anthropic".into(),
+            "k".into(),
+            vec![],
+            false,
+        );
+        for level in ["off", "low", "high", "max"] {
+            let req = CompletionRequest::single("m", "hi").with_thinking_level(level);
+            let body = p.build_body(&req);
+            assert!(body.get("thinking").is_none(), "level {level} leaked past closed gate");
+        }
+    }
+
+    #[test]
+    fn thinking_none_level_injects_nothing() {
+        // thinking_level=None (pre-PLAN-064 client): no thinking key even on
+        // an open gate.
+        let p = AnthropicProvider::new("a".into(), "u".into(), "k".into(), vec![], true);
+        let body = p.build_body(&CompletionRequest::single("m", "hi"));
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn thinking_off_injects_disabled() {
+        let p = AnthropicProvider::new("a".into(), "u".into(), "k".into(), vec![], true);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("off");
+        let body = p.build_body(&req);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body["thinking"].get("budget_tokens").is_none());
+        assert_eq!(body["max_tokens"], 4096); // untouched
+    }
+
+    #[test]
+    fn thinking_low_injects_budget_within_default_max() {
+        let p = AnthropicProvider::new("a".into(), "u".into(), "k".into(), vec![], true);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("low");
+        let body = p.build_body(&req);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 2048);
+        assert_eq!(body["max_tokens"], 4096); // 2048 fits the default — no lift
+    }
+
+    #[test]
+    fn thinking_high_lifts_max_tokens() {
+        let p = AnthropicProvider::new("a".into(), "u".into(), "k".into(), vec![], true);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("high");
+        let body = p.build_body(&req);
+        assert_eq!(body["thinking"]["budget_tokens"], 8192);
+        // budget must stay below max_tokens (anthropic contract): 8192 + 1024.
+        assert_eq!(body["max_tokens"], 9216);
+    }
+
+    #[test]
+    fn thinking_max_lifts_max_tokens() {
+        let p = AnthropicProvider::new("a".into(), "u".into(), "k".into(), vec![], true);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("max");
+        let body = p.build_body(&req);
+        assert_eq!(body["thinking"]["budget_tokens"], 32768);
+        assert_eq!(body["max_tokens"], 33792);
+    }
+
+    #[test]
+    fn thinking_unknown_level_warns_and_skips() {
+        let p = AnthropicProvider::new("a".into(), "u".into(), "k".into(), vec![], true);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("turbo");
+        let body = p.build_body(&req);
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["max_tokens"], 4096);
+    }
+
+    #[test]
+    fn thinking_level_case_insensitive() {
+        let p = AnthropicProvider::new("a".into(), "u".into(), "k".into(), vec![], true);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level(" High ");
+        let body = p.build_body(&req);
+        assert_eq!(body["thinking"]["budget_tokens"], 8192);
+    }
+
     #[test]
     fn url_construction() {
-        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com/".into(), "k".into(), vec![]);
+        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com/".into(), "k".into(), vec![], false);
         assert_eq!(p.url(), "https://api.anthropic.com/v1/messages");
     }
 
     #[test]
     fn build_body_includes_tools() {
-        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com".into(), "k".into(), vec![]);
+        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com".into(), "k".into(), vec![], false);
         let tool = ToolDefinition::new("get_weather", "weather", serde_json::json!({"type":"object","properties":{}}));
         let req = CompletionRequest::single("claude-3-5-sonnet-20241022", "hi").with_tools(vec![tool]);
         let body = p.build_body(&req);
@@ -477,7 +611,7 @@ mod tests {
 
     #[test]
     fn build_body_omits_tools_when_empty() {
-        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com".into(), "k".into(), vec![]);
+        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com".into(), "k".into(), vec![], false);
         let req = CompletionRequest::single("claude-3-5-sonnet-20241022", "hi");
         let body = p.build_body(&req);
         assert!(body.get("tools").is_none());
@@ -485,7 +619,7 @@ mod tests {
 
     #[test]
     fn build_body_serializes_tool_result_block() {
-        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com".into(), "k".into(), vec![]);
+        let p = AnthropicProvider::new("a".into(), "https://api.anthropic.com".into(), "k".into(), vec![], false);
         let mut req = CompletionRequest::single("claude-3-5-sonnet-20241022", "hi");
         req.messages.push(Message::tool_result("call_1", "42"));
         let body = p.build_body(&req);

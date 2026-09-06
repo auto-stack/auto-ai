@@ -37,6 +37,44 @@ pub enum StreamDelta {
     Reasoning(String),
 }
 
+/// PLAN-064: thinking effort level, parsed from
+/// [`ai_config::CompletionRequest::thinking_level`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThinkingLevel {
+    /// Disable thinking (anthropic-compat: `{"type":"disabled"}`).
+    Off,
+    Low,
+    High,
+    Max,
+}
+
+impl ThinkingLevel {
+    /// Thinking-token budget for the anthropic-compat `thinking` block.
+    /// Presets are ours — GLM official's exact 低/高/最高 mapping is
+    /// unpublished; tune here, wire contract unchanged (PLAN-064).
+    pub fn budget_tokens(self) -> u32 {
+        match self {
+            ThinkingLevel::Off => 0,
+            ThinkingLevel::Low => 2048,
+            ThinkingLevel::High => 8192,
+            ThinkingLevel::Max => 32768,
+        }
+    }
+}
+
+/// Parse the wire string (`"off"` | `"low"` | `"high"` | `"max"`,
+/// case-insensitive, trimmed). `None` = unrecognized — callers warn and skip
+/// injection rather than failing the request.
+pub fn parse_thinking_level(raw: &str) -> Option<ThinkingLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(ThinkingLevel::Off),
+        "low" => Some(ThinkingLevel::Low),
+        "high" => Some(ThinkingLevel::High),
+        "max" => Some(ThinkingLevel::Max),
+        _ => None,
+    }
+}
+
 /// Trait that every LLM provider implements.
 #[async_trait]
 pub trait AiProvider: Send + Sync {
@@ -119,6 +157,7 @@ impl ProviderRegistry {
                     pc.base_url.clone(),
                     key,
                     model_ids.clone(),
+                    pc.accepts_thinking_param,
                 )),
                 "ollama" => Arc::new(OllamaProvider::new(
                     name.clone(),

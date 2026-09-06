@@ -179,6 +179,7 @@ mod tests {
             ],
             max_concurrency: Some(4),
                 auth_required: true,
+                accepts_thinking_param: false,
         });
         providers.insert("deepseek".into(), ProviderConfig {
             kind: "anthropic".into(),
@@ -191,6 +192,7 @@ mod tests {
             ],
             max_concurrency: Some(4),
                 auth_required: true,
+                accepts_thinking_param: false,
         });
         DaemonConfig {
             listen_addr: "127.0.0.1:17654".into(),
@@ -260,6 +262,7 @@ mod tests {
             models: vec![ModelDefinition::new("glm-5.2", ModelTier::Max)],
             max_concurrency: Some(4),
             auth_required: true,
+            accepts_thinking_param: false,
         });
         providers.insert("ollama".into(), ProviderConfig {
             kind: "ollama".into(),
@@ -269,6 +272,7 @@ mod tests {
             models: vec![ModelDefinition::new("qwen2.5:72b", ModelTier::Max)],
             max_concurrency: Some(1),
             auth_required: false,
+            accepts_thinking_param: false,
         });
         DaemonConfig {
             listen_addr: "127.0.0.1:17654".into(),
