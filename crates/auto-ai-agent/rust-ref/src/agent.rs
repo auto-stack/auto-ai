@@ -919,6 +919,7 @@ impl Agent {
             tools: tool_defs,
             stream: false,
             preferred_provider: self.role.preferred_provider(),
+            thinking_level: None,
         }
     }
 }

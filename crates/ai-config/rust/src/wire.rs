@@ -150,11 +150,16 @@ pub struct CompletionRequest {
     pub system_prompt: Option<String>,
     pub tools: Vec<ToolDefinition>,
     pub stream: bool,
+    pub thinking_level: Option<String>,
 }
 
 impl CompletionRequest {
     pub fn single(model: &str, prompt: &str) -> CompletionRequest {
-        return CompletionRequest { model: model.to_string(), messages: vec![Message::user(prompt)], max_tokens: None, temperature: None, system_prompt: None, tools: vec![], stream: false };
+        return CompletionRequest { model: model.to_string(), messages: vec![Message::user(prompt)], max_tokens: None, temperature: None, system_prompt: None, tools: vec![], stream: false, thinking_level: None };
+    }
+    pub fn with_thinking_level(mut self, level: &str) -> CompletionRequest {
+        self.thinking_level = Some(level.to_string());
+        return self;
     }
     pub fn with_system(mut self, system: &str) -> CompletionRequest {
         self.system_prompt = Some(system.to_string());

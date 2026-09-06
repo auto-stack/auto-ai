@@ -172,6 +172,13 @@ pub struct CompletionRequest {
     /// without hard-coding a model id. `None` = daemon picks normally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_provider: Option<String>,
+    /// Thinking/reasoning effort level requested for this completion:
+    /// `"off"` | `"low"` | `"high"` | `"max"` (PLAN-064). The daemon
+    /// translates this per provider (anthropic-compat: `thinking` block;
+    /// openai-compat: `reasoning_effort` / `think`). `None` = send nothing,
+    /// provider default applies — byte-identical to pre-PLAN-064 requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
 }
 
 impl CompletionRequest {
@@ -186,7 +193,14 @@ impl CompletionRequest {
             tools: Vec::new(),
             stream: false,
             preferred_provider: None,
+            thinking_level: None,
         }
+    }
+
+    /// With a thinking level (`"off"` | `"low"` | `"high"` | `"max"`).
+    pub fn with_thinking_level(mut self, level: &str) -> Self {
+        self.thinking_level = Some(level.to_string());
+        self
     }
 
     /// With a system prompt.
