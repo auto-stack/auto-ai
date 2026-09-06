@@ -95,6 +95,31 @@ impl OpenAiProvider {
         if let Some(t) = req.temperature {
             body["temperature"] = serde_json::json!(t);
         }
+
+        // PLAN-064: best-effort thinking mapping — the openai-compat world has
+        // no single standard, so: off → `"think": false` (ollama dialect),
+        // low/high → `reasoning_effort` (o-series dialect), max → clamped to
+        // "high". Upstreams that don't know a field error through the normal
+        // rejection path, same as any unknown parameter.
+        if let Some(raw) = req.thinking_level.as_deref() {
+            match super::parse_thinking_level(raw) {
+                Some(super::ThinkingLevel::Off) => {
+                    body["think"] = serde_json::json!(false);
+                }
+                Some(super::ThinkingLevel::Low) => {
+                    body["reasoning_effort"] = serde_json::json!("low");
+                }
+                Some(super::ThinkingLevel::High) | Some(super::ThinkingLevel::Max) => {
+                    body["reasoning_effort"] = serde_json::json!("high");
+                }
+                None => {
+                    tracing::warn!(
+                        "provider '{}': unknown thinking_level '{raw}', skipping reasoning mapping",
+                        self.name
+                    );
+                }
+            }
+        }
         body
     }
 }
@@ -420,6 +445,53 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "be nice");
         assert_eq!(body["messages"][1]["role"], "user");
+    }
+
+    // ── PLAN-064: best-effort thinking mapping ─────────────────────────────
+
+    #[test]
+    fn thinking_none_level_sends_nothing() {
+        let p = OpenAiProvider::new("t".into(), "u".into(), "k".into(), vec![]);
+        let body = p.build_body(&CompletionRequest::single("m", "hi"));
+        assert!(body.get("think").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn thinking_off_sends_think_false() {
+        // ollama dialect: `"think": false` turns chain-of-thought off.
+        let p = OpenAiProvider::new("t".into(), "u".into(), "k".into(), vec![]);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("off");
+        let body = p.build_body(&req);
+        assert_eq!(body["think"], false);
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn thinking_low_sends_reasoning_effort_low() {
+        let p = OpenAiProvider::new("t".into(), "u".into(), "k".into(), vec![]);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("low");
+        let body = p.build_body(&req);
+        assert_eq!(body["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn thinking_max_clamps_to_reasoning_effort_high() {
+        let p = OpenAiProvider::new("t".into(), "u".into(), "k".into(), vec![]);
+        for level in ["high", "max"] {
+            let req = CompletionRequest::single("m", "hi").with_thinking_level(level);
+            let body = p.build_body(&req);
+            assert_eq!(body["reasoning_effort"], "high", "level {level}");
+        }
+    }
+
+    #[test]
+    fn thinking_unknown_level_sends_nothing() {
+        let p = OpenAiProvider::new("t".into(), "u".into(), "k".into(), vec![]);
+        let req = CompletionRequest::single("m", "hi").with_thinking_level("turbo");
+        let body = p.build_body(&req);
+        assert!(body.get("think").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
