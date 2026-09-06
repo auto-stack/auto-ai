@@ -409,6 +409,30 @@ mod tests {
     }
 
     #[test]
+    fn thinking_level_default_none_and_old_payload_compat() {
+        // PLAN-064: payloads without thinking_level (pre-PLAN-064 clients)
+        // deserialize to None, and None is skipped on serialization so the
+        // wire body stays byte-identical to pre-PLAN-064 requests.
+        let mut old = serde_json::to_value(&CompletionRequest::single("glm-5.3-flash", "hi"))
+            .expect("single must serialize");
+        old.as_object_mut().unwrap().remove("thinking_level");
+        let req: CompletionRequest = serde_json::from_value(old).expect("old shape must parse");
+        assert!(req.thinking_level.is_none());
+        let v = serde_json::to_value(&req).unwrap();
+        assert!(v.get("thinking_level").is_none());
+    }
+
+    #[test]
+    fn thinking_level_roundtrip_and_builder() {
+        let req = CompletionRequest::single("glm-5.3-flash", "hi").with_thinking_level("high");
+        assert_eq!(req.thinking_level.as_deref(), Some("high"));
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v.get("thinking_level"), Some(&serde_json::json!("high")));
+        let back: CompletionRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(back.thinking_level.as_deref(), Some("high"));
+    }
+
+    #[test]
     fn usage_total() {
         let u = Usage {
             input_tokens: 100,
