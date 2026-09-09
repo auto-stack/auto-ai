@@ -15,7 +15,7 @@ use crate::ai_config::{CompletionRequest, CompletionResponse, ToolCall, Usage};
 use crate::error::{LlmError};
 use crate::sse::SseParser;
 use crate::format::{openai_content, OpenAiMsg, parse_openai_tool_calls, tool_to_openai};
-use crate::provider::{AiProvider, StreamDelta};
+use crate::provider::{AiProvider, StreamDelta, ThinkingLevel, parse_thinking_level};
 /// OpenAI-compatible provider (works with OpenAI, Zhipu GLM, Moonshot, etc.).
 /// 
 /// Auto port of crates/auto-ai-daemon/src/provider/openai.rs (non-streaming
@@ -182,6 +182,36 @@ impl OpenAiProvider {
             let t = req.temperature.unwrap();
             body.insert("temperature".to_string(), Value::Number(serde_json::Number::from_f64(t).unwrap_or(serde_json::Number::from(0))));
         }
+
+
+
+
+
+
+
+        match req.thinking_level {
+            Some(raw) => {
+                match parse_thinking_level(raw.as_str()) {
+                    Some(level) => {
+                        match level {
+                            ThinkingLevel::Off => { body.insert("think".to_string(), Value::Bool(false)); },
+                            ThinkingLevel::Low => { body.insert("reasoning_effort".to_string(), Value::String("low".to_string())); },
+                            _ => {
+                                
+
+                                body.insert("reasoning_effort".to_string(), Value::String("high".to_string()));
+                            },
+                        };
+                    },
+                    None => {
+                        
+
+
+                    },
+                };
+            },
+            None => {},
+        };
 
         return Value::Object(body);
     }

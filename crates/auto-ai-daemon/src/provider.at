@@ -37,6 +37,49 @@ pub enum StreamDelta {
     Reasoning(str)
 }
 
+/// PLAN-064: thinking effort level, parsed from
+/// [`ai_config::CompletionRequest::thinking_level`]. The daemon maps levels
+/// to per-dialect wire params (anthropic `thinking` block, openai
+/// `reasoning_effort`); unknown strings parse to None — callers skip
+/// injection rather than failing the request.
+#[derive(Clone, Debug)]
+pub enum ThinkingLevel {
+    // Disable thinking (anthropic-compat: `{"type":"disabled"}`).
+    Off
+    Low
+    High
+    Max
+}
+
+ext ThinkingLevel {
+    /// Thinking-token budget for the anthropic-compat `thinking` block.
+    /// Presets are ours — GLM official's exact 低/高/最高 mapping is
+    /// unpublished; tune here, wire contract unchanged (PLAN-064).
+    /// Returns usize (rust-ref: u32 + `as usize` at the call site; usize here
+    /// matches ai-config's max_tokens without a cast).
+    pub fn budget_tokens() usize {
+        is self {
+            ThinkingLevel.Off -> return 0,
+            ThinkingLevel.Low -> return 2048,
+            ThinkingLevel.High -> return 8192,
+            ThinkingLevel.Max -> return 32768
+        }
+    }
+}
+
+/// Parse the wire string (`"off"` | `"low"` | `"high"` | `"max"`,
+/// case-insensitive, trimmed). `None` = unrecognized.
+pub fn parse_thinking_level(raw str) ?ThinkingLevel {
+    let lower = raw.trim().to_ascii_lowercase()
+    is lower {
+        "off" -> Some(ThinkingLevel.Off),
+        "low" -> Some(ThinkingLevel.Low),
+        "high" -> Some(ThinkingLevel.High),
+        "max" -> Some(ThinkingLevel.Max),
+        else -> None
+    }
+}
+
 /// Trait that every LLM provider implements.
 pub spec AiProvider: Send + Sync {
     /// Provider name (e.g. "zhipu", "anthropic").

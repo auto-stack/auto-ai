@@ -76,14 +76,14 @@ impl SseParser {
 /// `is_empty()` check that the rust-ref expressed as `Option::None`.)
 fn extract_data(frame: &str) -> String {
     let mut parts: Vec<String> = vec![];
-    for line in frame.split("\n").collect::<Vec<_>>() {
+    for line in frame.split("\n").map(|s| s.to_string()).collect::<Vec<String>>() {
         if line.is_empty() {
             continue;
         }
         if line.starts_with(":") {
             continue;
         }
-        let data = data_field(line);
+        let data = data_field(line.as_str());
         if data.is_empty() == false {
             parts.push(data.to_string());
         }
@@ -109,14 +109,14 @@ fn data_field(line: &str) -> String {
     if colon < 0 {
         return "".to_string();
     }
-    let key = line[0..(colon) as usize].to_string();
+    let key = line.chars().take((colon) as usize).skip((0) as usize).collect::<String>();
     if key.trim().to_string() != "data" {
         return "".to_string();
     }
-    let value = line[(colon + 1) as usize..].to_string();
+    let value = line.chars().skip((colon + 1) as usize).collect::<String>();
 
     if value.starts_with(" ") {
-        return value[1..].to_string();
+        return value.chars().skip((1) as usize).collect::<String>().to_string();
     }
     return value;
 }

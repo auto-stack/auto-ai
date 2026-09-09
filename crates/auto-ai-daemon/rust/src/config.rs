@@ -41,6 +41,11 @@ pub fn load() -> DaemonConfig {
 /// Mirrors rust-ref config.rs:load(). Falls back to env-var providers when the
 /// config file is absent/unreadable. Exits the process if no provider can be
 /// built (a daemon with zero providers would fail every request at runtime).
+/// Load daemon config from `~/.config/autoos/ai-daemon.at`, else from env.
+/// 
+/// Mirrors rust-ref config.rs:load(). Falls back to env-var providers when the
+/// config file is absent/unreadable. Exits the process if no provider can be
+/// built (a daemon with zero providers would fail every request at runtime).
 /// Read & parse `~/.config/autoos/ai-daemon.at`. None if the file is absent or
 /// unreadable/unparseable (so `load()` can fall back to env).
 fn load_from_file() -> Option<DaemonConfig> {
@@ -86,7 +91,7 @@ fn load_from_env() -> DaemonConfig {
     let zhipu_key = a2r_std::env::get("ZHIPU_API_KEY");
     if zhipu_key.is_empty() == false {
         let models = vec![model_meta("glm-4.6", ai_config::ModelTier::Mid.clone(), 200000, 32768, 800000, 3200000, 0, false, true), model_meta("glm-4-flash", ai_config::ModelTier::Min.clone(), 128000, 8192, 0, 0, 0, false, false)];
-        providers.insert("zhipu".to_string(), provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", zhipu_key.as_str(), models));
+        providers.insert("zhipu".to_string(), provider_env("openai", "https://open.bigmodel.cn/api/paas/v4", zhipu_key.as_str(), models.clone()));
     }
 
 
@@ -97,7 +102,7 @@ fn load_from_env() -> DaemonConfig {
     if key.is_empty() == false {
         let base = first_non_empty(anthropic_base.as_str(), "https://api.anthropic.com");
         let models = vec![model_meta("claude-3-5-sonnet-20241022", ai_config::ModelTier::Mid.clone(), 200000, 8192, 3000000, 15000000, 300000, true, true)];
-        providers.insert("anthropic".to_string(), provider_env("anthropic", base.as_str(), key.as_str(), models));
+        providers.insert("anthropic".to_string(), provider_env("anthropic", base.as_str(), key.as_str(), models.clone()));
     }
 
 
@@ -106,7 +111,7 @@ fn load_from_env() -> DaemonConfig {
     if openai_key.is_empty() == false {
         let base = first_non_empty(openai_base.as_str(), "https://api.openai.com/v1");
         let models = vec![model_meta("gpt-4o", ai_config::ModelTier::Mid.clone(), 128000, 16384, 2500000, 10000000, 1250000, true, false)];
-        providers.insert("openai".to_string(), provider_env("openai", base.as_str(), openai_key.as_str(), models));
+        providers.insert("openai".to_string(), provider_env("openai", base.as_str(), openai_key.as_str(), models.clone()));
     }
 
     if providers.is_empty() {
@@ -133,7 +138,7 @@ fn load_from_env() -> DaemonConfig {
 
 /// Build a ProviderConfig from env-style params (the daemon-side constructor).
 fn provider_env(kind: &str, base_url: &str, key: &str, models: Vec<ai_config::ModelDefinition>) -> ai_config::ProviderConfig {
-    return ai_config::ProviderConfig { kind: kind.to_string(), base_url: base_url.to_string(), api_key: Some(key.to_string()), key_env: None, models: models, max_concurrency: Some(DEFAULT_CONCURRENCY), auth_required: true };
+    return ai_config::ProviderConfig { kind: kind.to_string(), base_url: base_url.to_string(), api_key: Some(key.to_string()), key_env: None, models: models, max_concurrency: Some(DEFAULT_CONCURRENCY), auth_required: true, accepts_thinking_param: false };
 }
 
 /// Default-provider priority: zhipu > anthropic > openai; else first sorted name.

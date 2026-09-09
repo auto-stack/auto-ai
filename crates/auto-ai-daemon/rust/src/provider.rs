@@ -35,6 +35,63 @@ pub enum StreamDelta {
 }
 
 
+/// PLAN-064: thinking effort level, parsed from
+/// [`ai_config::CompletionRequest::thinking_level`]. The daemon maps levels
+/// to per-dialect wire params (anthropic `thinking` block, openai
+/// `reasoning_effort`); unknown strings parse to None — callers skip
+/// injection rather than failing the request.
+#[derive(Clone, Debug)]
+pub enum ThinkingLevel {
+    Off = 0,
+    Low = 1,
+    High = 2,
+    Max = 3,
+}
+
+impl std::fmt::Display for ThinkingLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ThinkingLevel::Off => write!(f, "Off"),
+            ThinkingLevel::Low => write!(f, "Low"),
+            ThinkingLevel::High => write!(f, "High"),
+            ThinkingLevel::Max => write!(f, "Max"),
+        }
+    }
+}
+impl ThinkingLevel {
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "Off" | "off" => ThinkingLevel::Off,
+            "Low" | "low" => ThinkingLevel::Low,
+            "High" | "high" => ThinkingLevel::High,
+            "Max" | "max" => ThinkingLevel::Max,
+            _ => ThinkingLevel::Off
+        }
+    }
+}
+
+impl ThinkingLevel {
+    pub fn budget_tokens(&self) -> usize {
+        match self {
+            ThinkingLevel::Off => return 0 as usize,
+            ThinkingLevel::Low => return 2048 as usize,
+            ThinkingLevel::High => return 8192 as usize,
+            ThinkingLevel::Max => return 32768 as usize,
+        }
+    }
+}
+
+pub fn parse_thinking_level(raw: &str) -> Option<ThinkingLevel> {
+    let lower = raw.trim().to_string().to_ascii_lowercase();
+    match lower.as_str() {
+        "off" => Some(ThinkingLevel::Off),
+        "low" => Some(ThinkingLevel::Low),
+        "high" => Some(ThinkingLevel::High),
+        "max" => Some(ThinkingLevel::Max),
+        _ => None,
+    }
+}
+
 #[async_trait::async_trait]
 pub trait AiProvider: Send + Sync {
     fn name(&self) -> String;
@@ -44,6 +101,13 @@ pub trait AiProvider: Send + Sync {
 }
 
 
+/// Thinking-token budget for the anthropic-compat `thinking` block.
+/// Presets are ours — GLM official's exact 低/高/最高 mapping is
+/// unpublished; tune here, wire contract unchanged (PLAN-064).
+/// Returns usize (rust-ref: u32 + `as usize` at the call site; usize here
+/// matches ai-config's max_tokens without a cast).
+/// Parse the wire string (`"off"` | `"low"` | `"high"` | `"max"`,
+/// case-insensitive, trimmed). `None` = unrecognized.
 /// Trait that every LLM provider implements.
 /// Provider name (e.g. "zhipu", "anthropic").
 /// Available models.

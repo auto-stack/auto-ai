@@ -69,6 +69,7 @@ fix_provider_impl() {
     # struct fields are owned String, so new must take owned. (OpenAi/Anthropic/
     # Ollama all share this shape.)
     sed -i 's|pub fn new(name: \&str, base_url: \&str, api_key: \&str, models: Vec<String>)|pub fn new(name: String, base_url: String, api_key: String, models: Vec<String>)|g' "$f"
+    sed -i 's|pub fn new(name: \&str, base_url: \&str, api_key: \&str, models: Vec<String>, accepts_thinking_param: bool)|pub fn new(name: String, base_url: String, api_key: String, models: Vec<String>, accepts_thinking_param: bool)|g' "$f"
     sed -i 's|pub fn new(name: \&str, base_url: \&str, models: Vec<String>)|pub fn new(name: String, base_url: String, models: Vec<String>)|g' "$f"
 }
 
@@ -132,6 +133,10 @@ find "$SRC" -name "*.a2r.rs" -delete
 # E0507: str_find(self.buf, ...) moves the owned field — borrow instead
 # (Plan 019 D-class, same fix as auto-ai-client/retranspile.sh).
 [ -f "$RUST/sse.rs" ] && sed -i 's#a2r_std::str_find(self\.buf,#a2r_std::str_find(\&self.buf,#g' "$RUST/sse.rs"
+# (2026-09-07, a2r master drift): split-iteration now materializes owned
+# Strings (`for line in frame.split("\n").map(|s| s.to_string())`) — data_field
+# takes &str, borrow at the call.
+[ -f "$RUST/sse.rs" ] && sed -i 's#data_field(line)#data_field(line.as_str())#g' "$RUST/sse.rs"
 
 # ── config.rs ───────────────────────────────────────────────────────────────
 if [ -f "$RUST/config.rs" ]; then
@@ -146,7 +151,10 @@ if [ -f "$RUST/config.rs" ]; then
     # a2r-emitted `use crate::ai_config;`.
     sed -i '/^use crate::ai_config;$/a use crate::ai_config::DaemonConfig;' "$RUST/config.rs"
     # ProviderConfig: a2r emits a positional tuple ctor; the type is a struct.
-    sed -i 's#return ai_config::ProviderConfig(kind, base_url, Some(key), None, models, Some(DEFAULT_CONCURRENCY), true);#return ai_config::ProviderConfig { kind: kind.to_string(), base_url: base_url.to_string(), api_key: Some(key.to_string()), key_env: None, models: models, max_concurrency: Some(DEFAULT_CONCURRENCY), auth_required: true };#' "$RUST/config.rs"
+    # (PLAN-064: 8th field accepts_thinking_param — env-fallback providers keep
+    # the gate closed, false. LHS tracks the current a2r emission, which
+    # materializes Some(key.to_string()).)
+    sed -i 's#return ai_config::ProviderConfig(kind, base_url, Some(key.to_string()), None, models, Some(DEFAULT_CONCURRENCY), true, false);#return ai_config::ProviderConfig { kind: kind.to_string(), base_url: base_url.to_string(), api_key: Some(key.to_string()), key_env: None, models: models, max_concurrency: Some(DEFAULT_CONCURRENCY), auth_required: true, accepts_thinking_param: false };#' "$RUST/config.rs"
     # const inferred as i32; rust-ref's max_concurrency is Option<usize>.
     # (dead sed removed 2026-08-25 audit — no-op against current a2r)
     # `.as_str()` on a &str value uses the unstable `str_as_str` feature — drop
@@ -175,6 +183,10 @@ if [ -f "$RUST/tracker.rs" ]; then
     # wrapped names in Mutex for &self record). Iterate via .iter() — the guard
     # derefs to Vec but for-in needs an explicit iterator.
     sed -i 's|for name in &names {|for name in names.iter() {|' "$RUST/tracker.rs"
+    # (2026-09-07, a2r master drift): a2r now auto-injects
+    # `use std::sync::{Arc, Mutex};` next to the explicit parking_lot import —
+    # E0252 duplicate Mutex. Drop the injected line (parking_lot wins).
+    sed -i '/^use std::sync::{Arc, Mutex};$/d' "$RUST/tracker.rs"
 fi
 
 # ── tier_router.rs ──────────────────────────────────────────────────────────

@@ -35,6 +35,7 @@ async fn daemon_alive(url: &str) -> bool {
         system_prompt: None,
         stream: false,
         preferred_provider: None,
+        thinking_level: None,
     };
     // The transpiled Client impl for AiClient takes the request by value.
     Client::complete(&client, probe).await.is_ok()

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 /// Switch to a cheaper model for the remainder.
 /// Aggressively compress context.
 /// Skip non-critical work.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BudgetStrategy {
     HardStop = 0,
     EscalateModel = 1,
@@ -93,7 +93,7 @@ fn warn_threshold(limit: u32) -> u32 {
 /// Approaching a limit — warn but continue.
 /// Limit reached. Whether to halt is decided by the consumer; the default
 /// pipeline implementation treats this as advisory (logs, continues).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BudgetAction {
     None,
     Warning(u32),

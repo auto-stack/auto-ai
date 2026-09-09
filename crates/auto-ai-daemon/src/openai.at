@@ -29,7 +29,7 @@ use ai_config: CompletionRequest, CompletionResponse, ToolCall, Usage
 use error: LlmError
 use.rust crate::sse::SseParser
 use format: openai_content, OpenAiMsg, parse_openai_tool_calls, tool_to_openai
-use provider: AiProvider, StreamDelta
+use provider: AiProvider, StreamDelta, ThinkingLevel, parse_thinking_level
 
 /// One OpenAI-compatible provider instance. `client` is dropped vs rust-ref —
 /// we use the global `http` module instead of a per-instance reqwest::Client.
@@ -209,6 +209,38 @@ ext OpenAiProvider {
         if req.temperature.is_some() {
             let t = req.temperature.unwrap()
             body.insert("temperature".to_string(), Value.Number(t))
+        }
+
+        // PLAN-064: best-effort thinking mapping — the openai-compat world has
+        // no single standard, so: off → `"think": false` (ollama dialect),
+        // low/high → `reasoning_effort` (o-series dialect), max → clamped to
+        // "high". Upstreams that don't know a field error through the normal
+        // rejection path, same as any unknown parameter. Ungated (unlike
+        // anthropic): the flag lives in the request, not the provider config.
+        is req.thinking_level {
+            Some(raw) -> {
+                is parse_thinking_level(raw.as_str()) {
+                    Some(level) -> {
+                        is level {
+                            ThinkingLevel.Off -> {
+                                body.insert("think".to_string(), Value.Bool(false))
+                            },
+                            ThinkingLevel.Low -> {
+                                body.insert("reasoning_effort".to_string(), Value.String("low".to_string()))
+                            },
+                            else -> {
+                                // high and max both clamp to "high".
+                                body.insert("reasoning_effort".to_string(), Value.String("high".to_string()))
+                            }
+                        }
+                    },
+                    None -> {
+                        // rust-ref logs tracing::warn! on unknown levels;
+                        // dropped (tracing is a macro — pool.at convention).
+                    }
+                }
+            },
+            None -> {}
         }
 
         return Value.Object(body)

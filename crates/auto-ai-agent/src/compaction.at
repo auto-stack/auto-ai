@@ -429,7 +429,9 @@ pub fn compact(memory Memory, client @Client, model str, settings CompactionSett
         system_prompt: Some(system),
         tools: [],
         stream: false,
-        preferred_provider: None
+        preferred_provider: None,
+        // PLAN-064: compaction requests carry no thinking level.
+        thinking_level: None
     )
     let resp = client.complete(req).await.?
     is resp.error {

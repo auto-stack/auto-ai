@@ -29,6 +29,8 @@ fn full_cfg() -> RoleConfig {
         skills: Some(vec!["tdd".into(), "review".into()]),
         token_budget: Some(5000),
         soul_file: Some("souls/coder.md".into()),
+        // PLAN-064: exercise the thinking-level field through the serde bridge.
+        thinking_level: Some("high".into()),
     }
 }
 

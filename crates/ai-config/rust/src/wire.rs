@@ -80,7 +80,7 @@ impl Message {
         let mut parts: Vec<String> = vec![];
         for b in &self.content {
             match b {
-                ContentBlock::Text(t) => parts.push(t.clone()),
+                ContentBlock::Text(t) => parts.push(t.to_string()),
                 _ => {},
             };
         }
@@ -182,7 +182,12 @@ impl CompletionRequest {
 /// Tools the model may call. Empty by default.
 /// If true, the daemon streams SSE deltas back instead of a single
 /// response. (Non-streaming callers leave this false.)
+/// Thinking/reasoning effort level requested for this completion:
+/// "off" | "low" | "high" | "max" (PLAN-064). The daemon translates
+/// this per provider (anthropic-compat: thinking.budget_tokens;
+/// openai-compat: reasoning_effort / think). None = provider default.
 /// Simple single-turn request: one user message.
+/// With a thinking level ("off" | "low" | "high" | "max").
 /// With a system prompt.
 /// With max output tokens.
 /// With temperature.

@@ -57,7 +57,7 @@ use crate::tier::{ModelDefinition, ModelTier};
 /// `unwrap_or(0)` (rust-ref's `default()` says 10; its parse path's 0 is an
 /// inconsistency we don't replicate — decision: 10).
 /// Configuration error.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ConfigError {
     Parse(String),
 }
@@ -197,6 +197,8 @@ struct ProviderScalars {
     pub max_concurrency: Option<u32>,
     #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")]
     pub auth_required: Option<bool>,
+    #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")]
+    pub accepts_thinking_param: Option<bool>,
 }
 
 pub fn parse_client_config(content: &str) -> Result<ClientConfig, ConfigError> {
@@ -302,6 +304,7 @@ pub fn parse_daemon_config(content: &str) -> Result<DaemonConfig, ConfigError> {
 }
 
 /// auth_required accepts bool / 0,1 / "yes","on",… (old opt_bool).
+/// PLAN-064 gate: anthropic-style `thinking` parameter accepted upstream.
 /// Parse `ai-client.at` content (root must be `client { … }`).
 /// Parse `daemon { … }` content (root must be `daemon { … }`).
 /// Parse the single root node and assert its name is `expected`.
@@ -375,7 +378,7 @@ fn parse_provider_blocks(mut node: Node) -> Result<std::collections::HashMap<Str
 
                     match provider_node.deserialize::<ProviderScalars>() {
                         Ok(s) => {
-                            let pc = ProviderConfig { kind: match s.kind { Some(v) => v, None => "".to_string(), }, base_url: match s.base_url { Some(v) => v, None => "".to_string(), }, api_key: s.api_key, key_env: s.key_env, models: opt_models(*(*provider_node).clone(), "models"), max_concurrency: s.max_concurrency, auth_required: match s.auth_required { Some(b) => b, None => true, } };
+                            let pc = ProviderConfig { kind: match s.kind { Some(v) => v, None => "".to_string(), }, base_url: match s.base_url { Some(v) => v, None => "".to_string(), }, api_key: s.api_key, key_env: s.key_env, models: opt_models(*(*provider_node).clone(), "models"), max_concurrency: s.max_concurrency, auth_required: match s.auth_required { Some(b) => b, None => true, }, accepts_thinking_param: match s.accepts_thinking_param { Some(b) => b, None => false, } };
                             if pc.kind.is_empty() == false {
                                 providers.insert(provider_node.name.to_string(), pc);
                             }
@@ -435,8 +438,8 @@ fn parse_candidates(val: Value) -> Vec<TierRouteCandidate> {
             for v in &arr.values {
                 match v {
                     Value::Obj(o) => {
-                        let provider = obj_get_str(o.clone(), "provider");
-                        let model = obj_get_str(o.clone(), "model");
+                        let provider = obj_get_str((**o).clone(), "provider");
+                        let model = obj_get_str((**o).clone(), "model");
                         if provider.is_empty() == false && model.is_empty() == false {
                             out.push(TierRouteCandidate { provider: provider.to_string(), model: model.to_string() });
                         }
@@ -464,10 +467,10 @@ fn opt_models(mut node: Node, key: &str) -> Vec<ModelDefinition> {
             for el in &arr.values {
                 match el {
                     Value::Obj(o) => {
-                        let id = obj_get_str(o.clone(), "id");
+                        let id = obj_get_str((**o).clone(), "id");
                         if id.is_empty() == false {
-                            let name = obj_get_str(o.clone(), "name");
-                            let tier = parse_tier(obj_get_str(o.clone(), "tier").as_str());
+                            let name = obj_get_str((**o).clone(), "name");
+                            let tier = parse_tier(obj_get_str((**o).clone(), "tier").as_str());
                             out.push(ModelDefinition { id: id, name: name, tier: tier, context_window: None, max_output_tokens: None, cost_per_mtok: None, capabilities: None });
                         }
                     },
@@ -483,7 +486,7 @@ fn opt_models(mut node: Node, key: &str) -> Vec<ModelDefinition> {
         Value::Str(s) => {
             
 
-            let parts = s.split(",").collect::<Vec<_>>();
+            let parts = s.split(",").map(|s| s.to_string()).collect::<Vec<String>>();
             for raw in &parts {
                 let m = raw.trim().to_string();
                 if m.is_empty() == false {

@@ -12,7 +12,7 @@ use crate::auto_ai_client::{ClientError};
 /// The tool ran but failed (e.g. IO error, non-zero exit).
 /// PLAN-027: 工具因安全策略被拒（如路径越界 workspace confinement）。
 /// 结构化（非纯字符串），让 driver/前端能识别 kind 并友好播报。
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ToolError {
     Args(String),
     Exec(String),

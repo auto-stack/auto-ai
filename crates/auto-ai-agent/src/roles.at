@@ -139,7 +139,9 @@ fn profession_to_config(prof Role) RoleConfig {
         allowed_tiers: tiers,
         skills: skills,
         token_budget: prof.token_budget(),
-        soul_file: None
+        soul_file: None,
+        // PLAN-064: profession-defined thinking level (rust-ref:333 parity).
+        thinking_level: prof.thinking_level()
     )
 }
 

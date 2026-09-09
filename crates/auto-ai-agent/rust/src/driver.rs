@@ -241,7 +241,7 @@ impl PipelineDriver {
 
 
 
-        let on_event_local: fn(PipelineEvent) -> () = self.on_event.clone();
+        let on_event_local: fn(PipelineEvent) -> () = self.on_event.clone().clone();
         let no_cancel = Arc::new(AtomicBool::new(false));
 
 

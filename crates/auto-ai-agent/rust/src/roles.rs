@@ -112,7 +112,7 @@ fn profession_to_config(mut prof: Box<dyn Role>) -> RoleConfig {
     if s.is_empty() == false {
         skills = Some(s);
     }
-    return RoleConfig { name: Some(prof.name()), description: None, model: Some(prof.model()), model_tier: Some(prof.model_tier()), temperature: Some(prof.temperature()), max_turns: Some(prof.max_turns()), system_prompt: Some(prof.system_prompt()), system_prompt_append: None, tools: tools, tools_append: None, inherit: None, memory_limit: prof.memory_limit(), allowed_tiers: tiers, skills: skills, token_budget: prof.token_budget(), soul_file: None };
+    return RoleConfig { name: Some(prof.name()), description: None, model: Some(prof.model()), model_tier: Some(prof.model_tier()), temperature: Some(prof.temperature()), max_turns: Some(prof.max_turns()), system_prompt: Some(prof.system_prompt()), system_prompt_append: None, tools: tools, tools_append: None, inherit: None, memory_limit: prof.memory_limit(), allowed_tiers: tiers, skills: skills, token_budget: prof.token_budget(), soul_file: None, thinking_level: prof.thinking_level() };
 }
 
 /// Registry of roles: built-in professions (read-only) + user .at roles

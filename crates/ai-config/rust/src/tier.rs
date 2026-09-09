@@ -8,7 +8,7 @@
 /// 
 /// Auto port of crates/ai-config/src/tier.rs (auto-ai v0.4.0).
 /// Cost/performance tier for model selection.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ModelTier {
     Min = 0,
     Lite = 1,

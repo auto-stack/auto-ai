@@ -82,6 +82,15 @@ if [ -f "$RUST/tier.rs" ]; then
     sed -i 's#return Some(m\.id);#return Some(m.id.clone());#g; s#best = Some(m);#best = Some(m.clone());#g' "$RUST/tier.rs"
 fi
 
+# (2026-09-07, auto-val API drift): Value::Obj's payload is now Box<Obj>, and
+# the `auto_val.Value.Obj(o)` pattern behind `for v in &arr.values` binds
+# o as &Box<Obj> — obj_get_str takes Obj by value and a2r's auto-clone clones
+# the Box. Double-deref before cloning (G3.2-class: external-crate payload
+# type unknowable at transpile time).
+if [ -f "$RUST/loader.rs" ]; then
+    sed -i 's#obj_get_str(o\.clone(),#obj_get_str((\*\*o).clone(),#g' "$RUST/loader.rs"
+fi
+
 # Plan 021 缺口 3 (post-Plan 395): turbofish is now native Auto syntax
 # (`node.deserialize<ClientScalars>()`), so no sed injection is needed.
 # Plan 396 §2.5 FIXED (auto-lang 2026-08-21): qualified unit-variant patterns

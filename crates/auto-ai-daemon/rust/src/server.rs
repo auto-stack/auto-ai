@@ -179,7 +179,7 @@ fn resolve_tier_model(token: &str, config: &DaemonConfig) -> Option<String> {
     if token.starts_with("tier:") == false {
         return None;
     }
-    let tier_name_raw = token[5..].to_string();
+    let tier_name_raw = token.chars().skip((5) as usize).collect::<String>();
     let tier_name = tier_name_raw.trim().to_string().to_ascii_lowercase();
     match ai_config::ModelTier::parse_name(tier_name.as_str()) {
         Some(tier) => {

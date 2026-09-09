@@ -151,7 +151,10 @@ fn provider_env(kind str, base_url str, key str, models List<ai_config.ModelDefi
         key_env: None,
         models: models,
         max_concurrency: Some(DEFAULT_CONCURRENCY),
-        auth_required: true
+        auth_required: true,
+        // PLAN-064 thinking gate: env-fallback providers are unverified —
+        // keep the gate closed (rust-ref provider_env parity).
+        accepts_thinking_param: false
     )
 }
 

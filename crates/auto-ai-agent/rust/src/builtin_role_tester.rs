@@ -76,6 +76,7 @@ If you keep finding bugs after 2 attempts, use `to: \"reviewer\"` to break the l
 ";
 
 /// The Tester: produces tests, runs them, and reports failures precisely.
+/// The Tester: produces tests, runs them, and reports failures precisely.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tester {}
 

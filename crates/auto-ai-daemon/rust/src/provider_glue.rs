@@ -71,6 +71,7 @@ fn collect_provider_entries(
                 pc.base_url.clone(),
                 key,
                 model_ids.clone(),
+                pc.accepts_thinking_param,
             )),
             "ollama" => Arc::new(OllamaProvider::new(
                 name.clone(),

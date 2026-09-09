@@ -389,7 +389,7 @@ pub async fn compact(mut memory: Memory, client: &Box<dyn Client>, model: &str, 
     let mut blocks: Vec<ContentBlock> = vec![];
     let tb = ContentBlock::Text { text: user_msg };
     blocks.push(tb.clone());
-    let req = CompletionRequest { model: model.to_string(), messages: vec![Message { role: "user".to_string(), content: blocks }], max_tokens: None, temperature: Some(0.0), system_prompt: Some(system), tools: vec![], stream: false, preferred_provider: None };
+    let req = CompletionRequest { model: model.to_string(), messages: vec![Message { role: "user".to_string(), content: blocks }], max_tokens: None, temperature: Some(0.0), system_prompt: Some(system), tools: vec![], stream: false, preferred_provider: None, thinking_level: None };
     let resp = client.complete(req).await?;
     match resp.error {
         Some(err) => return Err(AgentError::Config(format!("compaction summary error: {}", err))),

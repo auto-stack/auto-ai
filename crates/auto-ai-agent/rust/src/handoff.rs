@@ -131,7 +131,7 @@ impl HandoffDocument {
             lines.push("".to_string());
         }
 
-        let ctx: ContextPointers = self.context_for_next.clone();
+        let ctx: ContextPointers = self.context_for_next.clone().clone();
         if ctx_has_content(ctx.clone()) {
             lines.push("## Context for Next Agent".to_string());
             if ctx.files_to_read.is_empty() == false {

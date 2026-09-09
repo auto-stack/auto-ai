@@ -55,6 +55,8 @@ pub mod skill;
 pub mod tool;
 pub mod validate;
 
+#[allow(unused_imports)]
+use std::sync::{Arc, Mutex};
 pub use crate::agent::{Agent, AgentResult, Client, StreamEvent, ToolCallRecord};
 pub use crate::config::{load_role, parse_at_role, parse_tier_field, serialize_at_role, ConfigRole, RoleConfig, config_role_new, config_role_with_base};
 pub use crate::error::{AgentError, ToolError};

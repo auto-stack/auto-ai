@@ -30,4 +30,6 @@ pub trait Role: Send + Sync {
         return vec![];
     }    fn preferred_provider(&self) -> Option<String>{
         return None;
+    }    fn thinking_level(&self) -> Option<String>{
+        return None;
     }}

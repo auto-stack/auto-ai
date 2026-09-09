@@ -40,7 +40,7 @@ use crate::handoff::{HandoffDocument};
 /// Note: the Rust field `handoff.to` is `handoff.target` in Auto (reserved
 /// word, see handoff.at). tracing::warn!/info! calls are dropped (Auto has no
 /// tracing crate); their intent is documented in comments.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum NextStep {
     Index(u32),
     Complete,
@@ -55,7 +55,7 @@ enum NextStep {
 /// yet implemented — the engine never reads self.mode, and gate behavior is
 /// controlled entirely by FlowStep.gate. Kept for forward compatibility
 /// with an interactive-everything mode.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PipelineMode {
     Auto = 0,
     Interactive = 1,
@@ -91,7 +91,7 @@ impl PipelineMode {
 /// Flow completed successfully.
 /// Flow failed. (error)
 /// Loop reached max iterations — manual resume required. (step_id, reason)
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AdvanceResult {
     ExecuteStep(String, String),
     WaitForHuman(String),
@@ -104,7 +104,7 @@ pub enum AdvanceResult {
 /// Decision a human makes at a gate.
 /// Approve and continue.
 /// Reject and redraft the same step, with feedback. (feedback)
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GateDecision {
     Approve,
     Reject(String),
@@ -134,7 +134,7 @@ pub struct PendingGate {
 /// (step_id, since)
 /// (error)
 /// (at_step)
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PipelineStatus {
     Idle,
     Running(String, String, u32),
@@ -208,8 +208,8 @@ impl PipelineEngine {
 
         match self.status.clone() {
             PipelineStatus::Completed => return AdvanceResult::Completed,
-            PipelineStatus::Failed(e) => return AdvanceResult::Failed(e),
-            PipelineStatus::WaitingForHuman(sid, _t) => return AdvanceResult::WaitForHuman(sid),
+            PipelineStatus::Failed(e) => return AdvanceResult::Failed(e.to_string()),
+            PipelineStatus::WaitingForHuman(sid, _t) => return AdvanceResult::WaitForHuman(sid.to_string()),
             PipelineStatus::Paused(at) => {
                 let mut step = self.flow.steps[(at) as usize].clone();
                 return AdvanceResult::Paused(step.id.clone(), format!("Paused at '{}'. Call resume() to continue.", step.id));
@@ -439,7 +439,7 @@ impl PipelineEngine {
             },
             NextStep::Error(msg) => {
                 self.status = PipelineStatus::Failed(msg.clone());
-                return AdvanceResult::Failed(msg);
+                return AdvanceResult::Failed(msg.to_string());
             },
             NextStep::Pause(reason, resume_step_id) => {
                 match self.flow.get_step_index(resume_step_id.as_str()) {
@@ -448,14 +448,14 @@ impl PipelineEngine {
                 };
                 self.status = PipelineStatus::Paused(self.current_step);
                 let sid = self.flow.steps[(self.current_step) as usize].clone().id;
-                return AdvanceResult::Paused(sid, reason);
+                return AdvanceResult::Paused(sid, reason.to_string());
             },
         }
     }
     pub fn resolve_next_step(&mut self, step_id: &str, exit: ExitRouting) -> NextStep {
         match exit {
             ExitRouting::Next => {
-                let next: u32 = self.current_step + 1 as u32;
+                let next: u32 = self.current_step + 1;
                 if next >= ((self.flow.steps.len() as i64) as u32) {
                     return NextStep::Complete;
                 }

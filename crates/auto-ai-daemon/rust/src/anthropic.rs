@@ -14,7 +14,7 @@ use crate::ai_config::{CompletionRequest, CompletionResponse, ContentBlock, Tool
 use crate::error::{LlmError};
 use crate::sse::SseParser;
 use crate::provider_glue;
-use crate::provider::{AiProvider, StreamDelta};
+use crate::provider::{AiProvider, StreamDelta, ThinkingLevel, parse_thinking_level};
 /// Anthropic Claude provider.
 /// 
 /// Auto port of crates/auto-ai-daemon/src/provider/anthropic.rs (non-streaming
@@ -30,6 +30,7 @@ pub struct AnthropicProvider {
     pub base_url: String,
     pub api_key: String,
     pub models_list: Vec<String>,
+    pub accepts_thinking_param: bool,
 }
 
 #[async_trait::async_trait]
@@ -88,8 +89,8 @@ impl AiProvider for AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(name: String, base_url: String, api_key: String, models: Vec<String>) -> AnthropicProvider {
-        return AnthropicProvider { name: name.to_string(), base_url: base_url.to_string(), api_key: api_key.to_string(), models_list: models };
+    pub fn new(name: String, base_url: String, api_key: String, models: Vec<String>, accepts_thinking_param: bool) -> AnthropicProvider {
+        return AnthropicProvider { name: name.to_string(), base_url: base_url.to_string(), api_key: api_key.to_string(), models_list: models, accepts_thinking_param: accepts_thinking_param };
     }
     pub fn url(&self) -> String {
         let base = self.base_url.trim_end_matches("/");
@@ -100,7 +101,7 @@ impl AnthropicProvider {
 
 
 
-        if req.messages.len() > 0 {
+        if (req.messages.len() as i64) > 0 {
             if req.messages[0].clone().role.to_string() != "user" {
                 messages.push(serde_json::json!({"role": "user", "content": [{"type": "text", "text": "(continued)"}]}));
             }        }
@@ -115,13 +116,12 @@ impl AnthropicProvider {
         body.insert("model".to_string(), Value::String(req.model.to_string()));
 
 
-        if req.max_tokens.is_some() {
-            let n = req.max_tokens.unwrap();
-            body.insert("max_tokens".to_string(), Value::Number(serde_json::Number::from(n)));
-        } else {
-            body.insert("max_tokens".to_string(), Value::Number(serde_json::Number::from(4096)));
-        }
 
+
+
+
+        let mut max_tokens: usize = req.max_tokens.unwrap_or(4096) as usize;
+        body.insert("max_tokens".to_string(), Value::Number(serde_json::Number::from(max_tokens)));
         body.insert("messages".to_string(), Value::Array(messages));
 
         if req.system_prompt.is_some() {
@@ -141,13 +141,56 @@ impl AnthropicProvider {
             body.insert("tools".to_string(), Value::Array(tools_arr));
         }
 
+
+
+
+        if self.accepts_thinking_param {
+            match req.thinking_level {
+                Some(raw) => {
+                    match parse_thinking_level(raw.as_str()) {
+                        Some(level) => {
+                            match level {
+                                ThinkingLevel::Off => {
+                                    let mut t_obj = serde_json::Map::new();
+                                    t_obj.insert("type".to_string(), Value::String("disabled".to_string()));
+                                    body.insert("thinking".to_string(), Value::Object(t_obj));
+                                },
+                                _ => {
+                                    let budget = level.budget_tokens();
+                                    if max_tokens <= budget {
+                                        max_tokens = budget + 1024;
+                                        body.insert("max_tokens".to_string(), Value::Number(serde_json::Number::from(max_tokens)));
+                                    }
+                                    let mut t_obj = serde_json::Map::new();
+                                    t_obj.insert("type".to_string(), Value::String("enabled".to_string()));
+                                    t_obj.insert("budget_tokens".to_string(), Value::Number(serde_json::Number::from(budget)));
+                                    body.insert("thinking".to_string(), Value::Object(t_obj));
+                                },
+                            };
+                        },
+                        None => {
+                            
+
+
+
+                        },
+                    };
+                },
+                None => {},
+            };
+        }
+
         return Value::Object(body);
     }
 }
 
+/// PLAN-064 gate (ProviderConfig.accepts_thinking_param): when false the
+/// request body never carries a `thinking` block, regardless of
+/// req.thinking_level — unverified upstreams stay byte-identical.
 /// Non-streaming completion. POSTs to /v1/messages, parses the response.
 /// Streaming completion. Delegates to provider_glue (tokio::select! loop).
-/// Construct an Anthropic provider.
+/// Construct an Anthropic provider. `accepts_thinking_param` is the
+/// PLAN-064 gate (ProviderConfig.accepts_thinking_param).
 /// The `/v1/messages` endpoint URL.
 /// Build the Anthropic Messages API request body.
 /// Translate our content blocks into Anthropic's content block array.

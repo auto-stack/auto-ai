@@ -210,6 +210,15 @@ if [ -f "$RUST/compaction.rs" ]; then
     sed -i 's#\.sort_by_key(|f| f)#.sort_by_key(|f| f.clone())#g' "$RUST/compaction.rs"
 fi
 
+# (2026-09-07, a2r master drift): unknown-callee args get a fallback
+# `.as_str()` — on enum/struct values (AdvanceResult / AgentResult) that's a
+# nonexistent method. Strip at the two driver call sites (same class as the
+# 2026-08-23 drift incident; root-cause fix belongs in auto-lang).
+if [ -f "$RUST/driver.rs" ]; then
+    sed -i 's#self.dispatch(result.as_str(),#self.dispatch(result,#' "$RUST/driver.rs"
+    sed -i 's#build_handoff(role_id, agent_result.as_str(),#build_handoff(role_id, agent_result,#' "$RUST/driver.rs"
+fi
+
 # Clean up .a2r.rs intermediates
 find "$SRC" -name "*.a2r.rs" -delete
 

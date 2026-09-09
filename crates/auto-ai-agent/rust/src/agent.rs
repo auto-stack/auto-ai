@@ -307,12 +307,13 @@ pub struct Agent {
     pub compaction_on: bool,
     pub compaction_window_pinned: bool,
     pub last_summary: Option<String>,
+    pub thinking_override: Option<String>,
 }
 
 impl Agent {
     pub fn new_shared(mut role: Box<dyn Role>, client: Box<dyn Client>) -> Agent {
         let limit = role.memory_limit();
-        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])), last_usage: None, compaction: default_compaction_settings(), compaction_on: true, compaction_window_pinned: false, last_summary: None };
+        return Agent { role: role, tools: ToolRegistry::new(), memory: Memory::new(limit), client: client, skills_block: None, context_block: None, steering: Arc::new(Mutex::new(vec![])), follow_ups: Arc::new(Mutex::new(vec![])), last_usage: None, compaction: default_compaction_settings(), compaction_on: true, compaction_window_pinned: false, last_summary: None, thinking_override: None };
     }
     pub fn with_context(&mut self, context: &str) {
         let ctx = context.trim().to_string();
@@ -695,7 +696,18 @@ impl Agent {
 
         let system_prompt = build_system_prompt(self.context_block.clone(), self.role.system_prompt().as_str(), self.skills_block.clone());
 
-        return CompletionRequest { model: model, messages: self.memory.to_messages(), max_tokens: None, temperature: Some(self.role.temperature()), system_prompt: Some(system_prompt), tools: tool_defs, stream: false, preferred_provider: self.role.preferred_provider() };
+
+
+
+        let thinking = match self.thinking_override.clone() { Some(v) => Some(v), None => self.role.thinking_level(), };
+
+        return CompletionRequest { model: model, messages: self.memory.to_messages(), max_tokens: None, temperature: Some(self.role.temperature()), system_prompt: Some(system_prompt), tools: tool_defs, stream: false, preferred_provider: self.role.preferred_provider(), thinking_level: thinking };
+    }
+    pub fn set_thinking_level_override(&mut self, mut level: Option<String>) {
+        self.thinking_override = level.clone();
+    }
+    pub fn thinking_level_override(&self) -> Option<String> {
+        return self.thinking_override.clone();
     }
 }
 
@@ -718,6 +730,9 @@ impl Agent {
 /// scenarios can pin the thresholds).
 /// Plan 031: the summary produced by the most recent compaction (seed for
 /// the incremental UPDATE template on the next compaction).
+/// PLAN-064: per-run thinking level override ("off"|"low"|"high"|"max").
+/// None = follow the role's thinking_level() (itself None → provider
+/// default).
 /// Build a new agent from an already-shared Role + Client spec value, and
 /// the Role's memory-limit preference. (Non-generic substitute for Rust's
 /// `new<P: Role>(role P, client)`.)
@@ -786,6 +801,10 @@ impl Agent {
 /// Build the completion request for the current turn: system prompt from
 /// the Role, the role's tier/model, the full memory, and the tools the
 /// Role allows.
+/// PLAN-064: per-run thinking level override. Some("off"|"low"|"high"|
+/// "max") wins over the role default; None = follow the role. Hosts call
+/// this between runs (e.g. musk chats per-conversation picker).
+/// The live thinking override (tests / host introspection).
 /// True when the caller has requested cancellation (cancel flag set + true).
 fn is_cancelled(cancel: Option<Arc<AtomicBool>>) -> bool {
     match cancel {

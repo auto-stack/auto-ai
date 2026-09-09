@@ -58,8 +58,11 @@ struct RoleDecl {
     pub token_budget: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub soul_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
 }
 
+/// PLAN-064: raw thinking level name ("off"|"low"|"high"|"max").
 /// The parsed representation of a `role { … }` block. Every field is optional
 /// so an `inherit`-based config only overrides what it sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,11 +83,12 @@ pub struct RoleConfig {
     pub skills: Option<Vec<String>>,
     pub token_budget: Option<u32>,
     pub soul_file: Option<String>,
+    pub thinking_level: Option<String>,
 }
 
 impl RoleConfig {
     pub fn empty() -> RoleConfig {
-        return RoleConfig { name: None, description: None, model: None, model_tier: None, temperature: None, max_turns: None, system_prompt: None, system_prompt_append: None, tools: None, tools_append: None, inherit: None, memory_limit: None, allowed_tiers: None, skills: None, token_budget: None, soul_file: None };
+        return RoleConfig { name: None, description: None, model: None, model_tier: None, temperature: None, max_turns: None, system_prompt: None, system_prompt_append: None, tools: None, tools_append: None, inherit: None, memory_limit: None, allowed_tiers: None, skills: None, token_budget: None, soul_file: None, thinking_level: None };
     }
     pub fn merge_over(&self, mut base: RoleConfig) -> RoleConfig {
         let mut r: RoleConfig = base.clone();
@@ -141,6 +145,10 @@ impl RoleConfig {
             Some(v) => r.soul_file = Some(v),
             None => {},
         };
+        match self.thinking_level.clone() {
+            Some(v) => r.thinking_level = Some(v),
+            None => {},
+        };
 
         match base.system_prompt_append {
             Some(extra) => {
@@ -179,6 +187,7 @@ impl RoleConfig {
     }
 }
 
+/// PLAN-064: default thinking level for agents running this role.
 /// Merge self over base, applying design-doc §4.4 rules:
 /// - scalar fields override when Some;
 /// - system_prompt_append accumulates;
@@ -230,6 +239,9 @@ impl Role for ConfigRole {
     }
     fn skills(&self) -> Vec<String> {
         return self.cfg.skills.clone().unwrap_or_default();
+    }
+    fn thinking_level(&self) -> Option<String> {
+        return self.cfg.thinking_level.clone();
     }
 }
 
@@ -298,6 +310,7 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
                             cfg.soul_file = d.soul_file;
                             cfg.token_budget = d.token_budget;
                             cfg.skills = d.skills;
+                            cfg.thinking_level = d.thinking_level;
                             match d.allowed_tiers {
                                 Some(names) => {
                                     let mut tiers: Vec<ModelTier> = vec![];
@@ -368,7 +381,7 @@ pub fn parse_tier_field(s: &str) -> Option<ModelTier> {
 pub fn serialize_at_role(cfg: RoleConfig) -> String {
 
 
-    let mut d: RoleDecl = RoleDecl { name: cfg.name.clone(), description: cfg.description.clone(), model: cfg.model.clone(), model_tier: None, temperature: cfg.temperature.clone(), max_turns: cfg.max_turns.clone(), memory_limit: cfg.memory_limit.clone(), system_prompt: cfg.system_prompt.clone(), system_prompt_append: cfg.system_prompt_append.clone(), tools: cfg.tools.clone(), tools_append: cfg.tools_append.clone(), inherit: cfg.inherit.clone(), allowed_tiers: None, skills: cfg.skills.clone(), token_budget: cfg.token_budget.clone(), soul_file: cfg.soul_file.clone() };
+    let mut d: RoleDecl = RoleDecl { name: cfg.name.clone(), description: cfg.description.clone(), model: cfg.model.clone(), model_tier: None, temperature: cfg.temperature.clone(), max_turns: cfg.max_turns.clone(), memory_limit: cfg.memory_limit.clone(), system_prompt: cfg.system_prompt.clone(), system_prompt_append: cfg.system_prompt_append.clone(), tools: cfg.tools.clone(), tools_append: cfg.tools_append.clone(), inherit: cfg.inherit.clone(), allowed_tiers: None, skills: cfg.skills.clone(), token_budget: cfg.token_budget.clone(), soul_file: cfg.soul_file.clone(), thinking_level: cfg.thinking_level.clone() };
     match cfg.model_tier {
         Some(t) => d.model_tier = Some(format!("{}", t.display_name())),
         None => {},

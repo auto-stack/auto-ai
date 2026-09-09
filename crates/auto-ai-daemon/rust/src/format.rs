@@ -47,7 +47,7 @@ pub fn openai_content(role: &str, mut blocks: Vec<ContentBlock>) -> OpenAiMsg {
     if blocks.is_empty() == false && all_tool_results(blocks.clone()) {
         let mut results: Vec<OpenAiToolResult> = vec![];
         for b in &blocks {
-            match b {
+            match &b {
                 ContentBlock::ToolResult { tool_use_id, content, is_error } => results.push(OpenAiToolResult { tool_call_id: tool_use_id.to_string(), content: content.to_string() }),
                 ContentBlock::Text { text } => {},
                 ContentBlock::ToolUse { id, name, input } => {},
@@ -61,7 +61,7 @@ pub fn openai_content(role: &str, mut blocks: Vec<ContentBlock>) -> OpenAiMsg {
         let mut text_parts: Vec<String> = vec![];
         let mut tool_calls: Vec<Value> = vec![];
         for b in &blocks {
-            match b {
+            match &b {
                 ContentBlock::Text { text } => text_parts.push(text.clone()),
                 ContentBlock::ToolUse { id, name, input } => tool_calls.push(tool_call_obj(id.as_str(), name.as_str(), input.clone())),
                 ContentBlock::ToolResult { tool_use_id, content, is_error } => {},
@@ -74,7 +74,7 @@ pub fn openai_content(role: &str, mut blocks: Vec<ContentBlock>) -> OpenAiMsg {
 
     let mut text_parts: Vec<String> = vec![];
     for b in &blocks {
-        match b {
+        match &b {
             ContentBlock::Text { text } => text_parts.push(text.clone()),
             ContentBlock::ToolUse { id, name, input } => {},
             ContentBlock::ToolResult { tool_use_id, content, is_error } => {},

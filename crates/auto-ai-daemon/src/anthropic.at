@@ -16,7 +16,7 @@ use ai_config: CompletionRequest, CompletionResponse, ContentBlock, ToolCall, To
 use error: LlmError
 use.rust crate::sse::SseParser
 use.rust crate::provider_glue
-use provider: AiProvider, StreamDelta
+use provider: AiProvider, StreamDelta, ThinkingLevel, parse_thinking_level
 
 /// One Anthropic provider instance.
 #[allow(dead_code)]
@@ -25,6 +25,10 @@ pub type AnthropicProvider has AiProvider {
     base_url str
     api_key str
     models_list List<str>
+    /// PLAN-064 gate (ProviderConfig.accepts_thinking_param): when false the
+    /// request body never carries a `thinking` block, regardless of
+    /// req.thinking_level — unverified upstreams stay byte-identical.
+    accepts_thinking_param bool
 
     pub fn name() str {
         return self.name
@@ -102,13 +106,15 @@ pub type AnthropicProvider has AiProvider {
 }
 
 ext AnthropicProvider {
-    /// Construct an Anthropic provider.
-    pub static fn new(name str, base_url str, api_key str, models List<str>) AnthropicProvider {
+    /// Construct an Anthropic provider. `accepts_thinking_param` is the
+    /// PLAN-064 gate (ProviderConfig.accepts_thinking_param).
+    pub static fn new(name str, base_url str, api_key str, models List<str>, accepts_thinking_param bool) AnthropicProvider {
         return AnthropicProvider(
             name: name,
             base_url: base_url,
             api_key: api_key,
-            models_list: models
+            models_list: models,
+            accepts_thinking_param: accepts_thinking_param
         )
     }
 
@@ -138,14 +144,14 @@ ext AnthropicProvider {
 
         let body = serde_json.Map.new()
         body.insert("model".to_string(), Value.String(req.model))
-        // max_tokens defaults to 4096 (Anthropic requires it). if/else (not
-        // `is`/match) so arms need no unified return type.
-        if req.max_tokens.is_some() {
-            let n = req.max_tokens.unwrap()
-            body.insert("max_tokens".to_string(), Value.Number(n))
-        } else {
-            body.insert("max_tokens".to_string(), Value.Number(4096))
-        }
+        // PLAN-064: thinking budget requires max_tokens > budget_tokens
+        // (Anthropic contract). Track max_tokens in a mutable local so the
+        // injection below can lift it when the requested thinking budget
+        // doesn't fit, keeping ≥1k answer headroom — the "必要时抬 max_tokens"
+        // clause, so the high/max presets survive the default 4096 instead of
+        // clamping down to it.
+        var max_tokens usize = req.max_tokens.unwrap_or(4096)
+        body.insert("max_tokens".to_string(), Value.Number(max_tokens))
         body.insert("messages".to_string(), Value.Array(messages))
 
         if req.system_prompt.is_some() {
@@ -163,6 +169,44 @@ ext AnthropicProvider {
                 tools_arr.push(tool_to_anthropic(t))
             }
             body.insert("tools".to_string(), Value.Array(tools_arr))
+        }
+
+        // PLAN-064: thinking level injection, gated per provider
+        // (ProviderConfig.accepts_thinking_param). Closed gate (default) →
+        // no `thinking` key at all, whatever the request asks for.
+        if self.accepts_thinking_param {
+            is req.thinking_level {
+                Some(raw) -> {
+                    is parse_thinking_level(raw.as_str()) {
+                        Some(level) -> {
+                            is level {
+                                ThinkingLevel.Off -> {
+                                    let t_obj = serde_json.Map.new()
+                                    t_obj.insert("type".to_string(), Value.String("disabled".to_string()))
+                                    body.insert("thinking".to_string(), Value.Object(t_obj))
+                                },
+                                else -> {
+                                    let budget = level.budget_tokens()
+                                    if max_tokens <= budget {
+                                        max_tokens = budget + 1024
+                                        body.insert("max_tokens".to_string(), Value.Number(max_tokens))
+                                    }
+                                    let t_obj = serde_json.Map.new()
+                                    t_obj.insert("type".to_string(), Value.String("enabled".to_string()))
+                                    t_obj.insert("budget_tokens".to_string(), Value.Number(budget))
+                                    body.insert("thinking".to_string(), Value.Object(t_obj))
+                                }
+                            }
+                        },
+                        None -> {
+                            // rust-ref logs tracing::warn! on unknown levels;
+                            // tracing is a macro with no .at syntax — dropped
+                            // (same convention as pool.at / tier_router.at).
+                        }
+                    }
+                },
+                None -> {}
+            }
         }
 
         return Value.Object(body)

@@ -215,6 +215,8 @@ type ProviderScalars {
     #[serde(default)] max_concurrency ?uint
     /// auth_required accepts bool / 0,1 / "yes","on",… (old opt_bool).
     #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")] auth_required ?bool
+    /// PLAN-064 gate: anthropic-style `thinking` parameter accepted upstream.
+    #[serde(default, deserialize_with = "auto_val::lenient_bool_opt")] accepts_thinking_param ?bool
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -412,7 +414,10 @@ fn parse_provider_blocks(node Node) Result<Map<str, ProviderConfig>, ConfigError
                                 // relevant: a missing key then fails fast
                                 // (resolve_key → None) instead of yielding a
                                 // "no-key-needed" placeholder.
-                                auth_required: is s.auth_required { Some(b) -> b, None -> true }
+                                auth_required: is s.auth_required { Some(b) -> b, None -> true },
+                                // PLAN-064 gate defaults to false — unverified
+                                // anthropic-compat endpoints stay byte-identical.
+                                accepts_thinking_param: is s.accepts_thinking_param { Some(b) -> b, None -> false }
                             )
                             if pc.kind.is_empty() == false {
                                 providers.set(provider_node.name.to_string(), pc)

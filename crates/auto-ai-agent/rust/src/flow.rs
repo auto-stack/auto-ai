@@ -19,7 +19,7 @@
 /// Gate type controlling whether a step needs human approval.
 /// Proceed automatically.
 /// Pause for human approval before executing.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GateType {
     Auto = 0,
     Human = 1,
@@ -57,7 +57,7 @@ impl GateType {
 /// Go to the next step in sequence.
 /// Loop back to a target step (e.g., coder->tester iteration). Fields:
 /// (target_step_id, max_iterations before breaking to next or Paused).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ExitRouting {
     Next,
     Loop(String, u32),
@@ -77,7 +77,7 @@ impl ExitRouting {
 /// Tuple variant Reject(feedback) — Rust used { feedback } (plan 013 gotcha B3).
 /// Approve — continue to next step.
 /// Reject — redraft the same step with feedback.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GateDecision {
     Approve,
     Reject(String),

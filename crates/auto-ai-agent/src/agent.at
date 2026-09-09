@@ -818,6 +818,14 @@ ext Agent {
             self.context_block, self.role.system_prompt().as_str(), self.skills_block
         )
 
+        // PLAN-064: per-run override wins over the role default; both None →
+        // no thinking parameter (provider default). (is-match instead of
+        // rust-ref's .or_else — a2r mis-lowers Option method chains to `|`.)
+        let thinking = is self.thinking_override.clone() {
+            Some(v) -> Some(v),
+            None -> self.role.thinking_level()
+        }
+
         return CompletionRequest(
             model: model,
             messages: self.memory.to_messages(),
@@ -827,9 +835,7 @@ ext Agent {
             tools: tool_defs,
             stream: false,
             preferred_provider: self.role.preferred_provider(),
-            // PLAN-064: per-run override wins over the role default; both
-            // None → no thinking parameter (provider default).
-            thinking_level: self.thinking_override.clone().or(self.role.thinking_level())
+            thinking_level: thinking
         )
     }
 
