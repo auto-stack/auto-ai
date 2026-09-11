@@ -73,9 +73,12 @@ fixture 单测钉死（ash v0.1.0，2026-09-11 实测；ash 改文案时测试�
 - 仅在 ash probe 通过时注册（系统 shell 不能执行 AutoLang，永不回退）；
 - 参数：`content`（临时文件 `%TEMP%/auto-ai-ash-<pid>-<n>.ash`，用后删除）
   与 `path` 二选一，另有 `args`（位置参数）、`timeout_ms`；
-- 模型可见约定：脚本必须显式 `exit(code)`——ash v0.1.0 的运行时错误
-  （如未定义函数）exit 0，显式 exit 是唯一可靠成败信号；工具描述中
-  必须持续携带该警示与 AutoLang 速查。
+- 模型可见约定：脚本必须显式 `exit(code)`——ash 的隐式退出码不可靠
+  （未定义符号 exit 1，部分运行时错误如 IndexError 仍 exit 0），显式
+  exit 是唯一可靠成败信号；工具描述中必须持续携带该警示、AutoLang 速查
+  与 `ash-scripting` 技能指引（技能源在 auto-shell 仓 `skills/`，经其
+  install 脚本分发到 `~/.config/autoos/skills`，由本 CLI 的 SkillRegistry
+  按需加载）。
 
 ## 7. 不变量
 

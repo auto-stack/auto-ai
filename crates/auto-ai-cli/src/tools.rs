@@ -184,7 +184,7 @@ pub fn description_for(ash: bool) -> &'static str {
          Commands run through ash (AutoShell) with a path sandbox: file operations \
          are confined to the working directory, and denied operations return a \
          PAUSED notice instead of running. ash is cross-platform and supports \
-         structured pipelines (ls | filter .size > 10.mb | sort .name); no heredocs. \
+         structured pipelines (ls | where type == file | sort .size descending); no heredocs. \
          If ash cannot even start a command, it is retried on the system shell \
          automatically. Whitelisted commands run directly; anything else needs \
          \"force\": true (runs on the system shell WITHOUT the sandbox — only \
@@ -574,10 +574,13 @@ impl Tool for RunAshScript {
     fn description(&self) -> &str {
         "Write and run an AutoLang (.ash) script via ash, sandboxed to the working directory. \
          AutoLang quick reference: define `fn main() { ... }` and call `main()`; `var x = 1`; \
-         `print(\"text\")`; run shell pipelines via `system(\"ls | filter .size > 10.mb\")`; \
+         `print(\"text\")`; run shell pipelines via `system(\"ls | where type == file | sort .size descending\")`; \
          positional args are read with `system(\"echo $1\")`. IMPORTANT: always end main() with \
-         an explicit `exit(code)` — ash v0.1.0 runtime errors (e.g. calling an undefined \
-         function) still exit 0, so an explicit exit is the only reliable failure signal. \
+         an explicit `exit(code)` — ash's implicit exit codes are unreliable (undefined symbols \
+         exit 1, but some runtime errors like IndexError still exit 0), so an explicit exit is \
+         the only dependable failure signal. Load the `ash-scripting` skill before writing a \
+         script: it has the syntax cheat sheet and v0.1.0 pipeline traps (where takes bare field \
+         names, sort needs `.field`, `filter` is not a builtin, `&&` does not short-circuit). \
          Provide `content` (recommended) or an existing `path`, plus optional `args`."
     }
     fn parameters(&self) -> Value {
@@ -695,6 +698,16 @@ mod run_ash_script_tests {
     async fn missing_content_and_path_rejected() {
         let err = RunAshScript.execute(&json!({})).await.expect_err("must reject neither");
         assert!(err.to_string().contains("missing"));
+    }
+
+    /// The description must keep pinning the explicit-exit convention and the
+    /// `ash-scripting` skill pointer (PLAN-033 follow-up: implicit exit codes
+    /// proved unreliable — undefined symbols exit 1, IndexError exits 0).
+    #[test]
+    fn script_description_pins_exit_convention_and_skill_pointer() {
+        let d = RunAshScript.description();
+        assert!(d.contains("exit(code)"), "exit convention missing: {d}");
+        assert!(d.contains("ash-scripting"), "skill pointer missing: {d}");
     }
 
     #[tokio::test]
