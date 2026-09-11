@@ -345,7 +345,11 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
     `docs/plans/archive/033-ash-first-shell-execution.md`（本仓库归档目录为
     `archive/`，非技能模板的 `archived/`），`status: archived` +
     `completion_kind: delivered`。
-  - `cleaned`：见后续条目。
+  - `cleaned` ✓：wt-guard 复跑 clean 后移除 worktree `.wt/ai-033/auto-ai`
+    与分支 `plan-033-dev`（删除时指向 46d169a，已含于 main）；依赖快照
+    `.wt/ai-033/auto-lang`（只读零改动，无需回折）一并移除；组目录
+    `.wt/ai-033` 已删。`git worktree list` 两仓仅余主检出与既有 lang-602
+    组（非本计划，未触碰）。
 
 ## 10. 待澄清事项
 
