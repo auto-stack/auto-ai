@@ -454,6 +454,61 @@ mod run_command_tests {
         assert!(out.content.contains("[exit:"), "exit code surfaced: {}", out.content);
         assert!(!out.content.contains("fallback"), "must not fall back: {}", out.content);
     }
+
+    // ── AC-02: ash-unavailable fallback track ────────────────────────────
+    // The probe result is process-cached, so "ash absent" needs a child
+    // process with an authoritative-but-broken AUTO_AI_ASH_BIN. The parent
+    // test re-executes this test binary targeting the child test below
+    // (auto-ai-cli is a binary-only crate: in-module tests replace the
+    // planned tests/ash_exec.rs — equivalent coverage, recorded in the Plan).
+
+    #[tokio::test]
+    async fn ash_unavailable_track_via_child_process() {
+        if crate::shell_exec::ash_available().is_none() {
+            eprintln!("SKIP: no ash discovered in this environment");
+            return;
+        }
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .env("AUTO_AI_ASH_BIN", "X:/definitely/no/such/ash.exe")
+            .args(["--exact", "tools::run_command_tests::child_ash_unavailable_fallback", "--nocapture"])
+            .output()
+            .expect("re-exec test binary");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.status.success(),
+            "child test failed:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn child_ash_unavailable_fallback() {
+        // Runs in the child process (see above); standalone runs skip since
+        // the env override only exists in the re-exec'd child.
+        if std::env::var("AUTO_AI_ASH_BIN").is_err() {
+            eprintln!("SKIP: child-phase only; driven by ash_unavailable_track_via_child_process");
+            return;
+        }
+        assert!(
+            crate::shell_exec::ash_available().is_none(),
+            "child must not see ash (env override broken path)"
+        );
+        let out = RunCommand::new()
+            .execute(&json!({"cmd": "echo unavailable-track-marker"}))
+            .await
+            .expect("execute");
+        assert!(
+            out.content.contains("(ash unavailable)"),
+            "annotation: {}",
+            out.content
+        );
+        assert!(out.content.contains("unavailable-track-marker"));
+        assert_eq!(out.details.as_ref().unwrap()["executor"], sys_shell_name());
+    }
 }
 
 /// Run an AutoLang (.ash) script through ash (PLAN-033 T-04). Registered only
