@@ -274,7 +274,7 @@ fn build_agent(role_name: &str, client: Arc<dyn Client>, with_pipeline: bool) ->
     agent.register_tool(tools::EditFile);
     agent.register_tool(tools::ListDir);
     agent.register_tool(tools::Search);
-    agent.register_tool(tools::RunCommand);
+    agent.register_tool(tools::RunCommand::new());
     // Skill system (review-003 S5): if a skills directory exists, scan it and
     // register the skill tool so the agent can invoke discovered skills. Scan
     // is a no-op (empty registry) when the directory is absent.

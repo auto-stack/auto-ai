@@ -178,6 +178,174 @@ pub fn classify(exit_code: Option<i32>, stderr: &str) -> Classification {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Execution layer — subprocess with a hard timeout, and ash invocation
+// assembly (design §5.2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// What one subprocess run produced. `exit_code: None` + `timed_out` marks a
+/// timeout kill; `spawn_error` is set when the process never started.
+#[derive(Debug, Clone)]
+pub struct ExecOutcome {
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    /// Failure to spawn at all (binary missing, permission, ...).
+    pub spawn_error: Option<String>,
+}
+
+impl ExecOutcome {
+    pub fn classification(&self) -> Classification {
+        if self.spawn_error.is_some() {
+            // ash itself unreachable is a pre-exec condition, but we treat it
+            // conservatively at the tool layer; callers decide on fallback.
+            return Classification::PreExecFailure;
+        }
+        classify(self.exit_code, &self.stderr)
+    }
+}
+
+/// Run a prepared [`Command`] to completion with piped stdio and a hard
+/// timeout. On timeout the (direct) child is killed; grandchildren may
+/// survive on Windows — a known limitation, recorded in the design §5.2.
+pub fn run_with_timeout(cmd: &mut Command, timeout_ms: u64) -> ExecOutcome {
+    use std::io::Read;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return ExecOutcome {
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                spawn_error: Some(format!("{e}")),
+            }
+        }
+    };
+    // Drain pipes on threads so a chatty child can't deadlock the poll loop.
+    let out_handle = {
+        let mut pipe = child.stdout.take().expect("piped stdout");
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    };
+    let err_handle = {
+        let mut pipe = child.stderr.take().expect("piped stderr");
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    let mut timed_out = false;
+    let exit_code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break child.wait().ok().and_then(|s| s.code());
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => break None,
+        }
+    };
+    let stdout = String::from_utf8_lossy(&out_handle.join().unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).into_owned();
+    ExecOutcome { exit_code, stdout, stderr, timed_out, spawn_error: None }
+}
+
+/// Policy flags + limits for one ash invocation (design §5.2).
+#[derive(Debug, Clone, Default)]
+pub struct AshOptions {
+    /// Sandbox root (usually the canonicalized cwd); `None` = no confinement.
+    pub sandbox_root: Option<PathBuf>,
+    /// Pass `--no-network`.
+    pub no_network: bool,
+    /// `--audit <file>` destination.
+    pub audit_file: Option<PathBuf>,
+    /// Hard timeout in milliseconds.
+    pub timeout_ms: u64,
+}
+
+impl AshOptions {
+    /// Options for a normal run_command / run_ash_script invocation:
+    /// sandbox = cwd, audit from `AUTO_AI_ASH_AUDIT` (unset = off).
+    pub fn for_run(no_network: bool, timeout_ms: u64) -> AshOptions {
+        AshOptions {
+            sandbox_root: std::env::current_dir().ok().map(|mut p| {
+                let _ = p.canonicalize().map(|c| p = c);
+                p
+            }),
+            no_network,
+            audit_file: std::env::var("AUTO_AI_ASH_AUDIT")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+            timeout_ms,
+        }
+    }
+}
+
+/// What to feed ash: either a one-liner (`-c`) or a script file plus args.
+#[derive(Debug, Clone)]
+pub enum AshArgs {
+    Cmd(String),
+    Script { path: PathBuf, args: Vec<String> },
+}
+
+/// Build the ash command line. Pure — arg assembly is unit-tested per AC-01.
+pub fn ash_invocation(ash: &Path, args: &AshArgs, opts: &AshOptions) -> Command {
+    let mut c = Command::new(ash);
+    if let Some(root) = &opts.sandbox_root {
+        c.arg("--sandbox").arg(root);
+    }
+    if opts.no_network {
+        c.arg("--no-network");
+    }
+    if let Some(audit) = &opts.audit_file {
+        c.arg("--audit").arg(audit);
+    }
+    match args {
+        AshArgs::Cmd(s) => {
+            c.arg("-c").arg(s);
+        }
+        AshArgs::Script { path, args } => {
+            c.arg(path);
+            for a in args {
+                c.arg(a);
+            }
+        }
+    }
+    c
+}
+
+/// Convenience: run one command line through ash with the given options.
+pub fn execute_via_ash(ash: &Path, cmd: &str, opts: &AshOptions) -> ExecOutcome {
+    let mut invocation = ash_invocation(ash, &AshArgs::Cmd(cmd.to_string()), opts);
+    let mut out = run_with_timeout(&mut invocation, opts.timeout_ms);
+    if out.timed_out {
+        // Keep the classification conservative: a timeout is never a
+        // pre-exec failure (the command may have had partial effects).
+        out.stderr = format!("{}[ash timed out after {}ms]", out.stderr, opts.timeout_ms);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +542,86 @@ mod tests {
             ),
             Classification::Denied
         );
+    }
+
+    // ── Execution layer ───────────────────────────────────────────────────
+
+    fn invocation_args(c: &Command) -> Vec<String> {
+        // std::process::Command has no arg getter; use its Debug form
+        // `"prog" "arg1" "arg2"` — after split('"') the args are the quoted
+        // fragments at indices 3, 5, 7, … (1 is the program, even are spaces).
+        format!("{c:?}")
+            .split('"')
+            .skip(3)
+            .step_by(2)
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn ash_invocation_assembles_flags_in_order() {
+        let opts = AshOptions {
+            sandbox_root: Some(PathBuf::from("/tmp/proj")),
+            no_network: true,
+            audit_file: Some(PathBuf::from("/tmp/audit.jsonl")),
+            timeout_ms: 1000,
+        };
+        let c = ash_invocation(
+            Path::new("/bin/ash"),
+            &AshArgs::Cmd("ls -la".into()),
+            &opts,
+        );
+        let args = invocation_args(&c);
+        assert_eq!(
+            args,
+            vec![
+                "--sandbox", "/tmp/proj",
+                "--no-network",
+                "--audit", "/tmp/audit.jsonl",
+                "-c", "ls -la",
+            ]
+        );
+    }
+
+    #[test]
+    fn ash_invocation_minimal_and_script_form() {
+        let opts = AshOptions { timeout_ms: 50, ..Default::default() };
+        let c = ash_invocation(Path::new("ash"), &AshArgs::Cmd("true".into()), &opts);
+        assert_eq!(invocation_args(&c), vec!["-c", "true"]);
+
+        let c = ash_invocation(
+            Path::new("ash"),
+            &AshArgs::Script {
+                path: PathBuf::from("s.ash"),
+                args: vec!["a1".into(), "a2".into()],
+            },
+            &opts,
+        );
+        assert_eq!(invocation_args(&c), vec!["s.ash", "a1", "a2"]);
+    }
+
+    #[test]
+    fn spawn_error_is_pre_exec_failure() {
+        let mut c = Command::new("definitely-no-such-binary-xyz");
+        let out = run_with_timeout(&mut c, 100);
+        assert!(out.spawn_error.is_some());
+        assert_eq!(out.classification(), Classification::PreExecFailure);
+    }
+
+    /// Live: real ash honors the timeout (kill + timed_out flag, no fallback).
+    #[test]
+    fn live_ash_timeout_kills_process() {
+        let Some(info) = ash_available() else {
+            eprintln!("SKIP: no ash discovered in this environment");
+            return;
+        };
+        // ping exists on Windows and Unix-ish shells alike; ash delegates it
+        // to the OS. 10 pings ≈ 9s, deadline 300ms.
+        let out = execute_via_ash(&info.path, "ping -n 10 127.0.0.1", &AshOptions {
+            timeout_ms: 300,
+            ..Default::default()
+        });
+        assert!(out.timed_out, "expected a timeout kill");
+        assert_eq!(out.classification(), Classification::RanFailed);
     }
 }
