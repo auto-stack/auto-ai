@@ -326,6 +326,21 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
   （复用理由：reviewed commit 未变）；git show 46d169a diff 审查确认无
   范围外改动 | next: merge`。独立性同 R1 声明（同会话、自工件重建）。
   **状态置 reviewed。**
+- 2026-09-11（**merge 回执 PLAN-033:r1**）：
+  - `prepared` ✓：reviewed 基线 = r1/R2 pass @ 46d169a（基线 373cd50）；
+    冻结 Spec delta = SD-01 `docs/specs/auto-ai-cli/shell-execution.md`
+    （已在分支内随 914b2f0 提交并经 R1/R2 审）；依赖 auto-lang @ f26ba9a41
+    只读快照零改动；main 超前部分（373cd50..9547531）仅本计划簿记文件，
+    不触及分支任何路径，验证无需刷新。
+  - `landed` ✓：merge commit **522afdb**（--no-ff plan-033-dev → main），
+    `merge-base --is-ancestor 46d169a HEAD` 通过；spec 文件在 main 在位；
+    main 冒烟 `cargo test -p auto-ai-cli` = 48/48（workspace 287/0 同码基
+    46d169a 当日已跑，合并零代码漂移）。
+  - `ledger_refreshed` = **N/A（有据）**：本仓库无 musk 式 ledger/
+    SpecsDocument 派生视图；canonical（spec）与用户面（README"命令执行层"
+    一节）均随分支落地。KNOWN-DEBT-AND-RISKS.md 按 R2 已审的 T-06 决定
+    （"KNOWN-DEBT 不动，ash 侧缺口由 auto-shell 立项"）不新增行。
+  - `archived` / `cleaned`：见后续条目。
 
 ## 10. 待澄清事项
 
