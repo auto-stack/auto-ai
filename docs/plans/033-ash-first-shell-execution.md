@@ -1,12 +1,12 @@
 ---
 plan_id: PLAN-033
-status: executing
+status: execution_done
 feature_name: ash 优先的命令执行层（auto-ai-cli）
 author: [agent]
 created_at: 2026-09-11T00:00:00Z
-updated_at: 2026-09-11T14:00:00Z
+updated_at: 2026-09-11T15:00:00Z
 plan_revision: 1
-current_step: 3
+current_step: 6
 total_steps: 6
 supersedes_spec_components: []
 new_spec_components:
@@ -15,7 +15,7 @@ touched_goals: []
 worktree: D:/autostack/.wt/ai-033/auto-ai
 worktree_branch: plan-033-dev
 worktree_base_commit: 373cd50
-worktree_head_commit: 914b2f0
+worktree_head_commit: 46d169a
 dependency_snapshots:
   - repo: auto-lang, commit: f26ba9a41, worktree: D:/autostack/.wt/ai-033/auto-lang (detached, read-only)
 ---
@@ -150,11 +150,11 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
 | AC-01 | ash 可用时 `run_command` 经 `ash --sandbox <cwd>` 执行 | 单测断言调用组装；集成：注入真 ash 跑 `echo ok`，输出含 `[exec: ash]`，exit 0 |
 | AC-02 | ash 不可用（env 指向不存在且 PATH 无）时回退系统 shell，无 panic | 集成：输出含 `[exec: cmd.exe (ash unavailable)]`（Windows）/`sh`（Unix），命令成功 |
 | AC-03 | 策略拒绝不回退：sandbox 外写/危险命令被 ash 拦截时返回 PAUSED 风格提示与 force 指引 | 集成：`ash` 轨跑沙箱外写命令 → 输出含 denied 提示、无系统 shell 重跑痕迹（无第二条命令执行的输出） |
-| AC-04 | 预执行失败回退：ash 报命令不存在时改由系统 shell 执行 ⚠️ **partial（R1：F-01）** | 集成：构造仅在 cmd 下存在的命令（或 not-found stderr 注入）→ 输出含 `fallback` 标注且命令成功 |
+| AC-04 | 预执行失败回退：ash 报命令不存在时改由系统 shell 执行 | 集成：构造仅在 cmd 下存在的命令（或 not-found stderr 注入）→ 输出含 `fallback` 标注且命令成功 |
 | AC-05 | 命令自身失败（exit≠0）不回退，返回真实 stdout/stderr/exit | 集成：`ash` 轨跑必败命令（如 `exit 2` 脚本或 `cargo --bogus-flag`）→ 输出含错误与退出码、无 fallback 标注 |
 | AC-06 | `force:true` 直接走系统 shell（现语义不变） | 单测/集成：force 时无 ash 进程调用（可用审计 env 断言未透传） |
 | AC-07 | `run_ash_script` 仅 ash 可用时注册；脚本显式 `exit(3)` 传播 exit 3；运行时错误返回 ash 报错文本 | 单测（注册门控）+ 集成（exit 传播、未定义函数错误上浮） |
-| AC-08 | 超时生效：默认 120s，超时 kill 并返回明确超时错误，不回退 ⚠️ **partial（R1：F-02）** | 单测（小超时 + sleep 脚本，<5s 用时） |
+| AC-08 | 超时生效：默认 120s，超时 kill 并返回明确超时错误，不回退 | 单测（小超时 + sleep 脚本，<5s 用时） |
 | AC-09 | 测试全绿：`cargo test -p auto-ai-cli` 与 `cargo test --workspace` | 命令退出码 0；无 ash 环境集成 skip 并说明 |
 | AC-10 | 工具描述按执行器动态生成（ash 轨含 ash 用法与沙箱说明；cmd 轨保持现状文案） | 快照单测：两种 probe 状态下 description 断言 |
 
@@ -178,7 +178,7 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
       双前缀怪癖；PreExec 增实测 `Undefined variable:`）。5 个分类测试含
       "Denied 优先于 PreExec"。shell_exec 模块 12/12 绿。
   - 关联：AC-03、AC-04、AC-05
-- **T-03** `tools.rs`：RunCommand 接线（动态描述、超时、标注、details、回退矩阵） `[ ]`（R1 needs_fix 重开：F-02/F-03）
+- **T-03** `tools.rs`：RunCommand 接线（动态描述、超时、标注、details、回退矩阵） `[x]`（R1 修复后复勾，46d169a）
   - 验证：`cargo test -p auto-ai-cli run_command` 绿 + `cargo clippy -p auto-ai-cli` 无新告警
     - [✅ 已完成] plan-033-dev ed422d3。执行层 `run_with_timeout`（读线程防死锁
       + deadline kill）+ `ash_invocation` 纯函数组装（单测钉参数序）；工具层双轨
@@ -192,6 +192,11 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
     - [⚠️ R1 失效部分] `ExecOutcome::classification()` 未守卫 `timed_out`（F-02，
       见 §9 R1）；R1 复审另发现 shell_exec.rs:24 一条 redundant_closure 告警
       （F-03）。其余证据仍有效。
+    - [✅ R1 修复] 46d169a：classification 开头 `timed_out → RanFailed` 守卫
+      （含注释说明超时命令已执行、stderr 撞标记不得回退）+ 双向回归测试
+      `timed_out_wins_over_pre_exec_markers`（同 stderr：ExecOutcome 层
+      RanFailed / 纯分类器层仍 PreExec）；闭包改传函数本体，clippy 新代码
+      零告警复验。
   - 关联：AC-01…AC-06、AC-08、AC-10
 - **T-04** `tools.rs` + `main.rs`：RunAshScript 与条件注册 `[x]`
   - 验证：`cargo test -p auto-ai-cli run_ash_script` 绿（注册门控 + exit 传播）
@@ -203,7 +208,7 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
       栈回溯（无害）。**注册门控本身无独立单测**（build_agent 需 Client），
       以代码检视 + 条件编译路径保证。
   - 关联：AC-07
-- **T-05** 场景矩阵测试（AC 场景矩阵、无 ash skip） `[ ]`（R1 needs_fix 重开：F-01）
+- **T-05** 场景矩阵测试（AC 场景矩阵、无 ash skip） `[x]`（R1 修复后复勾，46d169a）
   - 验证：本机（ash 在 PATH）`cargo test -p auto-ai-cli --test ash_exec` 全绿
     - [✅ 已完成（路径适配）] plan-033-dev 27614d8。**偏差记录**：auto-ai-cli
       为 bin-only crate（无 lib target），`tests/` 集成测试无法导入模块内部
@@ -214,8 +219,13 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
     - [⚠️ R1 失效部分] AC-04 正向路径（PreExecFailure→系统壳重试）无 live
       测试（F-01，见 §9 R1）；计划 §7 预告的"not-found stderr 注入"未兑现。
       其余矩阵证据仍有效。
+    - [✅ R1 修复] 46d169a：`live_pre_exec_failure_falls_back_to_system_shell`
+      ——伪造 ash（Windows .cmd / Unix .sh，任意调用打 not-recognized stderr
+      +exit 1）经手工 AshInfo 直喂 run_ash_track（不动进程缓存），断言
+      `(fallback: ash` 标注 + 命令经系统壳实际执行 + details.executor；不
+      依赖真 ash，任何环境可跑。CLI 全量 48/48。
   - 关联：AC-01…AC-08
-- **T-06** 验证与文档收口 `[ ]`（R1 needs_fix 重开：终验需在 F-01/F-02/F-03 修复后重跑）
+- **T-06** 验证与文档收口 `[x]`（R1 修复后复勾，终验重跑 287/0）
   - `cargo test --workspace` 全绿；README 增"命令执行层"一节；KNOWN-DEBT 不动
     （ash 侧缺口由 auto-shell 立项，见 §10）
   - 手工 e2e 清单执行并记录证据
@@ -229,6 +239,9 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
       已由 46 项测试覆盖。
     - [⚠️ R1 失效部分] 285/0 对应 914b2f0；F-01/F-02/F-03 修复后须重跑全量
       作为终验。文档/spec 部分不受影响。
+    - [✅ R1 修复后终验] 46d169a：`cargo test --workspace` = **287 passed /
+      0 failed**（CLI 48 含新增 2 项；agent 115、daemon 62 等零回归）；
+      clippy 新代码零告警。
   - 关联：AC-09、全部复核
 
 ## 9. 复审记录
@@ -291,6 +304,12 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
   T-04 维持，current_step=3。SD-01 spec 文本与实现相符，无需改动；
   F-02 修复后 spec §4 表中 RanFailed 判定行已涵盖（"其余一切（含…超时）"），
   实现将回归契约。
+- 2026-09-11（R1 修复 work handoff）：`stage: work | PLAN-033 | r1 |
+  outcome: pass | code_commit: 46d169a（单提交修复 F-01/F-02/F-03，承
+  914b2f0）| task_ids: T-03/T-05/T-06 复勾，current_step=6 | evidence:
+  cargo test -p auto-ai-cli 48/48（新增 timed_out×marker 双向回归 +
+  假 ash 回退 live 测试）、cargo test --workspace 287/0、clippy 新代码
+  零告警 | blockers: 无 | next: review（R2，用户已授权）`。
 
 ## 10. 待澄清事项
 
