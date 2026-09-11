@@ -1,6 +1,6 @@
 ---
 plan_id: PLAN-033
-status: execution_done
+status: reviewed
 feature_name: ash 优先的命令执行层（auto-ai-cli）
 author: [agent]
 created_at: 2026-09-11T00:00:00Z
@@ -310,6 +310,22 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
   cargo test -p auto-ai-cli 48/48（新增 timed_out×marker 双向回归 +
   假 ash 回退 live 测试）、cargo test --workspace 287/0、clippy 新代码
   零告警 | blockers: 无 | next: review（R2，用户已授权）`。
+- 2026-09-11（**R2 review**）：`stage: review | PLAN-033 | r1 |
+  outcome: **pass** | reviewed_commit: 46d169a（worktree 干净）|
+  base_commit: 373cd50 | dependency_revisions: auto-lang f26ba9a41（不变）|
+  spec_inputs: docs/specs/auto-ai-cli/shell-execution.md（SD-01，内容与
+  实现相符——F-02 修复使代码回归 spec §4 既有 RanFailed 判定行，spec 零改）|
+  acceptance_results: AC-01…AC-10 全 pass（AC-04 经
+  live_pre_exec_failure_falls_back_to_system_shell 补全；AC-08 经
+  timed_out_wins_over_pre_exec_markers 双向回归 + 守卫补全）|
+  findings: R1 的 F-01/F-02/F-03 全部核销——F-02 守卫置于 classification
+  入口先于一切 stderr 判定（单点，两类调用方同享）且注释明确不变量；
+  F-01 假 ash 测试断言真实行为（标注+系统壳实际执行+details.executor），
+  非镜像实现；F-03 clippy 复验零告警 | evidence: cargo test -p auto-ai-cli
+  fresh 复跑 48/48（9.14s）；workspace 287/0 于同 commit 46d169a 当日跑
+  （复用理由：reviewed commit 未变）；git show 46d169a diff 审查确认无
+  范围外改动 | next: merge`。独立性同 R1 声明（同会话、自工件重建）。
+  **状态置 reviewed。**
 
 ## 10. 待澄清事项
 
