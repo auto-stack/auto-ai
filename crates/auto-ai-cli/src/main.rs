@@ -15,6 +15,7 @@ pub mod chat_model;
 pub mod linear;
 pub mod markdown;
 pub mod session;
+pub mod shell_exec;
 pub mod tui;
 pub mod tools;
 mod spawn_pipeline;
