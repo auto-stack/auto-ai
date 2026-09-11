@@ -455,3 +455,193 @@ mod run_command_tests {
         assert!(!out.content.contains("fallback"), "must not fall back: {}", out.content);
     }
 }
+
+/// Run an AutoLang (.ash) script through ash (PLAN-033 T-04). Registered only
+/// when ash is available: the system shell cannot execute AutoLang, so this
+/// tool never falls back. Scripts run with the same cwd sandbox as
+/// run_command; `content` is staged to a temp file and cleaned up after.
+pub struct RunAshScript;
+
+static NEXT_SCRIPT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[async_trait]
+impl Tool for RunAshScript {
+    fn name(&self) -> &str { "run_ash_script" }
+    fn description(&self) -> &str {
+        "Write and run an AutoLang (.ash) script via ash, sandboxed to the working directory. \
+         AutoLang quick reference: define `fn main() { ... }` and call `main()`; `var x = 1`; \
+         `print(\"text\")`; run shell pipelines via `system(\"ls | filter .size > 10.mb\")`; \
+         positional args are read with `system(\"echo $1\")`. IMPORTANT: always end main() with \
+         an explicit `exit(code)` — ash v0.1.0 runtime errors (e.g. calling an undefined \
+         function) still exit 0, so an explicit exit is the only reliable failure signal. \
+         Provide `content` (recommended) or an existing `path`, plus optional `args`."
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{
+            "content":{"type":"string","description":"AutoLang script source (mutually exclusive with path)"},
+            "path":{"type":"string","description":"path to an existing .ash script (mutually exclusive with content)"},
+            "args":{"type":"array","items":{"type":"string"},"description":"positional arguments passed to the script"},
+            "timeout_ms":{"type":"integer","description":format!("hard timeout in milliseconds (default {DEFAULT_TIMEOUT_MS}, max {MAX_TIMEOUT_MS})")}
+        }})
+    }
+    async fn execute(&self, args: &Value) -> Result<ToolOutput, ToolError> {
+        let Some(info) = crate::shell_exec::ash_available() else {
+            return Err(ToolError::Exec(
+                "ash unavailable (run_ash_script should not be registered in that case)".into(),
+            ));
+        };
+        let content = args["content"].as_str();
+        let path = args["path"].as_str();
+        let script_args: Vec<String> = args["args"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let timeout_ms = args["timeout_ms"].as_u64().unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS);
+        match (content, path) {
+            (Some(_), Some(_)) => return Err(ToolError::Args("give either 'content' or 'path', not both".into())),
+            (None, None) => return Err(ToolError::Args("missing 'content' or 'path'".into())),
+            _ => {}
+        }
+
+        // `content` form: stage to %TEMP% (outside the sandbox on purpose —
+        // the interpreter reads it as input; script *commands* stay confined).
+        let temp_path;
+        let script_path: std::path::PathBuf = if let Some(src) = content {
+            let id = NEXT_SCRIPT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let p = std::env::temp_dir().join(format!("auto-ai-ash-{}-{id}.ash", std::process::id()));
+            std::fs::write(&p, src).map_err(|e| ToolError::Exec(format!("write temp script: {e}")))?;
+            temp_path = Some(p.clone());
+            p
+        } else {
+            let p = std::path::PathBuf::from(path.unwrap());
+            if !p.is_file() {
+                return Err(ToolError::Exec(format!("script not found: {}", p.display())));
+            }
+            temp_path = None;
+            p
+        };
+
+        let opts = crate::shell_exec::AshOptions::for_run(false, timeout_ms);
+        let ash_path = info.path.clone();
+        let run_path = script_path.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut inv = crate::shell_exec::ash_invocation(
+                &ash_path,
+                &crate::shell_exec::AshArgs::Script { path: run_path, args: script_args },
+                &opts,
+            );
+            crate::shell_exec::run_with_timeout(&mut inv, timeout_ms)
+        })
+        .await
+        .map_err(|e| ToolError::Exec(format!("join executor: {e}")))?;
+        if let Some(p) = temp_path {
+            let _ = std::fs::remove_file(&p);
+        }
+        if let Some(err) = &outcome.spawn_error {
+            return Err(ToolError::Exec(format!("spawn ash: {err}")));
+        }
+
+        use crate::shell_exec::Classification;
+        let mut details = json!({
+            "executor": "ash-script", "exit_code": outcome.exit_code,
+            "timed_out": outcome.timed_out, "timeout_ms": timeout_ms,
+        });
+        let annotation = match outcome.classification() {
+            Classification::RanOk => "[exec: ash script]".to_string(),
+            Classification::Denied => {
+                details["classification"] = json!("denied");
+                "[exec: ash script (denied)]".to_string()
+            }
+            _ => {
+                let c = if outcome.timed_out { "timeout" } else { "failed" };
+                details["classification"] = json!(c);
+                if outcome.timed_out {
+                    format!("[exec: ash script (timeout after {timeout_ms}ms)]")
+                } else {
+                    format!("[exec: ash script ({c})]")
+                }
+            }
+        };
+        Ok(format_outcome(&outcome, &annotation, details))
+    }
+}
+
+#[cfg(test)]
+mod run_ash_script_tests {
+    use super::*;
+
+    fn skip_if_no_ash() -> bool {
+        if crate::shell_exec::ash_available().is_none() {
+            eprintln!("SKIP: no ash discovered in this environment");
+            true
+        } else {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn content_and_path_are_mutually_exclusive() {
+        let err = RunAshScript
+            .execute(&json!({"content": "main()", "path": "x.ash"}))
+            .await
+            .expect_err("must reject both");
+        assert!(err.to_string().contains("not both"));
+    }
+
+    #[tokio::test]
+    async fn missing_content_and_path_rejected() {
+        let err = RunAshScript.execute(&json!({})).await.expect_err("must reject neither");
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn nonexistent_path_rejected() {
+        if skip_if_no_ash() { return; }
+        let err = RunAshScript
+            .execute(&json!({"path": "definitely-no-such-script.ash"}))
+            .await
+            .expect_err("must reject missing script");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    /// Live: explicit exit(3) propagates through the tool (AC-07). A
+    /// non-zero exit is a failure by taxonomy, so the annotation carries
+    /// "(failed)" while the exit line still shows the exact code.
+    #[tokio::test]
+    async fn live_script_exit_code_propagates() {
+        if skip_if_no_ash() { return; }
+        let out = RunAshScript
+            .execute(&json!({"content": "fn main() {\n  print(\"script-ok-marker\")\n  exit(3)\n}\nmain()\n"}))
+            .await
+            .expect("execute");
+        assert!(out.content.contains("[exec: ash script"), "annotation: {}", out.content);
+        assert!(out.content.contains("script-ok-marker"));
+        assert!(out.content.contains("[exit: 3]"), "exit code line: {}", out.content);
+    }
+
+    /// Live: runtime errors surface ash's error text even though v0.1.0
+    /// exits 0 for them (known gap, warned about in the description).
+    #[tokio::test]
+    async fn live_script_runtime_error_text_surfaces() {
+        if skip_if_no_ash() { return; }
+        let out = RunAshScript
+            .execute(&json!({"content": "fn main() {\n  print(undefined_fn_xyz())\n}\nmain()\n"}))
+            .await
+            .expect("execute");
+        assert!(out.content.contains("Undefined function"), "error text: {}", out.content);
+    }
+
+    /// Live: path form + positional args (AC-07 coverage of args).
+    #[tokio::test]
+    async fn live_path_form_with_args() {
+        if skip_if_no_ash() { return; }
+        let script = std::env::temp_dir().join("auto-ai-ac07-path-form.ash");
+        std::fs::write(&script, "fn main() {\n  var a = system(\"echo $1\").trim()\n  print(\"arg=\" + a)\n  exit(0)\n}\nmain()\n")
+            .expect("fixture script");
+        let out = RunAshScript
+            .execute(&json!({"path": script.display().to_string(), "args": ["hello-arg"]}))
+            .await
+            .expect("execute");
+        assert!(out.content.contains("arg=hello-arg"), "content: {}", out.content);
+        let _ = std::fs::remove_file(&script);
+    }
+}
