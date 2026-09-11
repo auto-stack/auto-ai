@@ -1,6 +1,7 @@
 ---
 plan_id: PLAN-033
-status: reviewed
+status: archived
+completion_kind: delivered
 feature_name: ash 优先的命令执行层（auto-ai-cli）
 author: [agent]
 created_at: 2026-09-11T00:00:00Z
@@ -340,7 +341,11 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
     SpecsDocument 派生视图；canonical（spec）与用户面（README"命令执行层"
     一节）均随分支落地。KNOWN-DEBT-AND-RISKS.md 按 R2 已审的 T-06 决定
     （"KNOWN-DEBT 不动，ash 侧缺口由 auto-shell 立项"）不新增行。
-  - `archived` / `cleaned`：见后续条目。
+  - `archived` ✓：2026-09-11 `git mv` 至
+    `docs/plans/archive/033-ash-first-shell-execution.md`（本仓库归档目录为
+    `archive/`，非技能模板的 `archived/`），`status: archived` +
+    `completion_kind: delivered`。
+  - `cleaned`：见后续条目。
 
 ## 10. 待澄清事项
 
