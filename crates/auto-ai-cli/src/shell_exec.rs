@@ -21,7 +21,7 @@ pub struct AshInfo {
 /// at most once instead of per command.
 pub fn ash_available() -> Option<&'static AshInfo> {
     static CACHE: OnceLock<Option<AshInfo>> = OnceLock::new();
-    CACHE.get_or_init(|| probe_ash()).as_ref()
+    CACHE.get_or_init(probe_ash).as_ref()
 }
 
 fn probe_ash() -> Option<AshInfo> {
@@ -197,6 +197,13 @@ pub struct ExecOutcome {
 
 impl ExecOutcome {
     pub fn classification(&self) -> Classification {
+        // A timed-out command RAN — partial stderr may coincidentally contain
+        // pre-exec markers (e.g. "command not found" inside the command's own
+        // log output), and re-running it elsewhere would double side effects.
+        // The timeout guard therefore wins over every stderr shape (R1 F-02).
+        if self.timed_out {
+            return Classification::RanFailed;
+        }
         if self.spawn_error.is_some() {
             // ash itself unreachable is a pre-exec condition, but we treat it
             // conservatively at the tool layer; callers decide on fallback.
@@ -606,6 +613,26 @@ mod tests {
         let out = run_with_timeout(&mut c, 100);
         assert!(out.spawn_error.is_some());
         assert_eq!(out.classification(), Classification::PreExecFailure);
+    }
+
+    /// R1 F-02 regression: a timed-out command RAN, so even if its partial
+    /// stderr coincidentally contains a pre-exec marker (e.g. the command's
+    /// own log output saying "command not found"), it must classify as
+    /// RanFailed — falling back would re-run a command with side effects.
+    #[test]
+    fn timed_out_wins_over_pre_exec_markers() {
+        let out = ExecOutcome {
+            exit_code: Some(1),
+            stdout: "partial build log".into(),
+            stderr: "make: tool-not-there: command not found".into(),
+            timed_out: true,
+            spawn_error: None,
+        };
+        assert_eq!(out.classification(), Classification::RanFailed);
+        // Same stderr without the timeout is (correctly) still a fallback
+        // candidate at the pure-classifier level.
+        assert_eq!(classify(Some(1), "make: tool-not-there: command not found"),
+                   Classification::PreExecFailure);
     }
 
     /// Live: real ash honors the timeout (kill + timed_out flag, no fallback).

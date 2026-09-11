@@ -509,6 +509,55 @@ mod run_command_tests {
         assert!(out.content.contains("unavailable-track-marker"));
         assert_eq!(out.details.as_ref().unwrap()["executor"], sys_shell_name());
     }
+
+    /// R1 F-01: the live PreExecFailure → system-shell retry path. A fake
+    /// ash (any invocation prints a not-recognized stderr and exits 1) is
+    /// injected via a hand-built AshInfo — no probe, no cache involved —
+    /// so this runs on any machine with a working system shell.
+    #[tokio::test]
+    async fn live_pre_exec_failure_falls_back_to_system_shell() {
+        let fake = if cfg!(windows) {
+            let p = std::env::temp_dir().join("auto-ai-fake-ash.cmd");
+            std::fs::write(
+                &p,
+                "@echo off\r\necho fake-ash: the term 'x' is not recognized as the name of a cmdlet, function, script file, or operable program. 1>&2\r\nexit /b 1\r\n",
+            )
+            .expect("write fake ash");
+            p
+        } else {
+            let p = std::env::temp_dir().join("auto-ai-fake-ash.sh");
+            std::fs::write(
+                &p,
+                "#!/bin/sh\necho \"fake-ash: the term 'x' is not recognized as the name of a cmdlet, function, script file, or operable program.\" >&2\nexit 1\n",
+            )
+            .expect("write fake ash");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+            }
+            p
+        };
+        let info = crate::shell_exec::AshInfo {
+            path: fake.clone(),
+            version: "fake-0.0 (R1 F-01 fixture)".into(),
+        };
+        let out = run_ash_track(&info, "echo fallback-live-marker", false, 30_000)
+            .await
+            .expect("execute");
+        assert!(
+            out.content.contains("(fallback: ash"),
+            "annotation: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains("fallback-live-marker"),
+            "the system shell must have actually run it: {}",
+            out.content
+        );
+        assert_eq!(out.details.as_ref().unwrap()["executor"], json!(sys_shell_name()));
+        let _ = std::fs::remove_file(&fake);
+    }
 }
 
 /// Run an AutoLang (.ash) script through ash (PLAN-033 T-04). Registered only
