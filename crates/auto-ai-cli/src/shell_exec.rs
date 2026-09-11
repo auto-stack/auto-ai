@@ -123,6 +123,61 @@ fn find_sibling_ash(start: &Path) -> Option<PathBuf> {
     None
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Failure classification (design §5.3) — drives the fallback matrix
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The four-way taxonomy of an ash invocation's outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Classification {
+    /// Exit 0 — the command succeeded.
+    RanOk,
+    /// ash's policy layer refused (sandbox path, read-only, no-network, deny).
+    /// Never falls back: a fallback would bypass the sandbox.
+    Denied,
+    /// ash could not even start the command (unknown command, undefined
+    /// symbol, parse error) — zero side effects, safe to fall back.
+    PreExecFailure,
+    /// The command ran and failed, or the outcome is ambiguous (unknown
+    /// stderr shape, ash crashed). Conservative: no fallback.
+    RanFailed,
+}
+
+/// stderr markers for policy denials, as emitted by ash v0.1.0 (verified
+/// 2026-09-11). Note two distinct prefixes: `Error: security:` (capability
+/// switches / deny lists — sometimes doubled) and `Error: sandbox:` (path
+/// confinement).
+const DENIED_MARKERS: &[&str] = &["Error: security:", "Error: sandbox:"];
+
+/// stderr markers proving ash failed *before* executing anything.
+const PRE_EXEC_MARKERS: &[&str] = &[
+    "is not recognized",   // Windows: external command missing (PowerShell text)
+    "command not found",   // Unix: external command missing
+    "Undefined function:", // AutoLang: unknown function
+    "Undefined variable:", // AutoLang: unknown variable in -c evaluation
+    "Undefined command:",  // defensive: registry lookup failure
+    "Parse error",         // ash parser failure
+];
+
+/// Classify an ash outcome from its exit code and full stderr. Unknown
+/// non-zero shapes land in [`Classification::RanFailed`] on purpose: falling
+/// back is a compatibility optimization, never worth double side effects.
+pub fn classify(exit_code: Option<i32>, stderr: &str) -> Classification {
+    match exit_code {
+        Some(0) => Classification::RanOk,
+        None => Classification::RanFailed,
+        Some(_) => {
+            if DENIED_MARKERS.iter().any(|m| stderr.contains(m)) {
+                Classification::Denied
+            } else if PRE_EXEC_MARKERS.iter().any(|m| stderr.contains(m)) {
+                Classification::PreExecFailure
+            } else {
+                Classification::RanFailed
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +283,96 @@ mod tests {
             }
             None => eprintln!("SKIP: no ash discovered in this environment"),
         }
+    }
+
+    // ── FailureClassifier fixtures ────────────────────────────────────────
+    // All samples below are REAL ash v0.1.0 stderr output, captured
+    // 2026-09-11 (design §3.2). They pin the classifier's stderr contract;
+    // if ash changes its wording these tests are the tripwire.
+
+    #[test]
+    fn classify_ran_ok_on_zero_exit() {
+        assert_eq!(classify(Some(0), ""), Classification::RanOk);
+        assert_eq!(classify(Some(0), "some warning on stderr"), Classification::RanOk);
+    }
+
+    #[test]
+    fn classify_denied_policy_rejections() {
+        // --read-only blocking a write command (exact capture)
+        assert_eq!(
+            classify(Some(1), "Error: security: write command 'rm' blocked by --read-only"),
+            Classification::Denied
+        );
+        // --sandbox path confinement (exact capture, \\?\-style paths)
+        assert_eq!(
+            classify(
+                Some(1),
+                "Error: sandbox: \\\\?\\D:\\d\\autostack\\auto-ai\\README.md is outside sandbox \\\\?\\C:\\Users\\zhaop"
+            ),
+            Classification::Denied
+        );
+        // --no-network (note ash doubles the prefix: "security: security:")
+        assert_eq!(
+            classify(Some(1), "Error: security: security: network command 'curl' blocked by --no-network"),
+            Classification::Denied
+        );
+        // --deny name list
+        assert_eq!(
+            classify(Some(1), "Error: security: 'cargo' is denied by --deny"),
+            Classification::Denied
+        );
+    }
+
+    #[test]
+    fn classify_pre_exec_failures() {
+        // Windows: external command missing — full PowerShell text (truncated)
+        assert_eq!(
+            classify(
+                Some(1),
+                "definitely_not_a_cmd_xyz : The term 'definitely_not_a_cmd_xyz' is not recognized \
+                 as the name of a cmdlet, function, script file, or operable program."
+            ),
+            Classification::PreExecFailure
+        );
+        // Unix shape
+        assert_eq!(
+            classify(Some(1), "sh: definitely_not_a_cmd_xyz: command not found"),
+            Classification::PreExecFailure
+        );
+        // AutoLang symbol lookup failures (exact captures)
+        assert_eq!(
+            classify(Some(1), "Error: Undefined function: println"),
+            Classification::PreExecFailure
+        );
+        assert_eq!(
+            classify(Some(1), "Error: Undefined variable: undefined_thing"),
+            Classification::PreExecFailure
+        );
+    }
+
+    #[test]
+    fn classify_ran_failed_for_unknown_or_real_failures() {
+        // A command that genuinely ran and failed (cargo-style error text)
+        assert_eq!(
+            classify(Some(101), "error: could not compile `auto-ai-cli` due to 2 previous errors"),
+            Classification::RanFailed
+        );
+        // Unknown stderr shape → conservative
+        assert_eq!(classify(Some(1), "weird new ash error format"), Classification::RanFailed);
+        // ash itself crashed before reporting an exit code → conservative
+        assert_eq!(classify(None, ""), Classification::RanFailed);
+    }
+
+    #[test]
+    fn classify_denied_wins_over_pre_exec_when_both_present() {
+        // Denial check runs first: a stderr mixing both shapes (e.g. a denied
+        // command whose name also looks unknown) must never fall back.
+        assert_eq!(
+            classify(
+                Some(1),
+                "Error: security: 'x' is denied by --deny\nThe term 'x' is not recognized"
+            ),
+            Classification::Denied
+        );
     }
 }
