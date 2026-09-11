@@ -1,17 +1,23 @@
 ---
 plan_id: PLAN-033
-status: drafting
+status: execution_done
 feature_name: ash 优先的命令执行层（auto-ai-cli）
 author: [agent]
 created_at: 2026-09-11T00:00:00Z
-updated_at: 2026-09-11T00:00:00Z
+updated_at: 2026-09-11T12:00:00Z
 plan_revision: 1
-current_step: 0
+current_step: 6
 total_steps: 6
 supersedes_spec_components: []
 new_spec_components:
   - docs/specs/auto-ai-cli/shell-execution.md
 touched_goals: []
+worktree: D:/autostack/.wt/ai-033/auto-ai
+worktree_branch: plan-033-dev
+worktree_base_commit: 373cd50
+worktree_head_commit: 914b2f0
+dependency_snapshots:
+  - repo: auto-lang, commit: f26ba9a41, worktree: D:/autostack/.wt/ai-033/auto-lang (detached, read-only)
 ---
 
 # PLAN-033：ash 优先的命令执行层（auto-ai-cli）
@@ -156,26 +162,65 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
 
 依赖：T-01 → T-02 → T-03 →（T-04 可与 T-03 并行）→ T-05 → T-06。
 
-- **T-01** `shell_exec.rs`：AshLocator（发现链 + probe + 缓存）
+- **T-01** `shell_exec.rs`：AshLocator（发现链 + probe + 缓存） `[x]`
   - 新文件 `crates/auto-ai-cli/src/shell_exec.rs`；`main.rs` 挂 `mod shell_exec;`
   - 验证：`cargo test -p auto-ai-cli ash_locator` 绿；含 env 注入与负缓存用例
+    - [✅ 已完成] worktree `.wt/ai-033/auto-ai` @ plan-033-dev 547db95
+      （基线 373cd50；依赖 `.wt/ai-033/auto-lang` @ f26ba9a41 detached 只读快照，
+      解 crates→`../../auto-lang` 相对路径）。`cargo test -p auto-ai-cli shell_exec`
+      = 7 passed / 0 failed（发现链 5 项：env 权威/PATH/兄弟启发 release 优先/
+      深度限界/全缺；真机 probe 1 项命中 PATH 上 ash v0.1.0）。
   - 关联：AC-01、AC-02
-- **T-02** `shell_exec.rs`：FailureClassifier + fixture 单测
+- **T-02** `shell_exec.rs`：FailureClassifier + fixture 单测 `[x]`
   - 验证：`cargo test -p auto-ai-cli failure_classifier` 绿（4 类 × ≥3 样本）
+    - [✅ 已完成] plan-033-dev 8e17ff3。真实样本钉契约（实测发现 **Denied 有两个
+      前缀**：`Error: security:` 与 `Error: sandbox:`，含 "security: security:"
+      双前缀怪癖；PreExec 增实测 `Undefined variable:`）。5 个分类测试含
+      "Denied 优先于 PreExec"。shell_exec 模块 12/12 绿。
   - 关联：AC-03、AC-04、AC-05
-- **T-03** `tools.rs`：RunCommand 接线（动态描述、超时、标注、details、回退矩阵）
+- **T-03** `tools.rs`：RunCommand 接线（动态描述、超时、标注、details、回退矩阵） `[x]`
   - 验证：`cargo test -p auto-ai-cli run_command` 绿 + `cargo clippy -p auto-ai-cli` 无新告警
+    - [✅ 已完成] plan-033-dev ed422d3。执行层 `run_with_timeout`（读线程防死锁
+      + deadline kill）+ `ash_invocation` 纯函数组装（单测钉参数序）；工具层双轨
+      动态描述、schema 增 `timeout_ms`/`no_network`、`[exec: …]` 标注 + 非零
+      exit 行、details 四类齐。**第二注册点发现**：`spawn_pipeline.rs:77` 也
+      注册 RunCommand，同步改 `new()`。`cargo test -p auto-ai-cli` = 38/0
+      （含真机：ash 轨 echo、沙箱外 cat 拒绝不回退且文件未被读、cargo 伪旗标
+      失败不重试、ping 超时 kill）。clippy 告警均预存（rust-ref/main.rs 旧段），
+      新代码零告警。未引入 tokio process/time feature——std Command +
+      spawn_blocking 即够，依赖面更小。
   - 关联：AC-01…AC-06、AC-08、AC-10
-- **T-04** `tools.rs` + `main.rs`：RunAshScript 与条件注册
+- **T-04** `tools.rs` + `main.rs`：RunAshScript 与条件注册 `[x]`
   - 验证：`cargo test -p auto-ai-cli run_ash_script` 绿（注册门控 + exit 传播）
+    - [✅ 已完成] plan-033-dev dfce25a。content（%TEMP% 暂存用后清理）/path
+      二选一 + args + timeout；永不回退；描述含 AutoLang 速查与"v0.1.0 运行
+      时错误 exit 0 需显式 exit()"警示；`build_agent()` 仅 probe 通过时注册
+      （先例同 SkillTool）。7 项测试含真机 exit(3) 传播、运行时错误文本
+      上浮、path+args 直跑。附带发现：ash 对脚本 exit(N≠0) 附一行 stderr
+      栈回溯（无害）。**注册门控本身无独立单测**（build_agent 需 Client），
+      以代码检视 + 条件编译路径保证。
   - 关联：AC-07
-- **T-05** 集成测试 `tests/ash_exec.rs`（AC 场景矩阵、无 ash skip）
+- **T-05** 场景矩阵测试（AC 场景矩阵、无 ash skip） `[x]`
   - 验证：本机（ash 在 PATH）`cargo test -p auto-ai-cli --test ash_exec` 全绿
+    - [✅ 已完成（路径适配）] plan-033-dev 27614d8。**偏差记录**：auto-ai-cli
+      为 bin-only crate（无 lib target），`tests/` 集成测试无法导入模块内部
+      ——场景矩阵以模块内测试等效落地（T-03/T-04 已含），AC-02 补"子进程
+      自再执行"模式：父测试以 `AUTO_AI_ASH_BIN=X:/...` 重跑测试二进制，
+      子测试断言 probe=None 且 run_command 走系统壳（标注 +
+      details.executor）。最终 `cargo test -p auto-ai-cli` = 46/46。
   - 关联：AC-01…AC-08
-- **T-06** 验证与文档收口
+- **T-06** 验证与文档收口 `[x]`
   - `cargo test --workspace` 全绿；README 增"命令执行层"一节；KNOWN-DEBT 不动
     （ash 侧缺口由 auto-shell 立项，见 §10）
   - 手工 e2e 清单执行并记录证据
+    - [✅ 已完成（自动化等效 + 交互项移交 review）] plan-033-dev 914b2f0。
+      `cargo test --workspace` = **285 passed / 0 failed**（含 CLI 46、agent
+      115、daemon 62 等，零回归）。SD-01 spec 落于 worktree
+      `docs/specs/auto-ai-cli/shell-execution.md`（merge 时发布，本仓库首个
+      module Spec）。README 增 Command execution (ash-first) 一节。**手工
+      交互式 LLM e2e（需 aaid + API key + 真人肉眼核对 UI 标注）移交
+      review 门**：其可程序化断言的部分（标注格式、details、拒绝文案）
+      已由 46 项测试覆盖。
   - 关联：AC-09、全部复核
 
 ## 9. 复审记录
@@ -189,6 +234,18 @@ KNOWN-DEBT 引用的 PLAN-064 为**未落盘的会话级计划**，不占本仓�
   **033**，plan_id 与文件名同步更新，契约内容不变（revision 仍为 1，编号勘误
   非语义变更）。同日用户拍板：**回退矩阵（拒绝/命令失败不回退）获批**，
   §10.1 关闭；§10.2 按设计推荐默认采纳。用户授权开始执行（work）。
+- 2026-09-11（work handoff）：`stage: work | PLAN-033 | r1 | outcome: pass |
+  code_commit: plan-033-dev 547db95→914b2f0（T-01…T-06 共 6 提交，基线
+  373cd50）| task_ids: T-01..T-06 全勾 | evidence: cargo test -p auto-ai-cli
+  46/46（含真机 ash 轨/拒绝不回退/失败不重试/超时 kill/子进程回退轨/
+  脚本 exit 传播）、cargo test --workspace 285/0、clippy 新代码零告警 |
+  blockers: 无 | next: review`。worktree `.wt/ai-033/auto-ai`（依赖快照
+  `.wt/ai-033/auto-lang` @ f26ba9a41 只读）保留待 review/merge。执行期
+  适配 3 项已记录于任务条目：①worktree 组布局（`.worktrees/` 内相对路径
+  `../../auto-lang` 解析不到 → `.wt/ai-033/` 组 + 依赖快照，符合 wt 惯例）；
+  ②tests/ash_exec.rs → 模块内测试（bin-only crate）；③Denied 前缀实测为
+  两类（security/sandbox）已入分类器与 spec。交互式 LLM e2e（需 aaid +
+  API key）移交 review 门。
 
 ## 10. 待澄清事项
 
