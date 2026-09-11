@@ -43,6 +43,20 @@ aictl status
 # Apps link auto-ai-client and call AiClient::complete()
 ```
 
+## Command execution (ash-first)
+
+`auto-ai-cli`'s `run_command` / `run_ash_script` tools execute commands through
+the sibling [auto-shell](../auto-shell) `ash` binary when it is available:
+`ash --sandbox <cwd>` confines file operations to the working directory, and
+the tool falls back to the system shell (`cmd.exe` / `sh`) only when ash is
+absent or could not even start a command. Policy denials and genuine command
+failures never fall back — they surface to the model as PAUSED notices or real
+output instead. Discovery order: `AUTO_AI_ASH_BIN` (authoritative override) →
+`PATH` → sibling `auto-shell/ash/target/{release,debug}` heuristic; set
+`AUTO_AI_ASH_AUDIT=<file>` to turn on ash's JSONL audit log. Contract details:
+[`docs/specs/auto-ai-cli/shell-execution.md`](docs/specs/auto-ai-cli/shell-execution.md)
+(PLAN-033, design in `docs/designs/2026-09-11-ash-first-shell-execution-design.md`).
+
 ## Design Doc
 
 See [`docs/design/15-ai-daemon-infrastructure.md`](https://github.com/auto-stack/auto-lang/blob/master/docs/design/15-ai-daemon-infrastructure.md) in the auto-lang repo.

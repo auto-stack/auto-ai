@@ -74,7 +74,7 @@ impl AgentFactory for CliAgentFactory {
         agent.register_tool(crate::tools::EditFile);
         agent.register_tool(crate::tools::ListDir);
         agent.register_tool(crate::tools::Search);
-        agent.register_tool(crate::tools::RunCommand);
+        agent.register_tool(crate::tools::RunCommand::new());
         // If there's a handoff, inject it as context.
         if let Some(h) = handoff {
             agent = Agent::with_context(agent, h.render());
