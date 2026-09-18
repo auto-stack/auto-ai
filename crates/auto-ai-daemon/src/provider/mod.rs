@@ -35,6 +35,11 @@ pub enum StreamDelta {
     /// A chunk of the model's reasoning/thinking (kept separate from Text so
     /// consumers can render it in a collapsible "thinking" section).
     Reasoning(String),
+    /// PLAN-073 T-03: a non-fatal degradation notice (musk plan 073) — e.g.
+    /// a streamed tool_call whose arguments failed to parse and were
+    /// substituted with `{}`. Surfaced to the client as a `warning` frame so
+    /// the degradation is visible instead of silent (AC-02).
+    Warning(String),
 }
 
 /// PLAN-064: thinking effort level, parsed from

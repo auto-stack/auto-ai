@@ -865,6 +865,19 @@ fn forward_sse_delta(mut ev: JsonValue, sink: &a2r_std::task::TaskRef<StreamEven
         Some(t) => ty = t.as_str().unwrap_or_default().to_string(),
         None => {},
     };
+    // musk plan 073 T-03: daemon degradation notices (tool_call arguments
+    // that failed to parse) arrive as `warning` frames. Map them to
+    // StreamEvent::Warning BEFORE the generic text path — a warning frame
+    // carries `text` too, and falling through would splice the notice into
+    // the model's answer body.
+    if ty == "warning" {
+        if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
+            if t.is_empty() == false {
+                sink.send(StreamEvent::Warning(t.to_string()));
+            }
+        }
+        return;
+    }
     match ev.get("text") {
         Some(t) => {
             let text = t.as_str().unwrap_or_default();

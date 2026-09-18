@@ -310,6 +310,14 @@ async fn streaming_response(
                     crate::provider::StreamDelta::Reasoning(t) => {
                         json!({"type": "reasoning", "text": t})
                     }
+                    // musk plan 073 T-03: provider-level degradation notices
+                    // (e.g. a streamed tool_call whose arguments failed to
+                    // parse and were substituted with `{}`) surface as
+                    // `warning` frames — a NEW type; unknown-type consumers
+                    // already ignore it, so the change is wire-compatible.
+                    crate::provider::StreamDelta::Warning(t) => {
+                        json!({"type": "warning", "text": t})
+                    }
                 };
                 let _ = tx2.try_send(format!("data: {}\n\n", payload));
             });

@@ -263,12 +263,6 @@ impl AiProvider for AnthropicProvider {
         // Accumulate tool_use blocks from Anthropic SSE (Plan 006).
         // content_block_start declares id+name; content_block_delta delivers
         // input_json_delta fragments that we concatenate.
-        #[derive(Default)]
-        struct ToolBlock {
-            id: String,
-            name: String,
-            input_json: String,
-        }
         let mut tool_blocks: Vec<ToolBlock> = Vec::new();
         let mut stop_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
@@ -398,28 +392,12 @@ impl AiProvider for AnthropicProvider {
             }
         }
 
-        // Convert accumulated tool blocks into ToolCall structs.
-        let tool_calls: Vec<ToolCall> = tool_blocks
-            .into_iter()
-            .filter(|tb| !tb.name.is_empty())
-            .map(|tb| {
-                let input = match serde_json::from_str::<serde_json::Value>(&tb.input_json) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // Don't silently degrade to Null (downstream would run
-                        // the tool with no args). Log and pass an empty object.
-                        tracing::warn!(
-                            "anthropic streaming: malformed tool_use input for '{}': {} \
-                             (len={}, first 200: '{}') — passing empty object",
-                            tb.name, e, tb.input_json.len(),
-                            &tb.input_json[..tb.input_json.len().min(200)]
-                        );
-                        serde_json::Value::Object(serde_json::Map::new())
-                    }
-                };
-                ToolCall { id: tb.id, name: tb.name, input }
-            })
-            .collect();
+        // Convert accumulated tool blocks into ToolCall structs (degraded
+        // substitutions emit a warning delta — musk plan 073 T-03).
+        let tool_calls: Vec<ToolCall> =
+            tool_calls_from_blocks(tool_blocks, &|msg| {
+                on_delta(super::StreamDelta::Warning(msg))
+            });
 
         Ok(CompletionResponse {
             content,
@@ -484,6 +462,51 @@ fn tool_to_anthropic(t: &ToolDefinition) -> serde_json::Value {
         "description": t.description,
         "input_schema": t.parameters,
     })
+}
+
+/// A streamed tool_use block under accumulation (content_block_start declares
+/// id+name; input_json_delta fragments are concatenated — Plan 006).
+#[derive(Default)]
+pub(crate) struct ToolBlock {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) input_json: String,
+}
+
+/// Convert accumulated tool_use blocks into [`ToolCall`] structs.
+///
+/// Unparseable input JSON substitutes `{}` — fail-closed by design — and
+/// invokes `on_warning` with a description so the client frame-stream can
+/// surface the why (musk plan 073 T-03 / AC-02).
+fn tool_calls_from_blocks(blocks: Vec<ToolBlock>, on_warning: &dyn Fn(String)) -> Vec<ToolCall> {
+    blocks
+        .into_iter()
+        .filter(|tb| !tb.name.is_empty())
+        .map(|tb| {
+            let input = match serde_json::from_str::<serde_json::Value>(&tb.input_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    // Don't silently degrade to Null (downstream would run
+                    // the tool with no args). Log, pass an empty object,
+                    // and surface a warning frame to the client.
+                    tracing::warn!(
+                        "anthropic streaming: malformed tool_use input for '{}': {} \
+                         (len={}, first 200: '{}') — passing empty object",
+                        tb.name, e, tb.input_json.len(),
+                        &tb.input_json[..tb.input_json.len().min(200)]
+                    );
+                    on_warning(format!(
+                        "tool_use '{}' input failed to parse ({}); \
+                         raw len={}, head '{}…' — empty input substituted",
+                        tb.name, e, tb.input_json.len(),
+                        &tb.input_json[..tb.input_json.len().min(80)]
+                    ));
+                    serde_json::Value::Object(serde_json::Map::new())
+                }
+            };
+            ToolCall { id: tb.id, name: tb.name, input }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -707,5 +730,35 @@ mod tests {
         assert_eq!(tool_calls[0].input["path"], "a.txt");
         assert_eq!(tool_calls[1].name, "run_cmd");
         assert_eq!(json["stop_reason"].as_str(), Some("tool_use"));
+    }
+
+    #[test]
+    fn degraded_args_substitute_empty_and_warn() {
+        // musk plan 073 AC-02: unparseable input_json substitutes `{}` AND
+        // emits a warning; healthy blocks stay untouched.
+        let warnings: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w2 = warnings.clone();
+        let blocks = vec![
+            ToolBlock {
+                id: "tu_1".into(),
+                name: "read_file".into(),
+                input_json: "{\"path\": \"a\"".into(), // truncated
+            },
+            ToolBlock {
+                id: "tu_2".into(),
+                name: "write_file".into(),
+                input_json: "{\"path\":\"b.txt\",\"content\":\"x\"}".into(),
+            },
+        ];
+        let calls = tool_calls_from_blocks(blocks, &move |msg| {
+            w2.lock().unwrap().push(msg);
+        });
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].input, serde_json::json!({}));
+        assert_eq!(calls[1].input["path"], "b.txt");
+        let ws = warnings.lock().unwrap();
+        assert_eq!(ws.len(), 1);
+        assert!(ws[0].contains("read_file"), "warn mentions tool: {}", ws[0]);
     }
 }

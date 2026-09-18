@@ -226,12 +226,6 @@ impl AiProvider for OpenAiProvider {
         let mut content = String::new();
 
         // Accumulate tool_calls from SSE delta chunks (Plan 006).
-        #[derive(Default)]
-        struct AccumToolCall {
-            id: String,
-            name: String,
-            arguments: String,
-        }
         let mut tool_call_accum: Vec<AccumToolCall> = Vec::new();
         let mut finish_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
@@ -338,48 +332,12 @@ impl AiProvider for OpenAiProvider {
             }
         }
 
-        // Convert accumulated tool_calls into ToolCall structs.
-        let tool_calls: Vec<ToolCall> = tool_call_accum
-            .into_iter()
-            .filter(|tc| !tc.name.is_empty())
-            .map(|tc| {
-                tracing::debug!(
-                    "streaming tool_call: name='{}' id='{}' args_len={}",
-                    tc.name, tc.id, tc.arguments.len()
-                );
-                let input = if tc.arguments.is_empty() {
-                    tracing::warn!("streaming: tool_call '{}' has empty arguments", tc.name);
-                    serde_json::Value::Object(serde_json::Map::new())
-                } else {
-                    match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            // Don't heuristic-recover: a truncated `cmd` could
-                            // be shell-interpreted into a different command.
-                            // Surface the raw args in the log and pass an empty
-                            // object upstream so the caller sees a clear failure.
-                            tracing::warn!(
-                                "streaming: malformed tool_call arguments for '{}': {} \
-                                 (len={}, first 200: '{}') — passing empty object",
-                                tc.name, e, tc.arguments.len(),
-                                &tc.arguments[..tc.arguments.len().min(200)]
-                            );
-                            serde_json::Value::Object(serde_json::Map::new())
-                        }
-                    }
-                };
-                tracing::debug!(
-                    "streaming tool_call parsed: name='{}' input keys={:?}",
-                    tc.name,
-                    input.as_object().map(|m| m.keys().collect::<Vec<_>>()).unwrap_or_default()
-                );
-                ToolCall {
-                    id: tc.id,
-                    name: tc.name,
-                    input,
-                }
-            })
-            .collect();
+        // Convert accumulated tool_calls into ToolCall structs (degraded
+        // substitutions emit a warning delta — musk plan 073 T-03).
+        let tool_calls: Vec<ToolCall> = tool_calls_from_accum(
+            tool_call_accum,
+            &|msg| on_delta(super::StreamDelta::Warning(msg)),
+        );
 
         Ok(CompletionResponse {
             content,
@@ -403,6 +361,76 @@ fn usage_from_json(u: &serde_json::Value) -> Usage {
         cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0) as u32,
         cache_write_tokens: 0,
     }
+}
+
+/// A streamed tool_call under accumulation (delta fragments concatenated
+/// incrementally by `index` — Plan 006).
+#[derive(Default)]
+pub(crate) struct AccumToolCall {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) arguments: String,
+}
+
+/// Convert accumulated tool_calls into [`ToolCall`] structs.
+///
+/// Degraded calls (empty or unparseable argument JSON) substitute `{}` —
+/// fail-closed by design (a heuristic-recovered truncated `cmd` could be
+/// shell-interpreted into a different command) — and invoke `on_warning`
+/// with a description so the client frame-stream can surface the why
+/// (musk plan 073 T-03 / AC-02: the previously silent swap left param-less
+/// tool cards and a blind model retry loop).
+fn tool_calls_from_accum(
+    accum: Vec<AccumToolCall>,
+    on_warning: &dyn Fn(String),
+) -> Vec<ToolCall> {
+    accum
+        .into_iter()
+        .filter(|tc| !tc.name.is_empty())
+        .map(|tc| {
+            tracing::debug!(
+                "streaming tool_call: name='{}' id='{}' args_len={}",
+                tc.name, tc.id, tc.arguments.len()
+            );
+            let input = if tc.arguments.is_empty() {
+                tracing::warn!("streaming: tool_call '{}' has empty arguments", tc.name);
+                on_warning(format!(
+                    "tool_call '{}' arrived with EMPTY arguments; empty input substituted",
+                    tc.name
+                ));
+                serde_json::Value::Object(serde_json::Map::new())
+            } else {
+                match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            "streaming: malformed tool_call arguments for '{}': {} \
+                             (len={}, first 200: '{}') — passing empty object",
+                            tc.name, e, tc.arguments.len(),
+                            &tc.arguments[..tc.arguments.len().min(200)]
+                        );
+                        on_warning(format!(
+                            "tool_call '{}' arguments failed to parse ({}); \
+                             raw len={}, head '{}…' — empty input substituted",
+                            tc.name, e, tc.arguments.len(),
+                            &tc.arguments[..tc.arguments.len().min(80)]
+                        ));
+                        serde_json::Value::Object(serde_json::Map::new())
+                    }
+                }
+            };
+            tracing::debug!(
+                "streaming tool_call parsed: name='{}' input keys={:?}",
+                tc.name,
+                input.as_object().map(|m| m.keys().collect::<Vec<_>>()).unwrap_or_default()
+            );
+            ToolCall {
+                id: tc.id,
+                name: tc.name,
+                input,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -577,5 +605,46 @@ mod tests {
         assert_eq!(tool_calls[0].name, "read_file");
         assert_eq!(tool_calls[0].input["path"], "a.txt");
         assert_eq!(json["choices"][0]["finish_reason"].as_str(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn degraded_args_substitute_empty_and_warn() {
+        // musk plan 073 AC-02: empty / malformed streamed arguments
+        // substitute `{}` AND emit a warning per degraded call — valid calls
+        // stay untouched and emit nothing.
+        let warnings: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w2 = warnings.clone();
+        let accum = vec![
+            AccumToolCall {
+                id: "c1".into(),
+                name: "run_command".into(),
+                arguments: "{\"cmd\": \"npm inst".into(), // truncated JSON
+            },
+            AccumToolCall {
+                id: "c2".into(),
+                name: "report".into(),
+                arguments: String::new(), // no argument fragments at all
+            },
+            AccumToolCall {
+                id: "c3".into(),
+                name: "read_file".into(),
+                arguments: "{\"path\":\"a.txt\"}".into(), // healthy
+            },
+        ];
+        let calls = tool_calls_from_accum(accum, &move |msg| {
+            w2.lock().unwrap().push(msg);
+        });
+        assert_eq!(calls.len(), 3);
+        // degraded → `{}` input
+        assert_eq!(calls[0].input, serde_json::json!({}));
+        assert_eq!(calls[1].input, serde_json::json!({}));
+        // healthy → parsed
+        assert_eq!(calls[2].input["path"], "a.txt");
+        // exactly two warnings, naming the degraded tools
+        let ws = warnings.lock().unwrap();
+        assert_eq!(ws.len(), 2);
+        assert!(ws[0].contains("run_command"), "warn mentions tool: {}", ws[0]);
+        assert!(ws[1].contains("report"), "warn mentions tool: {}", ws[1]);
     }
 }
