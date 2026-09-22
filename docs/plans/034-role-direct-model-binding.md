@@ -1,6 +1,6 @@
 ---
 plan_id: PLAN-034
-status: execution_done
+status: reviewed
 feature_name: 角色直接绑定模型（有序候选链，替代 tier 间接绑定）
 author: [agent]
 created_at: 2026-09-22T00:00:00Z
@@ -392,6 +392,43 @@ wait = (显式链 且 当前候选非末位) ? CHAIN_SHORT_WAIT(1s) : 30s
   musk roles 页未适配两项）。关联 AC-07、SD-01。
 
 ## 9. 复审记录
+
+- 2026-09-22 review（[agent]）：
+  `stage: review | plan_id: PLAN-034 | plan_revision: 1 | outcome: pass`
+  `reviewed_commit`: auto-ai `plan-034-dev` 71df9bf（base 630a98d = main）；
+  os-config `plan-034-dev` 0d6671b（base 8fe4cdc = main）。
+  `dependency_revisions`: ai-034/auto-lang = master bebd09387（零改动检出，
+  wt-guard 三树 clean；两 worktree 无脏区，实现全部已提交）。
+  `spec_inputs`: docs/specs/auto-ai/role-model-binding.md（新建，blob 冻结
+  143415087384e178a3b7581d2436ee3b7b995c5c @ 71df9bf）；SD-02 = auto-os-config
+  README.md inferField 约定表 @ 9373f76。
+  `acceptance_results`（本会话重建重放，非采信实施期汇报）：
+  AC-01 pass（daemon explicit_chain_routes_in_order_and_meta_follows ok +
+  agent harness_model_chain_sets_head_and_full_chain/…wins_over_pin ok；
+  隔离栈实测 deadp→mockp 降级+meta 回填见 work 账）；
+  AC-02 pass（explicit_chain_saturated_non_last_falls_through_fast ok，本轮
+  重放 1.03s——1s 短等待实证；permit_wait 选择矩阵 ok）；
+  AC-03 pass（agent harness_no_chain_pin_and_tier_unchanged ok + daemon
+  empty_chain_and_concrete_id_unchanged ok + 既有 tier/meta 回归例全绿）；
+  AC-04 pass（ai-config model_chain_tolerated_by_old_field_set /
+  empty_is_skipped_on_wire / roundtrip_and_head_pin 三例 ok）；
+  AC-05 pass（role_config models 四例 ok + a2r role_ser_bridge 6 例 ok）；
+  AC-06 pass（test-plan034-models.mjs 重放：四断言 PASS + 无页面错误）；
+  AC-07 pass（workspace 308 全绿重放：43+119+22+49+4+71；ai-config/client/
+  daemon a2r 树 ok、agent a2r t34 4+bridge 6 ok——同 commit 71df9bf 无变
+  更，T-07 全量跑证据复用）。
+  `findings`: 无阻断。备注三点：① 本 review 与实施同会话，独立性受限——
+  已以工件重建裁定（全部 AC 重放 + diff 抽查 + spec 对照），未采信实施期
+  自述；② musk 兼容性（Role 默认方法不破坏 MockRole）为 Rust trait 默认方
+  法语义推证 + musk 本计划零改动，未实测 musk 构建（其 worktree musk-084
+  归他人所有）；musk 整文覆盖写回丢链风险已登记 KNOWN-DEBT 待用户决策；
+  ③ 顺带修复 4 项（wire.at preferred_provider 缺口 / live_run.rs 基线编译
+  断裂 / os-config 单元格 dirty 缺口 / cli ash 测试守卫）均已核实为基线
+  缺陷（main HEAD 复现）且修复最小化，不属范围收敛。
+  `evidence`: 本记录所列命令与测试名均可在 worktree 复现；spec 冻结哈希
+  如上；diff 范围核对 ai-config 3 / agent 20 / cli 1 / daemon 3 / docs 2 +
+  os-config 9 文件，与 §8 落点一致。
+  `next`: merge（auto-plan-merge；worktree 保留）。
 
 - 2026-09-22 work handoff（[agent]）：
   `stage: work | plan_id: PLAN-034 | plan_revision: 1 | outcome: pass`
