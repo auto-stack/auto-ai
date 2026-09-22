@@ -87,6 +87,26 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .with_state(state)
 }
 
+/// PLAN-034: for explicit-chain requests, a NON-LAST candidate waits this
+/// long for a concurrency permit before falling through to the next
+/// candidate. The user declared a chain precisely to say "concurrency
+/// exhausted → use the backup"; waiting the legacy 30s on a saturated
+/// non-last candidate contradicts that intent. The LAST candidate keeps
+/// the 30s (nothing left to fall back to — better to wait). Tier /
+/// concrete-id requests keep 30s everywhere (behavior unchanged).
+const CHAIN_SHORT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Permit wait for candidate `idx` of `total` on this request (PLAN-034).
+/// A free fn so the selection policy stays unit-testable without waiting
+/// out real timeouts in integration tests.
+fn permit_wait(is_explicit_chain: bool, idx: usize, total: usize) -> std::time::Duration {
+    if is_explicit_chain && idx + 1 < total {
+        CHAIN_SHORT_WAIT
+    } else {
+        std::time::Duration::from_secs(30)
+    }
+}
+
 /// POST /v1/chat/completions — receive a canonical request, call a provider,
 /// return a canonical response.
 ///
@@ -94,6 +114,11 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 /// resolves the model/tier to a provider (via [`TierRouter`], with fallback
 /// across the candidate chain for tier requests), acquires a concurrency
 /// permit, and delegates the (canonical↔provider) translation to the provider.
+///
+/// PLAN-034: a request with a non-empty `model_chain` routes through exactly
+/// that ordered (provider, model) list — the TierRouter and
+/// `preferred_provider` are bypassed (the explicit order IS the user's
+/// preference), with the same fallback loop semantics.
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -108,11 +133,18 @@ async fn chat_completions(
     // Resolve the request's model + provider.
     let mut req = req;
     let is_tier_request = req.model.starts_with("tier:");
+    let is_explicit_chain = !req.model_chain.is_empty();
 
     // Build the ordered list of (provider_name, model_id) candidates to try.
+    // PLAN-034: an explicit `model_chain` wins outright (head = primary).
     // For tier requests this is the TierRouter's candidate chain (enabling
     // fallback across providers); for concrete model ids it's a single entry.
-    let candidates: Vec<(String, String)> = if is_tier_request {
+    let candidates: Vec<(String, String)> = if is_explicit_chain {
+        req.model_chain
+            .iter()
+            .map(|c| (c.provider.clone(), c.model.clone()))
+            .collect()
+    } else if is_tier_request {
         let tier_name = req.model.strip_prefix("tier:").unwrap_or("").trim().to_ascii_lowercase();
         let tier = match ai_config::ModelTier::parse_name(&tier_name) {
             Some(t) => t,
@@ -160,14 +192,18 @@ async fn chat_completions(
     // candidate. Streaming only falls back before the stream starts (a
     // saturated first candidate's acquire failure moves to the next); once a
     // stream begins, mid-stream errors are reported as-is.
+    //
+    // PLAN-034: on an explicit chain, a non-last candidate waits only
+    // CHAIN_SHORT_WAIT for its permit before moving on (see the constant).
     let mut last_error: Option<String> = None;
-    for (provider_name, model_id) in &candidates {
+    for (idx, (provider_name, model_id)) in candidates.iter().enumerate() {
         req.model = model_id.clone();
 
         // Acquire a permit (bounded wait so a saturated provider fails fast).
+        let wait = permit_wait(is_explicit_chain, idx, candidates.len());
         let permit = match state
             .pool
-            .acquire_with_timeout(provider_name, std::time::Duration::from_secs(30))
+            .acquire_with_timeout(provider_name, wait)
             .await
         {
             Some(p) => p,
@@ -869,5 +905,196 @@ mod tests {
         assert_eq!(v["model_meta"]["id"], "model-b");
         assert_eq!(v["model_meta"]["context_window"], 200_000, "meta must follow the fallback model");
         assert_eq!(counters["mocka"].load(Ordering::SeqCst), 1);
+    }
+
+    // ── PLAN-034: explicit model candidate chain ────────────────────────────
+
+    use ai_config::wire::ModelCandidate;
+
+    fn chain_req(chain: Vec<(&str, &str)>) -> ai_config::CompletionRequest {
+        let mut req = ai_config::CompletionRequest::single(chain[0].1, "hi");
+        req.model_chain = chain
+            .into_iter()
+            .map(|(p, m)| ModelCandidate::new(p, m))
+            .collect();
+        req
+    }
+
+    async fn call_chat_req(
+        state: Arc<AppState>,
+        req: ai_config::CompletionRequest,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-app-name", "test".parse().unwrap());
+        let resp = chat_completions(State(state), headers, Json(req)).await.into_response();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, v)
+    }
+
+    #[test]
+    fn permit_wait_selection_matrix() {
+        use std::time::Duration;
+        // Explicit chain, non-last candidate → short wait.
+        assert_eq!(permit_wait(true, 0, 3), CHAIN_SHORT_WAIT);
+        assert_eq!(permit_wait(true, 1, 3), CHAIN_SHORT_WAIT);
+        // Explicit chain, LAST candidate → legacy 30s (nothing to fall back to).
+        assert_eq!(permit_wait(true, 2, 3), Duration::from_secs(30));
+        // Single-candidate chain → last → 30s.
+        assert_eq!(permit_wait(true, 0, 1), Duration::from_secs(30));
+        // Non-chain requests (tier / concrete id) → 30s everywhere.
+        assert_eq!(permit_wait(false, 0, 2), Duration::from_secs(30));
+        assert_eq!(permit_wait(false, 1, 2), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn explicit_chain_routes_in_order_and_meta_follows() {
+        // AC-01: chain [mocka, mockb]; mocka fails retryable → mockb serves;
+        // the response's model_meta reflects the model that actually served.
+        let server_err = Err(LlmError::Upstream {
+            status: 503,
+            message: "unavailable".into(),
+            retryable: true,
+        });
+        let (state, counters) = state_with(
+            test_config(),
+            vec![
+                ("mocka", "model-a", vec![server_err]),
+                ("mockb", "model-b", vec![Ok(ok_response())]),
+            ],
+        );
+        let (status, v) = call_chat_req(
+            state,
+            chain_req(vec![("mocka", "model-a"), ("mockb", "model-b")]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["model_meta"]["id"], "model-b");
+        assert_eq!(v["model_meta"]["context_window"], 200_000);
+        assert_eq!(counters["mocka"].load(Ordering::SeqCst), 1);
+        assert_eq!(counters["mockb"].load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_chain_skips_unknown_provider() {
+        // An entry whose provider isn't configured is skipped (the fallback
+        // loop's missing-provider path); the valid candidate serves.
+        let (state, counters) = state_with(
+            test_config(),
+            vec![("mockb", "model-b", vec![Ok(ok_response())])],
+        );
+        let (status, v) = call_chat_req(
+            state,
+            chain_req(vec![("ghost", "no-such-model"), ("mockb", "model-b")]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["model_meta"]["id"], "model-b");
+        assert_eq!(counters["mockb"].load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_chain_all_fail_is_502() {
+        let mk_err = || Err(LlmError::Upstream {
+            status: 503,
+            message: "down".into(),
+            retryable: true,
+        });
+        let (state, _) = state_with(
+            test_config(),
+            vec![
+                ("mocka", "model-a", vec![mk_err()]),
+                ("mockb", "model-b", vec![mk_err()]),
+            ],
+        );
+        let (status, v) = call_chat_req(
+            state,
+            chain_req(vec![("mocka", "model-a"), ("mockb", "model-b")]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{v}");
+        let msg = v["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("all providers failed"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn explicit_chain_ignores_preferred_provider() {
+        // preferred_provider lets the tier router REORDER its candidates;
+        // an explicit chain already encodes the user's order — it must win
+        // untouched (mocka first, both healthy → mocka serves).
+        let (state, _) = state_with(
+            test_config(),
+            vec![
+                ("mocka", "model-a", vec![Ok(ok_response())]),
+                ("mockb", "model-b", vec![Ok(ok_response())]),
+            ],
+        );
+        let mut req = chain_req(vec![("mocka", "model-a"), ("mockb", "model-b")]);
+        req.preferred_provider = Some("mockb".into());
+        let (status, v) = call_chat_req(state, req).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(
+            v["model_meta"]["id"], "model-a",
+            "explicit order must outrank preferred_provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_chain_saturated_non_last_falls_through_fast() {
+        // AC-02: mocka's pool (max_concurrency = 4) is fully occupied; a
+        // chain request must give up on it after CHAIN_SHORT_WAIT (1s) and
+        // get served by mockb — NOT block the legacy 30s.
+        let (state, counters) = state_with(
+            test_config(),
+            vec![
+                ("mocka", "model-a", vec![Ok(ok_response())]),
+                ("mockb", "model-b", vec![Ok(ok_response())]),
+            ],
+        );
+        // Drain mocka's pool.
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            held.push(state.pool.acquire("mocka").await.expect("permit"));
+        }
+        let start = std::time::Instant::now();
+        let (status, v) = call_chat_req(
+            state.clone(),
+            chain_req(vec![("mocka", "model-a"), ("mockb", "model-b")]),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["model_meta"]["id"], "model-b");
+        assert!(
+            elapsed < std::time::Duration::from_secs(15),
+            "non-last saturated candidate must short-wait, not 30s (took {elapsed:?})"
+        );
+        assert_eq!(
+            counters["mocka"].load(Ordering::SeqCst),
+            0,
+            "permit starvation means the provider is never invoked"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_chain_and_concrete_id_unchanged() {
+        // AC-03 (daemon half): an EMPTY chain is exactly no chain — a
+        // concrete model id resolves via the owner scan as before.
+        let (state, _) = state_with(
+            test_config(),
+            vec![("mocka", "model-a", vec![Ok(ok_response())])],
+        );
+        let (status, v) = call_chat(state.clone(), "model-a").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["model_meta"]["id"], "model-a");
+        // Same again with an explicit-but-empty chain field.
+        let req = ai_config::CompletionRequest::single("model-a", "hi");
+        assert!(req.model_chain.is_empty());
+        let (status, v) = call_chat_req(state, req).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["model_meta"]["id"], "model-a");
     }
 }

@@ -170,6 +170,22 @@ pub async fn usage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// Uses server_glue::config_provider_models because .at's Map has no iteration
 /// API (DaemonConfig.providers is a HashMap).
 /// `GET /v1/usage` — per-app token accounting.
+/// Permit wait for candidate `idx` of `total` (PLAN-034): an explicit
+/// chain's NON-LAST candidate short-waits 1s (CHAIN_SHORT_WAIT) — the user
+/// declared the chain to say "concurrency exhausted → use the backup", and
+/// waiting the legacy 30s on a saturated non-last candidate contradicts
+/// that. The LAST candidate keeps 30s (nothing left to fall back to).
+/// Non-chain requests (tier / concrete id) keep 30s everywhere.
+/// (A free fn so the selection policy stays unit-testable; mirrors
+/// rust-ref server.rs permit_wait.)
+fn permit_wait(is_explicit_chain: bool, idx: i64, total: i64) -> Duration {
+    if is_explicit_chain {
+        if idx + 1 < total {
+            return Duration::from_secs(1);
+        }    }
+    return Duration::from_secs(30);
+}
+
 /// Resolve a `tier:<name>` token to a concrete model id via the default
 /// provider's model list (legacy fallback when TierRouter has no candidates).
 /// Returns None if the tier is unknown or the default provider has no matching
@@ -239,8 +255,16 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
     let is_tier_request = req.model.starts_with("tier:");
 
 
+
+    let is_explicit_chain: bool = (req.model_chain.len() as i64) > 0;
+
+
     let mut candidates: Vec<(String, String)> = vec![];
-    if is_tier_request {
+    if is_explicit_chain {
+        for c in &req.model_chain {
+            candidates.push((c.provider.clone(), c.model.clone()));
+        }
+    } else if is_tier_request {
         let tier_name_raw = req.model[5..].to_string();
         let tier_name = tier_name_raw.trim().to_string().to_ascii_lowercase();
         match ModelTier::parse_name(tier_name.as_str()) {
@@ -278,14 +302,17 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
 
 
 
+
+
     let mut last_error: Option<String> = None;
+    let mut idx: i64 = 0;
     for entry in &candidates {
         let provider_name = entry.0.clone();
         let model_id = entry.1.clone();
         req.model = model_id.clone();
         
 
-        match state.pool.acquire_with_timeout(provider_name.as_str(), Duration::from_secs(30)).await {
+        match state.pool.acquire_with_timeout(provider_name.as_str(), permit_wait(is_explicit_chain, idx, (candidates.len() as i64))).await {
             Some(permit) => {
                 match state.registry.get(provider_name.as_str()) {
                     Some(provider) => {
@@ -338,6 +365,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
             },
             None => last_error = Some(format!("{}{}", format!("{}{}", "provider '", provider_name), "' concurrency pool unavailable")),
         };
+        idx = idx + 1;
     }
 
 
@@ -348,6 +376,11 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
 /// `POST /v1/chat/completions` — receive a canonical request, resolve a
 /// provider (with tier fallback across the candidate chain), call upstream,
 /// return a canonical response.
+/// 
+/// PLAN-034: a request with a non-empty `model_chain` routes through exactly
+/// that ordered (provider, model) list — the TierRouter and
+/// preferred_provider are bypassed (the explicit order IS the user's
+/// preference), with the same fallback loop semantics.
 /// 
 /// STREAMING NOTE: the streaming branch (`req.stream == true`) is wired to
 /// server_glue::streaming_response (Phase 3.6) — the SSE bridge uses bare

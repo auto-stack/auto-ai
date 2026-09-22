@@ -184,6 +184,23 @@ pub fn usage(State(state) State<Arc<AppState>>) ~IntoResponse {
     return Json(Value.Object(root))
 }
 
+/// Permit wait for candidate `idx` of `total` (PLAN-034): an explicit
+/// chain's NON-LAST candidate short-waits 1s (CHAIN_SHORT_WAIT) — the user
+/// declared the chain to say "concurrency exhausted → use the backup", and
+/// waiting the legacy 30s on a saturated non-last candidate contradicts
+/// that. The LAST candidate keeps 30s (nothing left to fall back to).
+/// Non-chain requests (tier / concrete id) keep 30s everywhere.
+/// (A free fn so the selection policy stays unit-testable; mirrors
+/// rust-ref server.rs permit_wait.)
+fn permit_wait(is_explicit_chain bool, idx int, total int) Duration {
+    if is_explicit_chain {
+        if idx + 1 < total {
+            return Duration.from_secs(1)
+        }
+    }
+    return Duration.from_secs(30)
+}
+
 /// Resolve a `tier:<name>` token to a concrete model id via the default
 /// provider's model list (legacy fallback when TierRouter has no candidates).
 /// Returns None if the tier is unknown or the default provider has no matching
@@ -255,6 +272,11 @@ fn state_model_meta(state @AppState, provider str, model_id str) ?ModelMeta {
 /// provider (with tier fallback across the candidate chain), call upstream,
 /// return a canonical response.
 ///
+/// PLAN-034: a request with a non-empty `model_chain` routes through exactly
+/// that ordered (provider, model) list — the TierRouter and
+/// preferred_provider are bypassed (the explicit order IS the user's
+/// preference), with the same fallback loop semantics.
+///
 /// STREAMING NOTE: the streaming branch (`req.stream == true`) is wired to
 /// server_glue::streaming_response (Phase 3.6) — the SSE bridge uses bare
 /// tokio::spawn + mpsc channel + async_stream::stream!, which have no .at
@@ -270,10 +292,18 @@ pub fn chat_completions(
 
     var req = req
     let is_tier_request = req.model.starts_with("tier:")
+    // PLAN-034: non-empty model_chain → route through exactly that ordered
+    // list; the TierRouter and preferred_provider are bypassed (the explicit
+    // order IS the user's preference).
+    let is_explicit_chain = req.model_chain.len() > 0
 
     // Build the ordered (provider_name, model_id) candidate list.
     var candidates List<(str, str)> = []
-    if is_tier_request {
+    if is_explicit_chain {
+        for c in req.model_chain {
+            candidates.push((c.provider, c.model))
+        }
+    } else if is_tier_request {
         let tier_name_raw = req.model.slice(5)
         let tier_name = tier_name_raw.trim().to_ascii_lowercase()
         is ModelTier.parse_name(tier_name.as_str()) {
@@ -312,14 +342,17 @@ pub fn chat_completions(
     }
 
     // Iterate candidates with fallback. A retryable failure moves to the next.
+    // PLAN-034: on an explicit chain, a NON-LAST candidate waits only
+    // permit_wait's short 1s for its permit before moving on (see the fn).
     var last_error ?str = None
+    var idx int = 0
     for entry in candidates {
         let provider_name = entry.0
         let model_id = entry.1
         req.model = model_id.clone()
 
         // Acquire a permit (bounded wait so a saturated provider fails fast).
-        is state.pool.acquire_with_timeout(provider_name, Duration.from_secs(30)).await {
+        is state.pool.acquire_with_timeout(provider_name, permit_wait(is_explicit_chain, idx, candidates.len())).await {
             Some(permit) -> {
                 is state.registry.get(provider_name) {
                     Some(provider) -> {
@@ -370,6 +403,7 @@ pub fn chat_completions(
                 last_error = Some("provider '" + provider_name + "' concurrency pool unavailable")
             }
         }
+        idx = idx + 1
     }
 
     // All candidates exhausted.
