@@ -142,6 +142,23 @@ pub type ToolCall {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ModelCandidate
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One entry of an explicit model candidate chain (PLAN-034): a provider
+/// name plus a concrete model id under that provider.
+pub type ModelCandidate {
+    provider str
+    model str
+}
+
+ext ModelCandidate {
+    static fn new(provider str, model str) ModelCandidate {
+        return ModelCandidate(provider: provider, model: model)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Usage
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -179,11 +196,24 @@ pub type CompletionRequest {
     /// If true, the daemon streams SSE deltas back instead of a single
     /// response. (Non-streaming callers leave this false.)
     stream bool
+    /// Preferred provider name for this request (tier routing hint). When
+    /// set, the daemon's tier router prefers this provider for the resolved
+    /// tier. None = daemon picks normally. Ignored when model_chain is
+    /// non-empty (the explicit chain IS the preference order).
+    preferred_provider ?str
     /// Thinking/reasoning effort level requested for this completion:
     /// "off" | "low" | "high" | "max" (PLAN-064). The daemon translates
     /// this per provider (anthropic-compat: thinking.budget_tokens;
     /// openai-compat: reasoning_effort / think). None = provider default.
     thinking_level ?str
+    /// Ordered model candidate chain, head first (PLAN-034). Non-empty means
+    /// the daemon routes through exactly these (provider, model) pairs in
+    /// order, falling to the next candidate on retryable errors / missing
+    /// provider / concurrency-pool exhaustion; model must equal
+    /// model_chain[0].model so old daemons (which ignore this field) still
+    /// serve the primary candidate. Empty = legacy model/tier routing,
+    /// unchanged.
+    model_chain List<ModelCandidate>
 }
 
 ext CompletionRequest {
@@ -197,8 +227,20 @@ ext CompletionRequest {
             system_prompt: None,
             tools: [],
             stream: false,
-            thinking_level: None
+            preferred_provider: None,
+            thinking_level: None,
+            model_chain: []
         )
+    }
+
+    /// With an explicit model candidate chain (PLAN-034). Also pins
+    /// model to the chain head so old daemons degrade gracefully.
+    mut fn with_model_chain(chain List<ModelCandidate>) CompletionRequest {
+        if chain.len() > 0 {
+            self.model = chain[0].model.clone()
+        }
+        self.model_chain = chain
+        return self
     }
 
     /// With a thinking level ("off" | "low" | "high" | "max").

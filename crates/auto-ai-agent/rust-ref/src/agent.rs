@@ -940,6 +940,7 @@ impl Agent {
             tools: tool_defs,
             stream: false,
             preferred_provider: self.role.preferred_provider(),
+            model_chain: Vec::new(),
             // PLAN-064: per-run override wins over the role default; both
             // None → no thinking parameter (provider default).
             thinking_level: self

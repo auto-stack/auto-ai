@@ -66,6 +66,8 @@ async fn live_react_one_tool_call() {
         system_prompt: None,
         stream: false,
         preferred_provider: None,
+        thinking_level: None,
+        model_chain: Vec::new(),
     }).await {
         Ok(_) => {}
         Err(e) => {

@@ -121,6 +121,20 @@ pub struct ToolCall {
     pub input: JsonValue,
 }
 
+/// One entry of an explicit model candidate chain (PLAN-034): a provider
+/// name plus a concrete model id under that provider.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModelCandidate {
+    pub provider: String,
+    pub model: String,
+}
+
+impl ModelCandidate {
+    pub fn new(provider: &str, model: &str) -> ModelCandidate {
+        return ModelCandidate { provider: provider.to_string(), model: model.to_string() };
+    }
+}
+
 /// Token usage statistics.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Usage {
@@ -150,12 +164,21 @@ pub struct CompletionRequest {
     pub system_prompt: Option<String>,
     pub tools: Vec<ToolDefinition>,
     pub stream: bool,
+    pub preferred_provider: Option<String>,
     pub thinking_level: Option<String>,
+    pub model_chain: Vec<ModelCandidate>,
 }
 
 impl CompletionRequest {
     pub fn single(model: &str, prompt: &str) -> CompletionRequest {
-        return CompletionRequest { model: model.to_string(), messages: vec![Message::user(prompt)], max_tokens: None, temperature: None, system_prompt: None, tools: vec![], stream: false, thinking_level: None };
+        return CompletionRequest { model: model.to_string(), messages: vec![Message::user(prompt)], max_tokens: None, temperature: None, system_prompt: None, tools: vec![], stream: false, preferred_provider: None, thinking_level: None, model_chain: vec![] };
+    }
+    pub fn with_model_chain(mut self, mut chain: Vec<ModelCandidate>) -> CompletionRequest {
+        if (chain.len() as i64) > 0 {
+            self.model = chain[0].clone().model.clone();
+        }
+        self.model_chain = chain.clone();
+        return self;
     }
     pub fn with_thinking_level(mut self, level: &str) -> CompletionRequest {
         self.thinking_level = Some(level.to_string());
@@ -182,11 +205,24 @@ impl CompletionRequest {
 /// Tools the model may call. Empty by default.
 /// If true, the daemon streams SSE deltas back instead of a single
 /// response. (Non-streaming callers leave this false.)
+/// Preferred provider name for this request (tier routing hint). When
+/// set, the daemon's tier router prefers this provider for the resolved
+/// tier. None = daemon picks normally. Ignored when model_chain is
+/// non-empty (the explicit chain IS the preference order).
 /// Thinking/reasoning effort level requested for this completion:
 /// "off" | "low" | "high" | "max" (PLAN-064). The daemon translates
 /// this per provider (anthropic-compat: thinking.budget_tokens;
 /// openai-compat: reasoning_effort / think). None = provider default.
+/// Ordered model candidate chain, head first (PLAN-034). Non-empty means
+/// the daemon routes through exactly these (provider, model) pairs in
+/// order, falling to the next candidate on retryable errors / missing
+/// provider / concurrency-pool exhaustion; model must equal
+/// model_chain[0].model so old daemons (which ignore this field) still
+/// serve the primary candidate. Empty = legacy model/tier routing,
+/// unchanged.
 /// Simple single-turn request: one user message.
+/// With an explicit model candidate chain (PLAN-034). Also pins
+/// model to the chain head so old daemons degrade gracefully.
 /// With a thinking level ("off" | "low" | "high" | "max").
 /// With a system prompt.
 /// With max output tokens.

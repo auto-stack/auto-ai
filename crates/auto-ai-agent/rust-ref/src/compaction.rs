@@ -314,6 +314,7 @@ pub async fn compact(
         stream: false,
         preferred_provider: None,
         thinking_level: None,
+        model_chain: Vec::new(),
     };
     let resp = client.complete(&req).await.map_err(|e: ClientError| {
         AgentError::Config(format!("compaction summary request failed: {e}"))

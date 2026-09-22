@@ -151,6 +151,23 @@ pub struct ToolCall {
     pub input: JsonValue,
 }
 
+/// One entry of an explicit model candidate chain (PLAN-034): a provider
+/// name plus a concrete model id under that provider.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ModelCandidate {
+    pub provider: String,
+    pub model: String,
+}
+
+impl ModelCandidate {
+    pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+        }
+    }
+}
+
 /// A completion request (provider-agnostic).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletionRequest {
@@ -179,6 +196,15 @@ pub struct CompletionRequest {
     /// provider default applies — byte-identical to pre-PLAN-064 requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    /// Ordered model candidate chain, head first (PLAN-034). Non-empty means
+    /// the daemon routes through exactly these (provider, model) pairs in
+    /// order, falling to the next candidate on retryable errors / missing
+    /// provider / concurrency-pool exhaustion; `req.model` must equal
+    /// `model_chain[0].model` so old daemons (which ignore this field) still
+    /// serve the primary candidate. Empty = legacy `model`/`tier:` routing,
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_chain: Vec<ModelCandidate>,
 }
 
 impl CompletionRequest {
@@ -194,7 +220,18 @@ impl CompletionRequest {
             stream: false,
             preferred_provider: None,
             thinking_level: None,
+            model_chain: Vec::new(),
         }
+    }
+
+    /// With an explicit model candidate chain (PLAN-034). Also pins
+    /// `model` to the chain head so old daemons degrade gracefully.
+    pub fn with_model_chain(mut self, chain: Vec<ModelCandidate>) -> Self {
+        if let Some(head) = chain.first() {
+            self.model = head.model.clone();
+        }
+        self.model_chain = chain;
+        self
     }
 
     /// With a thinking level (`"off"` | `"low"` | `"high"` | `"max"`).
@@ -440,5 +477,64 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(u.total_tokens(), 150);
+    }
+
+    #[test]
+    fn model_chain_empty_is_skipped_on_wire() {
+        // PLAN-034: an empty chain must not appear in the serialized body —
+        // the wire stays byte-identical to pre-PLAN-034 requests.
+        let req = CompletionRequest::single("glm-5.3-flash", "hi");
+        let v = serde_json::to_value(&req).expect("serialize");
+        assert!(v.get("model_chain").is_none());
+        // And a payload without the field deserializes to an empty chain.
+        let back: CompletionRequest = serde_json::from_value(v).expect("old shape must parse");
+        assert!(back.model_chain.is_empty());
+    }
+
+    #[test]
+    fn model_chain_roundtrip_and_head_pin() {
+        let req = CompletionRequest::single("glm-5.3-flash", "hi").with_model_chain(vec![
+            ModelCandidate::new("zhipu", "glm-5.3-flash"),
+            ModelCandidate::new("deepseek", "deepseek-v4-pro"),
+        ]);
+        // Head pin: req.model == chain[0].model (old-daemon degradation rule).
+        assert_eq!(req.model, "glm-5.3-flash");
+        assert_eq!(req.model_chain.len(), 2);
+        assert_eq!(req.model_chain[0].provider, "zhipu");
+        let v = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(
+            v.get("model_chain"),
+            Some(&serde_json::json!([
+                { "provider": "zhipu", "model": "glm-5.3-flash" },
+                { "provider": "deepseek", "model": "deepseek-v4-pro" }
+            ]))
+        );
+        let back: CompletionRequest = serde_json::from_value(v).expect("roundtrip");
+        assert_eq!(back.model_chain, req.model_chain);
+    }
+
+    #[test]
+    fn model_chain_tolerated_by_old_field_set() {
+        // AC-04: an old daemon's struct (no model_chain field) must accept a
+        // new-style payload. Modeled by deserializing into a local struct
+        // with the pre-PLAN-034 field set — serde ignores unknown keys.
+        #[derive(Deserialize)]
+        struct OldShapeRequest {
+            #[allow(dead_code)]
+            model: String,
+            #[allow(dead_code)]
+            messages: Vec<Message>,
+        }
+        let new_style = serde_json::json!({
+            "model": "glm-5.3-flash",
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }],
+            "model_chain": [
+                { "provider": "zhipu", "model": "glm-5.3-flash" },
+                { "provider": "local", "model": "ornith" }
+            ]
+        });
+        let old: OldShapeRequest =
+            serde_json::from_value(new_style).expect("old daemon must tolerate model_chain");
+        assert_eq!(old.model, "glm-5.3-flash");
     }
 }
