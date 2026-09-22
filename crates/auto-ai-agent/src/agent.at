@@ -63,7 +63,7 @@ use memory: Memory
 use compaction: CompactionSettings, default_compaction_settings, should_compact, estimate_tokens, compact, is_context_overflow
 use role_def: Role
 use skill: SkillTool
-use ai_config: ModelTier, Usage
+use ai_config: ModelTier, ModelCandidate, Usage
 use tool: ToolRegistry, tool_to_definition, Tool, ToolOutput
 use wire: ContentBlock, JsonValue, ToolDefinition
 
@@ -487,9 +487,18 @@ ext Agent {
     /// so the next compaction can use the incremental UPDATE template.
     /// Returns false when compaction failed (caller keeps the original memory).
     pub mut fn try_compact(sink TaskRef<StreamEvent>, reason str) ~bool {
-        let model = build_model_id(self.role.model().as_str(), self.role.model_tier())
+        // PLAN-034: compaction mirrors build_request's three-tier model
+        // selection — explicit chain wins (head = primary, full chain on the
+        // request so the summary degrades along it); else pin, else tier.
+        let chain = self.role.models()
+        var model = ""
+        if chain.len() > 0 {
+            model = chain[0].model.clone()
+        } else {
+            model = build_model_id(self.role.model().as_str(), self.role.model_tier())
+        }
         let est = estimate_tokens(self.memory.messages(), self.last_usage.clone())
-        is compact(self.memory.clone(), self.client, model, self.compaction.clone(), self.last_summary.clone()).await {
+        is compact(self.memory.clone(), self.client, model, chain, self.compaction.clone(), self.last_summary.clone()).await {
             Ok(pair) -> {
                 self.memory = pair.0
                 self.last_summary = Some(pair.1)
@@ -808,10 +817,22 @@ ext Agent {
             tool_defs.push(tool_to_definition(t))
         }
 
-        // Model selection: a pinned concrete id wins; else emit a tier token
-        // ("tier:<tier>") the daemon resolves.
+        // Model selection (PLAN-034 three-tier priority): an explicit model
+        // chain wins (head = primary; the full ordered chain travels on the
+        // wire so the daemon can degrade candidate-by-candidate); else a
+        // pinned concrete id; else a tier token ("tier:<tier>") the daemon
+        // resolves. While the chain is non-empty the daemon ignores
+        // preferred_provider (the explicit order IS the user's intent).
+        let chain = self.role.models()
         let pinned = self.role.model()
-        let model = build_model_id(pinned, self.role.model_tier())
+        var model = ""
+        var model_chain List<ModelCandidate> = []
+        if chain.len() > 0 {
+            model = chain[0].model.clone()
+            model_chain = chain
+        } else {
+            model = build_model_id(pinned, self.role.model_tier())
+        }
 
         let system_prompt = build_system_prompt(
             // system_prompt() returns String but soul param is `str` (&str).
@@ -835,7 +856,8 @@ ext Agent {
             tools: tool_defs,
             stream: false,
             preferred_provider: self.role.preferred_provider(),
-            thinking_level: thinking
+            thinking_level: thinking,
+            model_chain: model_chain
         )
     }
 

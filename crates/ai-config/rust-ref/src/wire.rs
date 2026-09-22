@@ -153,7 +153,9 @@ pub struct ToolCall {
 
 /// One entry of an explicit model candidate chain (PLAN-034): a provider
 /// name plus a concrete model id under that provider.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+// Eq/Ord (derived String ordering) are required by downstream a2r-generated
+// summary types that derive comparison traits over Vec<ModelCandidate>.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModelCandidate {
     pub provider: String,
     pub model: String,

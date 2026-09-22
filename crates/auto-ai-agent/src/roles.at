@@ -28,7 +28,7 @@ use.rust dirs
 use.rust std::fs::DirEntry
 use.rust std::sync::Arc
 
-use ai_config: ModelTier
+use ai_config: ModelTier, ModelCandidate
 use role_def: Role
 use error: AgentError
 use builtin_roles: builtin_names, load_builtin
@@ -75,6 +75,9 @@ pub type RoleSummary {
     allowed_tiers List<ModelTier>
     skills List<str>
     token_budget ?uint
+    /// PLAN-034: the role's explicit model candidate chain (empty = legacy
+    /// tier/pin routing). Additive JSON field; older UIs ignore it.
+    models List<ModelCandidate>
     is_builtin bool
 }
 
@@ -82,7 +85,8 @@ ext RoleSummary {
     static fn empty() RoleSummary {
         return RoleSummary(
             name: "", description: "", tier: ModelTier.Mid,
-            allowed_tiers: [], skills: [], token_budget: None, is_builtin: false
+            allowed_tiers: [], skills: [], token_budget: None,
+            models: [], is_builtin: false
         )
     }
 }
@@ -123,6 +127,13 @@ fn profession_to_config(prof Role) RoleConfig {
     if s.is_empty() == false {
         skills = Some(s)
     }
+    // PLAN-034: the explicit chain passes through when non-empty (empty =
+    // legacy tier routing, omitted from the config view).
+    let m = prof.models()
+    var models ?List<ModelCandidate> = None
+    if m.is_empty() == false {
+        models = Some(m)
+    }
     return RoleConfig(
         name: Some(prof.name()),
         description: None,
@@ -141,7 +152,8 @@ fn profession_to_config(prof Role) RoleConfig {
         token_budget: prof.token_budget(),
         soul_file: None,
         // PLAN-064: profession-defined thinking level (rust-ref:333 parity).
-        thinking_level: prof.thinking_level()
+        thinking_level: prof.thinking_level(),
+        models: models
     )
 }
 
@@ -444,6 +456,7 @@ fn load_one_builtin(name str) ?RoleDetail {
             let prof_skills = prof.skills()
             let prof_budget = prof.token_budget()
             let prof_soul = prof.system_prompt()
+            let prof_models = prof.models()
             let cfg = profession_to_config(prof)
             let summary = RoleSummary(
                 name: prof_name,
@@ -452,6 +465,7 @@ fn load_one_builtin(name str) ?RoleDetail {
                 allowed_tiers: prof_tiers,
                 skills: prof_skills,
                 token_budget: prof_budget,
+                models: prof_models,
                 is_builtin: true
             )
             let detail = RoleDetail(
@@ -523,6 +537,7 @@ fn load_user_at_file(path PathBuf) ?RoleDetail {
                 allowed_tiers: cfg.allowed_tiers.clone() ?? [],
                 skills: cfg.skills.clone() ?? [],
                 token_budget: cfg.token_budget.clone(),
+                models: cfg.models.clone() ?? [],
                 is_builtin: false
             )
             let detail = RoleDetail(

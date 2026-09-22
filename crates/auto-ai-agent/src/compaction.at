@@ -8,6 +8,7 @@
 /// - `is`-pattern branches over ContentBlock follow the format.at precedent.
 
 use auto_ai_client: ClientError, CompletionRequest, ContentBlock, Message, Usage
+use ai_config: ModelCandidate
 use error: AgentError
 use memory: Memory
 use agent: Client
@@ -372,7 +373,11 @@ fn update_system_prompt() str {
 /// request (isolated from the main conversation), and the new Memory keeps
 /// [system messages, summary anchor, recent tail]. On failure the original
 /// memory is preserved (an error is returned; the caller falls back to trim).
-pub fn compact(memory Memory, client @Client, model str, settings CompactionSettings, previous_summary ?str) ~Result<(Memory, str), AgentError> {
+// `model` is the primary model id (model_chain[0].model when the role
+// declares an explicit chain — the caller keeps them in sync, mirroring
+// agent build_request); `model_chain` (PLAN-034) travels on the request so
+// the summary request degrades along the same chain.
+pub fn compact(memory Memory, client @Client, model str, model_chain List<ModelCandidate>, settings CompactionSettings, previous_summary ?str) ~Result<(Memory, str), AgentError> {
     let msgs = memory.messages()
     let cut = find_cut_point(msgs.clone(), settings.keep_recent_tokens)
     if cut < 1 {
@@ -431,7 +436,8 @@ pub fn compact(memory Memory, client @Client, model str, settings CompactionSett
         stream: false,
         preferred_provider: None,
         // PLAN-064: compaction requests carry no thinking level.
-        thinking_level: None
+        thinking_level: None,
+        model_chain: model_chain
     )
     let resp = client.complete(req).await.?
     is resp.error {

@@ -15,7 +15,7 @@ use.rust serde::Serialize
 use error: AgentError
 use role_def: Role
 use builtin_roles: load_builtin
-use ai_config: ModelTier
+use ai_config: ModelTier, ModelCandidate
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RoleDecl — serde deserialization view (Plan 021 缺口 3 / Plan 381)
@@ -51,6 +51,10 @@ type RoleDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")] soul_file ?str
     /// PLAN-064: raw thinking level name ("off"|"low"|"high"|"max").
     #[serde(default, skip_serializing_if = "Option::is_none")] thinking_level ?str
+    /// PLAN-034: ordered (provider, model) candidate chain. Objects strictly
+    /// (the chain's provider is load-bearing for daemon routing — no
+    /// bare-string shape to default it to).
+    #[serde(default, skip_serializing_if = "Option::is_none")] models ?List<ModelCandidate>
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -78,6 +82,9 @@ pub type RoleConfig {
     soul_file ?str
     /// PLAN-064: default thinking level for agents running this role.
     thinking_level ?str
+    /// PLAN-034: explicit ordered model candidate chain (head = primary).
+    /// When set, it wins over model / model_tier at request-build time.
+    models ?List<ModelCandidate>
 }
 
 ext RoleConfig {
@@ -88,7 +95,7 @@ ext RoleConfig {
             system_prompt_append: None, tools: None, tools_append: None,
             inherit: None, memory_limit: None, allowed_tiers: None,
             skills: None, token_budget: None, soul_file: None,
-            thinking_level: None
+            thinking_level: None, models: None
         )
     }
 
@@ -113,6 +120,9 @@ ext RoleConfig {
         is self.token_budget { Some(v) -> r.token_budget = Some(v), None -> {} }
         is self.soul_file { Some(v) -> r.soul_file = Some(v), None -> {} }
         is self.thinking_level { Some(v) -> r.thinking_level = Some(v), None -> {} }
+        // PLAN-034: the chain replaces wholesale when set (order is the
+        // semantics; appending would scramble the declared priority).
+        is self.models { Some(v) -> r.models = Some(v), None -> {} }
         // system_prompt_append: accumulate (base append, then self append).
         is base.system_prompt_append {
             Some(extra) -> {
@@ -216,6 +226,11 @@ pub type ConfigRole has Role {
     pub fn thinking_level() ?str {
         return self.cfg.thinking_level.clone()
     }
+
+    /// PLAN-034: explicit model candidate chain (empty = legacy routing).
+    pub fn models() List<ModelCandidate> {
+        return self.cfg.models.clone() ?? []
+    }
 }
 
 /// Factory: create a ConfigRole from a parsed config.
@@ -281,6 +296,11 @@ ext ConfigRole {
     /// PLAN-064: role thinking level default.
     pub fn thinking_level() ?str {
         return self.cfg.thinking_level.clone()
+    }
+
+    /// PLAN-034: explicit model candidate chain (empty = legacy routing).
+    pub fn models() List<ModelCandidate> {
+        return self.cfg.models.clone() ?? []
     }
 }
 
@@ -363,6 +383,7 @@ pub fn parse_at_role(content str) Result<RoleConfig, AgentError> {
                             cfg.token_budget = d.token_budget
                             cfg.skills = d.skills
                             cfg.thinking_level = d.thinking_level
+                            cfg.models = d.models
                             is d.allowed_tiers {
                                 Some(names) -> {
                                     var tiers List<ModelTier> = []
@@ -449,7 +470,7 @@ pub fn serialize_at_role(cfg RoleConfig) str {
         tools: cfg.tools, tools_append: cfg.tools_append,
         inherit: cfg.inherit, allowed_tiers: None, skills: cfg.skills,
         token_budget: cfg.token_budget, soul_file: cfg.soul_file,
-        thinking_level: cfg.thinking_level
+        thinking_level: cfg.thinking_level, models: cfg.models
     )
     is cfg.model_tier {
         Some(t) -> d.model_tier = Some(f"${t.display_name()}"),

@@ -9,6 +9,7 @@
 //! roles.rs persist/validate loop (`load_role` over serialized output).
 
 use auto_ai_agent_a2r::ai_config::ModelTier;
+use auto_ai_agent_a2r::ai_config::wire::ModelCandidate;
 use auto_ai_agent_a2r::{load_role, parse_at_role, serialize_at_role, RoleConfig};
 
 fn full_cfg() -> RoleConfig {
@@ -31,6 +32,12 @@ fn full_cfg() -> RoleConfig {
         soul_file: Some("souls/coder.md".into()),
         // PLAN-064: exercise the thinking-level field through the serde bridge.
         thinking_level: Some("high".into()),
+        // PLAN-034: the ordered candidate chain round-trips through the same
+        // bridge (array of {provider, model} objects).
+        models: Some(vec![
+            ModelCandidate::new("zhipu", "glm-4.7"),
+            ModelCandidate::new("deepseek", "deepseek-v4-pro"),
+        ]),
     }
 }
 

@@ -18,7 +18,7 @@
 /// `Arc<dyn Role>` becomes `Arc(Role)` with no `dyn` keyword. Default methods
 /// translate directly — `spec` supports them.
 
-use ai_config: ModelTier
+use ai_config: ModelTier, ModelCandidate
 
 /// A Role describes how an agent should behave.
 ///
@@ -41,6 +41,16 @@ pub spec Role: Send + Sync {
     /// model_tier". Set this only when a role must pin a specific model.
     fn model() str {
         return ""
+    }
+
+    /// Explicit ordered model candidate chain (PLAN-034), head = primary.
+    /// Empty (default) = legacy routing (model pin, else model_tier token).
+    /// When non-empty it wins over both: the daemon tries the chain in
+    /// order, falling through on retryable errors / missing provider /
+    /// concurrency-pool exhaustion. model() and preferred_provider() are
+    /// ignored while the chain is non-empty.
+    fn models() List<ModelCandidate> {
+        return []
     }
 
     /// Generation temperature (creativity vs determinism).

@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use auto_ai_client::{ClientError, CompletionRequest, ContentBlock, Message, Usage};
 
+use ai_config::wire::ModelCandidate;
+
 use crate::agent::Client;
 
 use crate::error::AgentError;
@@ -251,10 +253,16 @@ pub fn format_file_operations(ops: &FileOps) -> String {
 /// the cut prefix. On any failure the original memory is preserved (the
 /// caller falls back to the ring-buffer trim). Returns the new Memory and
 /// the summary text (the caller feeds it back as the next `previous_summary`).
+///
+/// `model` is the primary model id (`model_chain[0].model` when the role
+/// declares an explicit chain — the caller keeps them in sync, mirroring
+/// [`crate::agent`]`::build_request`); `model_chain` (PLAN-034) travels on
+/// the request so the summary request degrades along the same chain.
 pub async fn compact(
     memory: &Memory,
     client: &Arc<dyn Client>,
     model: &str,
+    model_chain: &[ModelCandidate],
     settings: &CompactionSettings,
     previous_summary: Option<&str>,
 ) -> Result<(Memory, String), AgentError> {
@@ -314,7 +322,7 @@ pub async fn compact(
         stream: false,
         preferred_provider: None,
         thinking_level: None,
-        model_chain: Vec::new(),
+        model_chain: model_chain.to_vec(),
     };
     let resp = client.complete(&req).await.map_err(|e: ClientError| {
         AgentError::Config(format!("compaction summary request failed: {e}"))

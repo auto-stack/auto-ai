@@ -10,7 +10,7 @@ use std::fs;
 use dirs;
 use std::fs::DirEntry;
 use std::sync::Arc;
-use crate::ai_config::{ModelTier};
+use crate::ai_config::{ModelTier, ModelCandidate};
 use crate::role_def::{Role};
 use crate::error::{AgentError};
 use crate::builtin_roles::{builtin_names, load_builtin};
@@ -70,15 +70,18 @@ pub struct RoleSummary {
     pub allowed_tiers: Vec<ModelTier>,
     pub skills: Vec<String>,
     pub token_budget: Option<u32>,
+    pub models: Vec<ModelCandidate>,
     pub is_builtin: bool,
 }
 
 impl RoleSummary {
     pub fn empty() -> RoleSummary {
-        return RoleSummary { name: "".to_string(), description: "".to_string(), tier: ModelTier::Mid.clone(), allowed_tiers: vec![], skills: vec![], token_budget: None, is_builtin: false };
+        return RoleSummary { name: "".to_string(), description: "".to_string(), tier: ModelTier::Mid.clone(), allowed_tiers: vec![], skills: vec![], token_budget: None, models: vec![], is_builtin: false };
     }
 }
 
+/// PLAN-034: the role's explicit model candidate chain (empty = legacy
+/// tier/pin routing). Additive JSON field; older UIs ignore it.
 /// Full detail of a single role, including the Soul markdown body (loaded from
 /// the sidecar file when present, else the inline system_prompt).
 #[derive(Clone, Debug, PartialEq)]
@@ -112,7 +115,14 @@ fn profession_to_config(mut prof: Box<dyn Role>) -> RoleConfig {
     if s.is_empty() == false {
         skills = Some(s);
     }
-    return RoleConfig { name: Some(prof.name()), description: None, model: Some(prof.model()), model_tier: Some(prof.model_tier()), temperature: Some(prof.temperature()), max_turns: Some(prof.max_turns()), system_prompt: Some(prof.system_prompt()), system_prompt_append: None, tools: tools, tools_append: None, inherit: None, memory_limit: prof.memory_limit(), allowed_tiers: tiers, skills: skills, token_budget: prof.token_budget(), soul_file: None, thinking_level: prof.thinking_level() };
+
+
+    let m = prof.models();
+    let mut models: Option<Vec<ModelCandidate>> = None;
+    if m.is_empty() == false {
+        models = Some(m);
+    }
+    return RoleConfig { name: Some(prof.name()), description: None, model: Some(prof.model()), model_tier: Some(prof.model_tier()), temperature: Some(prof.temperature()), max_turns: Some(prof.max_turns()), system_prompt: Some(prof.system_prompt()), system_prompt_append: None, tools: tools, tools_append: None, inherit: None, memory_limit: prof.memory_limit(), allowed_tiers: tiers, skills: skills, token_budget: prof.token_budget(), soul_file: None, thinking_level: prof.thinking_level(), models: models };
 }
 
 /// Registry of roles: built-in professions (read-only) + user .at roles
@@ -402,8 +412,9 @@ fn load_one_builtin(name: &str) -> Option<RoleDetail> {
             let prof_skills = prof.skills();
             let prof_budget = prof.token_budget();
             let prof_soul = prof.system_prompt();
+            let prof_models = prof.models();
             let cfg = profession_to_config(prof);
-            let summary = RoleSummary { name: prof_name.to_string(), description: "".to_string(), tier: prof_tier, allowed_tiers: prof_tiers, skills: prof_skills, token_budget: prof_budget, is_builtin: true };
+            let summary = RoleSummary { name: prof_name.to_string(), description: "".to_string(), tier: prof_tier, allowed_tiers: prof_tiers, skills: prof_skills, token_budget: prof_budget, models: prof_models, is_builtin: true };
             let detail = RoleDetail { summary: summary, soul: prof_soul.to_string(), soul_from_file: false, config: cfg };
             return Some(detail);
         },
@@ -461,7 +472,7 @@ fn load_user_at_file(mut path: PathBuf) -> Option<RoleDetail> {
 
 
 
-            let summary = RoleSummary { name: name.to_string(), description: cfg.description.clone().unwrap_or("".to_string()).to_string(), tier: cfg.model_tier.clone().unwrap_or(ModelTier::Mid), allowed_tiers: cfg.allowed_tiers.clone().unwrap_or_default(), skills: cfg.skills.clone().unwrap_or_default(), token_budget: cfg.token_budget.clone(), is_builtin: false };
+            let summary = RoleSummary { name: name.to_string(), description: cfg.description.clone().unwrap_or("".to_string()).to_string(), tier: cfg.model_tier.clone().unwrap_or(ModelTier::Mid), allowed_tiers: cfg.allowed_tiers.clone().unwrap_or_default(), skills: cfg.skills.clone().unwrap_or_default(), token_budget: cfg.token_budget.clone(), models: cfg.models.clone().unwrap_or_default(), is_builtin: false };
             let detail = RoleDetail { summary: summary, soul: soul.markdown.to_string(), soul_from_file: soul.from_file, config: cfg };
             return Some(detail);
         },
@@ -497,7 +508,7 @@ fn resolve_soul(cfg: RoleConfig, mut at_path: PathBuf) -> SoulResolve {
                 },
                 None => {
                     let sidecar = PathBuf::from(rel);
-                    match Ok::<String, std::io::Error>(a2r_std::fs::read_to_string(&sidecar.to_str().unwrap())) {
+                    match Ok::<String, std::io::Error>(a2r_std::fs::read_to_string(&sidecar)) {
                         Ok(md) => return SoulResolve { markdown: md.to_string(), from_file: true },
                         Err(_e) => return SoulResolve { markdown: cfg.system_prompt.unwrap_or("".to_string()).to_string(), from_file: false },
                     };

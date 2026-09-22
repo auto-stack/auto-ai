@@ -453,7 +453,13 @@ impl Agent {
         on_event: &Arc<dyn Fn(StreamEvent) + Send + Sync>,
         reason: &str,
     ) -> bool {
-        let model = {
+        // PLAN-034: compaction mirrors build_request's three-tier model
+        // selection — explicit chain wins (head = primary, full chain on the
+        // request so the summary degrades along it); else pin, else tier.
+        let chain = self.role.models();
+        let model = if !chain.is_empty() {
+            chain[0].model.clone()
+        } else {
             let pinned = self.role.model();
             if !pinned.is_empty() {
                 pinned.to_string()
@@ -472,6 +478,7 @@ impl Agent {
             &self.memory,
             &self.client,
             &model,
+            &chain,
             &self.compaction,
             self.last_summary.as_deref(),
         )
@@ -903,20 +910,26 @@ impl Agent {
             .map(|t| tool_to_definition(t.as_ref()))
             .collect();
 
-        // Model selection: if the role pins a concrete model id (non-
-        // empty), use it. Otherwise emit a tier token ("tier:<tier>") that the
-        // daemon resolves to a concrete model from its config — so roles
-        // declare capability (tier), not a specific model.
-        let model = {
-            let pinned = self.role.model();
-            if !pinned.is_empty() {
-                pinned.to_string()
-            } else {
+        // Model selection (PLAN-034 three-tier priority): an explicit model
+        // chain wins (head = primary; the full ordered chain travels on the
+        // wire so the daemon can degrade candidate-by-candidate); else a
+        // pinned concrete id; else a tier token ("tier:<tier>") that the
+        // daemon resolves. While the chain is non-empty the daemon ignores
+        // preferred_provider (the explicit order IS the user's intent).
+        let chain = self.role.models();
+        let pinned = self.role.model();
+        let (model, model_chain) = if !chain.is_empty() {
+            (chain[0].model.clone(), chain)
+        } else if !pinned.is_empty() {
+            (pinned.to_string(), Vec::new())
+        } else {
+            (
                 format!(
                     "tier:{}",
                     self.role.model_tier().display_name().to_ascii_lowercase()
-                )
-            }
+                ),
+                Vec::new(),
+            )
         };
 
         // Build the system prompt: project context (if any) + role soul +
@@ -940,7 +953,7 @@ impl Agent {
             tools: tool_defs,
             stream: false,
             preferred_provider: self.role.preferred_provider(),
-            model_chain: Vec::new(),
+            model_chain,
             // PLAN-064: per-run override wins over the role default; both
             // None → no thinking parameter (provider default).
             thinking_level: self

@@ -51,6 +51,9 @@ pub struct RoleConfig {
     /// PLAN-064: default thinking level ("off"|"low"|"high"|"max") for agents
     /// running this role. None = provider default (no thinking parameter).
     pub thinking_level: Option<String>,
+    /// PLAN-034: explicit ordered model candidate chain (head = primary).
+    /// When set, it wins over `model` / `model_tier` at request-build time.
+    pub models: Option<Vec<ai_config::wire::ModelCandidate>>,
 }
 
 /// Deserialization view for a `role { … }` block (Plan 381 migration).
@@ -92,6 +95,10 @@ struct RoleDecl {
     /// PLAN-064: raw thinking level name; validated leniently (unknown names
     /// are kept and rejected at injection time with a warning).
     #[serde(default)] thinking_level: Option<String>,
+    /// PLAN-034: ordered (provider, model) candidate chain. Objects strictly
+    /// (no bare-string shape — the chain's provider is load-bearing for
+    /// daemon routing, so there is nothing sensible to default it to).
+    #[serde(default)] models: Option<Vec<ai_config::wire::ModelCandidate>>,
 }
 
 impl RoleConfig {
@@ -119,6 +126,9 @@ impl RoleConfig {
         base.token_budget = self.token_budget.take().or(base.token_budget);
         base.soul_file = self.soul_file.take().or(base.soul_file);
         base.thinking_level = self.thinking_level.take().or(base.thinking_level);
+        // PLAN-034: the chain replaces wholesale when set (order is the
+        // semantics; appending would scramble the declared priority).
+        base.models = self.models.take().or(base.models);
 
         // system_prompt_append accumulates (base append, then self append).
         if let Some(extra) = base.system_prompt_append.take() {
@@ -196,6 +206,7 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
         token_budget: d.token_budget,
         soul_file: d.soul_file,
         thinking_level: d.thinking_level,
+        models: d.models,
     })
 }
 
@@ -266,6 +277,22 @@ pub fn serialize_at_role(cfg: &RoleConfig) -> String {
     }
     if let Some(v) = &cfg.thinking_level {
         node.set_prop("thinking_level", Value::str(v.as_str()));
+    }
+    if let Some(models) = &cfg.models {
+        // PLAN-034: ordered (provider, model) pairs, emitted as an array of
+        // two-prop objects — the same shape tier_routing candidates use, so
+        // the atom parser reads it back losslessly.
+        let items: Vec<Value> = models
+            .iter()
+            .map(|c| {
+                Value::obj(
+                    auto_val::Obj::new()
+                        .with("provider", Value::str(c.provider.as_str()))
+                        .with("model", Value::str(c.model.as_str())),
+                )
+            })
+            .collect();
+        node.set_prop("models", Value::Array(auto_val::Array { values: items }));
     }
     node.to_at_source()
 }
@@ -362,6 +389,9 @@ impl Role for ConfigRole {
     fn thinking_level(&self) -> Option<String> {
         self.cfg.thinking_level.clone()
     }
+    fn models(&self) -> Vec<ai_config::wire::ModelCandidate> {
+        self.cfg.models.clone().unwrap_or_default()
+    }
 }
 
 /// Load a Role from `.at` source text, resolving `inherit` against the
@@ -434,6 +464,11 @@ pub fn load_role(content: &str) -> Result<Arc<dyn Role>, AgentError> {
             token_budget: merged.token_budget.or(base_builtin.token_budget()),
             soul_file: merged.soul_file.clone(),
             thinking_level: merged.thinking_level.clone().or_else(|| base_builtin.thinking_level()),
+            // PLAN-034: explicit chain overrides the builtin's (which is
+            // empty unless a builtin opts in) — order is the user's intent.
+            models: Some(
+                merged.models.clone().unwrap_or_else(|| base_builtin.models()),
+            ),
         };
 
         Ok(Arc::new(ConfigRole::new(resolved, prompt)))
@@ -741,5 +776,118 @@ mod tests {
         assert!(append.contains("base-extra"));
         assert!(append.contains("mine-extra"));
         assert!(append.find("base-extra") < append.find("mine-extra"));
+    }
+
+    // ── PLAN-034: explicit model candidate chain ────────────────────────────
+
+    fn chain_entry(provider: &str, model: &str) -> ai_config::wire::ModelCandidate {
+        ai_config::wire::ModelCandidate::new(provider, model)
+    }
+
+    #[test]
+    fn models_parse_and_coexist_with_model_tier() {
+        // AC-05: `models` parses (array of {provider, model} objects) and
+        // coexists with `model_tier` — both survive (models wins at
+        // request-build time, but the file keeps both during migration).
+        let src = r#"
+            role {
+                name : "chained-coder"
+                model_tier : "mid"
+                models : [
+                    { provider : "zhipu", model : "glm-5.3" },
+                    { provider : "deepseek", model : "deepseek-v4-pro" }
+                ]
+                system_prompt : "be precise"
+            }
+        "#;
+        let cfg = parse_at_role(src).expect("parse with models must succeed");
+        assert_eq!(
+            cfg.models,
+            Some(vec![
+                chain_entry("zhipu", "glm-5.3"),
+                chain_entry("deepseek", "deepseek-v4-pro"),
+            ])
+        );
+        assert_eq!(cfg.model_tier, Some(ai_config::ModelTier::Mid));
+        // ConfigRole exposes the chain via the Role spec default path.
+        let role = load_role(src).expect("load must succeed");
+        assert_eq!(
+            role.models(),
+            vec![
+                chain_entry("zhipu", "glm-5.3"),
+                chain_entry("deepseek", "deepseek-v4-pro"),
+            ]
+        );
+    }
+
+    #[test]
+    fn models_serialize_roundtrip_lossless() {
+        // AC-05: serialize → re-parse keeps the chain verbatim (order
+        // included), and an unset chain stays unset.
+        let cfg = RoleConfig {
+            name: Some("chained".into()),
+            model_tier: Some(ai_config::ModelTier::Pro),
+            models: Some(vec![
+                chain_entry("zhipu", "glm-5.3"),
+                chain_entry("local", "ornith"),
+            ]),
+            ..Default::default()
+        };
+        let src = serialize_at_role(&cfg);
+        assert!(src.contains("models"));
+        let reparsed = parse_at_role(&src).expect("re-parse must succeed");
+        assert_eq!(
+            reparsed.models.as_deref(),
+            cfg.models.as_deref(),
+            "chain must round-trip verbatim (order included)"
+        );
+        assert_eq!(reparsed.model_tier, Some(ai_config::ModelTier::Pro));
+        // No chain in → no chain out.
+        let bare = RoleConfig {
+            name: Some("bare".into()),
+            ..Default::default()
+        };
+        let src2 = serialize_at_role(&bare);
+        assert!(!src2.contains("models"));
+        assert!(parse_at_role(&src2).unwrap().models.is_none());
+    }
+
+    #[test]
+    fn models_merge_over_replaces_and_inherits() {
+        // merge_over: a child chain replaces the base chain wholesale (order
+        // is the semantics — element-wise merging would scramble priority).
+        let base = RoleConfig {
+            models: Some(vec![chain_entry("a", "m1")]),
+            ..Default::default()
+        };
+        let over = RoleConfig {
+            models: Some(vec![chain_entry("b", "m2"), chain_entry("c", "m3")]),
+            ..Default::default()
+        };
+        let merged = over.merge_over(base.clone());
+        assert_eq!(
+            merged.models,
+            Some(vec![chain_entry("b", "m2"), chain_entry("c", "m3")])
+        );
+        // No child chain → base chain shines through.
+        let merged2 = RoleConfig {
+            ..Default::default()
+        }
+        .merge_over(base);
+        assert_eq!(merged2.models, Some(vec![chain_entry("a", "m1")]));
+    }
+
+    #[test]
+    fn models_inherit_falls_back_to_builtin() {
+        // A role inheriting a builtin with no chain of its own gets the
+        // builtin's chain (empty by default — builtins stay tier-portable).
+        let src = r#"
+            role {
+                name : "plain"
+                inherit : "coder"
+            }
+        "#;
+        let p = load_role(src).unwrap();
+        assert!(p.models().is_empty());
     }
 }

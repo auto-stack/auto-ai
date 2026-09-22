@@ -931,7 +931,8 @@ fix the bug
         keep_recent_tokens: 2_000,
     };
     let boxed: Box<dyn Client> = Box::new(client.clone());
-    let (next, _summary) = compact(mem, &boxed, "tier:mid", settings, None).await.unwrap();
+    let (next, _summary) =
+        compact(mem, &boxed, "tier:mid", Vec::new(), settings, None).await.unwrap();
 
     // Exactly one isolated summary request.
     let reqs = client.requests();
@@ -1167,4 +1168,133 @@ recover"),
         baseline2 + 3,
         "overflow + summary + one retry only (bounded recovery)"
     );
+}
+
+// ─── PLAN-034: explicit model candidate chain ──────────────────────────────
+
+use auto_ai_agent_a2r::ai_config::wire::ModelCandidate;
+
+/// A role with configurable chain / pin (defaults: TestRole shape).
+struct ChainRole {
+    models: Vec<ModelCandidate>,
+    pin: String,
+}
+
+impl Role for ChainRole {
+    fn name(&self) -> String {
+        return "bind".to_string();
+    }
+    fn system_prompt(&self) -> String {
+        return "You are a test role.".to_string();
+    }
+    fn model(&self) -> String {
+        return self.pin.clone();
+    }
+    fn models(&self) -> Vec<ModelCandidate> {
+        return self.models.clone();
+    }
+}
+
+/// A role with a 2-candidate chain sends the head as `model` and the full
+/// ordered chain on `model_chain` (the wire contract the daemon consumes).
+#[tokio::test]
+async fn t34_model_chain_sets_head_and_full_chain() {
+    let client = SseScriptedClient::new(vec![text_response("ok")], vec![vec![]]);
+    let role = ChainRole {
+        models: vec![
+            ModelCandidate::new("zhipu", "glm-5.3"),
+            ModelCandidate::new("local", "ornith"),
+        ],
+        pin: String::new(),
+    };
+    let mut agent = Agent::new_shared(Box::new(role), Box::new(client.clone()));
+    let result = agent.run("go").await.unwrap();
+    assert_eq!(result.output, "ok");
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].model, "glm-5.3", "head pin: req.model == chain[0].model");
+    assert_eq!(reqs[0].model_chain.len(), 2, "full ordered chain on the wire");
+    assert_eq!(reqs[0].model_chain[0].provider, "zhipu");
+    assert_eq!(reqs[0].model_chain[1].provider, "local");
+}
+
+/// Chain wins over BOTH legacy fields when all are set; with no chain the
+/// pin/tier paths are unchanged (empty model_chain on the wire).
+#[tokio::test]
+async fn t34_chain_wins_over_pin_regression() {
+    let client = SseScriptedClient::new(vec![text_response("ok")], vec![vec![]]);
+    let role = ChainRole {
+        models: vec![
+            ModelCandidate::new("zhipu", "glm-5.3"),
+            ModelCandidate::new("deepseek", "deepseek-v4-pro"),
+        ],
+        pin: "legacy-pin".into(),
+    };
+    let mut agent = Agent::new_shared(Box::new(role), Box::new(client.clone()));
+    agent.run("go").await.unwrap();
+    let reqs = client.requests();
+    assert_eq!(reqs[0].model, "glm-5.3");
+    assert_eq!(reqs[0].model_chain.len(), 2);
+}
+
+#[tokio::test]
+async fn t34_no_chain_pin_and_tier_unchanged() {
+    // Pin without chain: model == pin, model_chain empty (old wire shape).
+    let client = SseScriptedClient::new(vec![text_response("ok")], vec![vec![]]);
+    let role = ChainRole {
+        models: vec![],
+        pin: "glm-4.6".into(),
+    };
+    let mut agent = Agent::new_shared(Box::new(role), Box::new(client.clone()));
+    agent.run("go").await.unwrap();
+    let reqs = client.requests();
+    assert_eq!(reqs[0].model, "glm-4.6");
+    assert!(reqs[0].model_chain.is_empty(), "legacy pin must not carry a chain");
+
+    // Neither pin nor chain: tier token as before, chain empty. (The a2r
+    // tree emits the display-name case — "tier:Mid" vs rust-ref "tier:mid"
+    // — a pre-existing drift; the daemon lowercases tier tokens, so compare
+    // case-insensitively here.)
+    let client2 = SseScriptedClient::new(vec![text_response("ok")], vec![vec![]]);
+    let mut agent2 = Agent::new_shared(Box::new(TestRole::new()), Box::new(client2.clone()));
+    agent2.run("go").await.unwrap();
+    let reqs2 = client2.requests();
+    assert_eq!(
+        reqs2[0].model.to_ascii_lowercase(),
+        "tier:mid",
+        "got {}",
+        reqs2[0].model
+    );
+    assert!(reqs2[0].model_chain.is_empty());
+}
+
+/// Compaction parity: the summary request degrades along the same chain —
+/// `model` == head, `model_chain` == full chain.
+#[tokio::test]
+async fn t34_compaction_request_carries_model_chain() {
+    use auto_ai_agent_a2r::{compact, CompactionSettings, Memory};
+
+    let client = SseScriptedClient::new(vec![text_response("a summary")], vec![vec![]]);
+    let mut mem = Memory::new(None);
+    for i in 0..50 {
+        mem.add("user", &format!("turn {}: {}", i, "x".repeat(800)));
+        mem.add("assistant", &"y".repeat(800));
+    }
+    let settings = CompactionSettings {
+        context_window: 10_000,
+        reserve_tokens: 1_000,
+        keep_recent_tokens: 2_000,
+    };
+    let chain = vec![
+        ModelCandidate::new("zhipu", "glm-5.3"),
+        ModelCandidate::new("local", "ornith"),
+    ];
+    let boxed: Box<dyn Client> = Box::new(client.clone());
+    let (_next, _summary) =
+        compact(mem, &boxed, "glm-5.3", chain.clone(), settings, None).await.unwrap();
+
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].model, "glm-5.3");
+    assert_eq!(reqs[0].model_chain, chain);
 }

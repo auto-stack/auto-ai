@@ -6,6 +6,7 @@ use a2r_std;
 use a2r_std::*;
 
 use crate::auto_ai_client::{ClientError, CompletionRequest, ContentBlock, Message, Usage};
+use crate::ai_config::{ModelCandidate};
 use crate::error::{AgentError};
 use crate::memory::{Memory};
 use crate::agent::{Client};
@@ -342,7 +343,7 @@ fn update_system_prompt() -> String {
     return "You update an existing conversation summary with new messages. PRESERVE all still-relevant information from the previous summary; ADD new progress, decisions, and context; move finished items to done; drop what is no longer relevant. Keep the same sections:\n## Goal\n## Progress\n## Key Decisions\n## Next Steps\nNever invent facts; omit sections with no content. Do not list files — the file manifest is appended mechanically.".to_string();
 }
 
-pub async fn compact(mut memory: Memory, client: &Box<dyn Client>, model: &str, settings: CompactionSettings, previous_summary: Option<String>) -> Result<(Memory, String), AgentError> {
+pub async fn compact(mut memory: Memory, client: &Box<dyn Client>, model: &str, model_chain: Vec<ModelCandidate>, settings: CompactionSettings, previous_summary: Option<String>) -> Result<(Memory, String), AgentError> {
     let msgs = memory.messages();
     let cut = find_cut_point(msgs.clone(), settings.keep_recent_tokens);
     if cut < 1 {
@@ -389,7 +390,7 @@ pub async fn compact(mut memory: Memory, client: &Box<dyn Client>, model: &str, 
     let mut blocks: Vec<ContentBlock> = vec![];
     let tb = ContentBlock::Text { text: user_msg };
     blocks.push(tb.clone());
-    let req = CompletionRequest { model: model.to_string(), messages: vec![Message { role: "user".to_string(), content: blocks }], max_tokens: None, temperature: Some(0.0), system_prompt: Some(system), tools: vec![], stream: false, preferred_provider: None, thinking_level: None };
+    let req = CompletionRequest { model: model.to_string(), messages: vec![Message { role: "user".to_string(), content: blocks }], max_tokens: None, temperature: Some(0.0), system_prompt: Some(system), tools: vec![], stream: false, preferred_provider: None, thinking_level: None, model_chain: model_chain };
     let resp = client.complete(req).await?;
     match resp.error {
         Some(err) => return Err(AgentError::Config(format!("compaction summary error: {}", err))),

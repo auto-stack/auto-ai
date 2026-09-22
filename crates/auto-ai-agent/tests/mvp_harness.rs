@@ -703,7 +703,7 @@ fix the bug
         reserve_tokens: 1_000,
         keep_recent_tokens: 2_000,
     };
-    let (next, _summary) = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &settings, None)
+    let (next, _summary) = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &[], &settings, None)
         .await
         .unwrap();
 
@@ -1026,7 +1026,7 @@ async fn harness_second_compaction_uses_incremental_update() {
         keep_recent_tokens: 2_000,
     };
 
-    let (mut mem1, summary1) = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &settings, None)
+    let (mut mem1, summary1) = auto_ai_agent::compact(&mem, &client_dyn, "tier:mid", &[], &settings, None)
         .await
         .unwrap();
     // The fresh anchor carries the machine file manifest.
@@ -1049,7 +1049,7 @@ async fn harness_second_compaction_uses_incremental_update() {
         mem1.add("assistant", &"y".repeat(800));
     }
     let (_mem2, summary2) =
-        auto_ai_agent::compact(&mem1, &client_dyn, "tier:mid", &settings, Some(&summary1))
+        auto_ai_agent::compact(&mem1, &client_dyn, "tier:mid", &[], &settings, Some(&summary1))
             .await
             .unwrap();
 
@@ -1064,4 +1064,126 @@ async fn harness_second_compaction_uses_incremental_update() {
     assert!(body.contains("first summary"));
     // The returned summary is the updated one (anchor replacement, not stacking).
     assert!(summary2.contains("second summary"));
+}
+
+// ── PLAN-034: explicit model candidate chain ────────────────────────────────
+
+use auto_ai_agent::compact;
+use ai_config::wire::ModelCandidate;
+
+/// A role with configurable chain / pin / tier (defaults: TestRole shape).
+struct BindRole {
+    models: Vec<ModelCandidate>,
+    pin: &'static str,
+    tier: ai_config::ModelTier,
+}
+impl BindRole {
+    fn chain(models: Vec<ModelCandidate>) -> Self {
+        Self { models, pin: "", tier: ai_config::ModelTier::Mid }
+    }
+    fn pin(pin: &'static str) -> Self {
+        Self { models: Vec::new(), pin, tier: ai_config::ModelTier::Mid }
+    }
+}
+impl Role for BindRole {
+    fn name(&self) -> &str { "bind" }
+    fn system_prompt(&self) -> &str { "You are a test assistant." }
+    fn model_tier(&self) -> ai_config::ModelTier { self.tier }
+    fn model(&self) -> &str { self.pin }
+    fn models(&self) -> Vec<ModelCandidate> { self.models.clone() }
+}
+
+/// AC-01 (agent half): a role with a 2-candidate chain sends the head as
+/// `model` and the full ordered chain on `model_chain` — the wire contract
+/// the daemon's fallback loop consumes.
+#[tokio::test]
+async fn harness_model_chain_sets_head_and_full_chain() {
+    let client = Arc::new(ScriptedClient::new(vec![text_response("ok")]));
+    let role = BindRole::chain(vec![
+        ModelCandidate::new("zhipu", "glm-5.3"),
+        ModelCandidate::new("local", "ornith"),
+    ]);
+    let mut agent = Agent::new(role, client.clone());
+    agent.run("go").await.unwrap();
+
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].model, "glm-5.3", "head pin: req.model == chain[0].model");
+    assert_eq!(
+        reqs[0].model_chain,
+        vec![
+            ModelCandidate::new("zhipu", "glm-5.3"),
+            ModelCandidate::new("local", "ornith"),
+        ],
+        "full ordered chain must travel on the request"
+    );
+}
+
+/// AC-03 regression: chain wins over BOTH legacy fields when all are set —
+/// and with no chain, the pin/tier paths are byte-identical to pre-PLAN-034
+/// (empty model_chain on the wire).
+#[tokio::test]
+async fn harness_model_chain_wins_over_pin_and_tier() {
+    // Chain + pin + tier all set: the chain decides.
+    let client = Arc::new(ScriptedClient::new(vec![text_response("ok")]));
+    let mut role = BindRole::chain(vec![
+        ModelCandidate::new("zhipu", "glm-5.3"),
+        ModelCandidate::new("deepseek", "deepseek-v4-pro"),
+    ]);
+    role.pin = "legacy-pin";
+    role.tier = ai_config::ModelTier::Max;
+    let mut agent = Agent::new(role, client.clone());
+    agent.run("go").await.unwrap();
+    let reqs = client.requests();
+    assert_eq!(reqs[0].model, "glm-5.3");
+    assert_eq!(reqs[0].model_chain.len(), 2);
+    assert_eq!(reqs[0].model_chain[1].provider, "deepseek");
+}
+
+#[tokio::test]
+async fn harness_no_chain_pin_and_tier_unchanged() {
+    // Pin without chain: model == pin, model_chain empty (old wire shape).
+    let client = Arc::new(ScriptedClient::new(vec![text_response("ok")]));
+    let mut agent = Agent::new(BindRole::pin("glm-4.6"), client.clone());
+    agent.run("go").await.unwrap();
+    let reqs = client.requests();
+    assert_eq!(reqs[0].model, "glm-4.6");
+    assert!(reqs[0].model_chain.is_empty(), "legacy pin must not carry a chain");
+
+    // Neither pin nor chain: tier token as before, chain empty.
+    let client2 = Arc::new(ScriptedClient::new(vec![text_response("ok")]));
+    let mut agent2 = Agent::new(TestRole, client2.clone());
+    agent2.run("go").await.unwrap();
+    let reqs2 = client2.requests();
+    assert_eq!(reqs2[0].model, "tier:mid");
+    assert!(reqs2[0].model_chain.is_empty());
+}
+
+/// AC-01 (compaction leg): the summary request degrades along the same
+/// chain — `model` == head, `model_chain` == full chain.
+#[tokio::test]
+async fn harness_compaction_request_carries_model_chain() {
+    let client = Arc::new(ScriptedClient::new(vec![text_response("a summary")]));
+    let chain = vec![
+        ModelCandidate::new("zhipu", "glm-5.3"),
+        ModelCandidate::new("local", "ornith"),
+    ];
+    let mut mem = auto_ai_agent::Memory::new(None);
+    for i in 0..50 {
+        mem.add("user", &format!("turn {i}: {}", "x".repeat(800)));
+        mem.add("assistant", &"y".repeat(800));
+    }
+    let settings = auto_ai_agent::CompactionSettings {
+        context_window: 10_000,
+        reserve_tokens: 1_000,
+        keep_recent_tokens: 2_000,
+    };
+    let client_dyn: Arc<dyn Client> = client.clone();
+    let (_, _summary) =
+        compact(&mem, &client_dyn, "glm-5.3", &chain, &settings, None).await.unwrap();
+
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].model, "glm-5.3");
+    assert_eq!(reqs[0].model_chain, chain);
 }

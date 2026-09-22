@@ -13,6 +13,7 @@
 //! optional concrete-id override (empty = use the tier).
 
 use ai_config::ModelTier;
+use ai_config::wire::ModelCandidate;
 
 /// A Role describes how an agent should behave.
 ///
@@ -36,6 +37,16 @@ pub trait Role: Send + Sync {
     /// specific model regardless of tier resolution.
     fn model(&self) -> &str {
         ""
+    }
+
+    /// Explicit ordered model candidate chain (PLAN-034), head = primary.
+    /// Empty (default) = legacy routing ([`Self::model`] pin, else
+    /// [`Self::model_tier`] token). When non-empty it wins over both: the
+    /// daemon tries the chain in order, falling through on retryable errors /
+    /// missing provider / concurrency-pool exhaustion. [`Role::model`] and
+    /// [`Self::preferred_provider`] are ignored while the chain is non-empty.
+    fn models(&self) -> Vec<ModelCandidate> {
+        Vec::new()
     }
 
     /// Generation temperature (creativity vs determinism).
@@ -165,5 +176,7 @@ mod tests {
         assert!(p.skills().is_empty()); // no skill whitelist
         // PLAN-064: no thinking level unless declared.
         assert_eq!(p.thinking_level(), None);
+        // PLAN-034: no explicit model chain unless declared (legacy routing).
+        assert!(p.models().is_empty());
     }
 }

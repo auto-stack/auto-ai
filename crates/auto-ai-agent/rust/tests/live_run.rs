@@ -36,6 +36,7 @@ async fn daemon_alive(url: &str) -> bool {
         stream: false,
         preferred_provider: None,
         thinking_level: None,
+        model_chain: Vec::new(),
     };
     // The transpiled Client impl for AiClient takes the request by value.
     Client::complete(&client, probe).await.is_ok()

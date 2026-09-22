@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::error::{AgentError};
 use crate::role_def::{Role};
 use crate::builtin_roles::{load_builtin};
-use crate::ai_config::{ModelTier};
+use crate::ai_config::{ModelTier, ModelCandidate};
 /// Parsing + inherit/merge for `.at` Role config files.
 /// 
 /// Auto port of config/role_config.rs (auto-ai v0.4.0).
@@ -60,9 +60,14 @@ struct RoleDecl {
     pub soul_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<ModelCandidate>>,
 }
 
 /// PLAN-064: raw thinking level name ("off"|"low"|"high"|"max").
+/// PLAN-034: ordered (provider, model) candidate chain. Objects strictly
+/// (the chain's provider is load-bearing for daemon routing — no
+/// bare-string shape to default it to).
 /// The parsed representation of a `role { … }` block. Every field is optional
 /// so an `inherit`-based config only overrides what it sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,11 +89,12 @@ pub struct RoleConfig {
     pub token_budget: Option<u32>,
     pub soul_file: Option<String>,
     pub thinking_level: Option<String>,
+    pub models: Option<Vec<ModelCandidate>>,
 }
 
 impl RoleConfig {
     pub fn empty() -> RoleConfig {
-        return RoleConfig { name: None, description: None, model: None, model_tier: None, temperature: None, max_turns: None, system_prompt: None, system_prompt_append: None, tools: None, tools_append: None, inherit: None, memory_limit: None, allowed_tiers: None, skills: None, token_budget: None, soul_file: None, thinking_level: None };
+        return RoleConfig { name: None, description: None, model: None, model_tier: None, temperature: None, max_turns: None, system_prompt: None, system_prompt_append: None, tools: None, tools_append: None, inherit: None, memory_limit: None, allowed_tiers: None, skills: None, token_budget: None, soul_file: None, thinking_level: None, models: None };
     }
     pub fn merge_over(&self, mut base: RoleConfig) -> RoleConfig {
         let mut r: RoleConfig = base.clone();
@@ -150,6 +156,12 @@ impl RoleConfig {
             None => {},
         };
 
+
+        match self.models.clone() {
+            Some(v) => r.models = Some(v),
+            None => {},
+        };
+
         match base.system_prompt_append {
             Some(extra) => {
                 match self.system_prompt_append.clone() {
@@ -188,6 +200,8 @@ impl RoleConfig {
 }
 
 /// PLAN-064: default thinking level for agents running this role.
+/// PLAN-034: explicit ordered model candidate chain (head = primary).
+/// When set, it wins over model / model_tier at request-build time.
 /// Merge self over base, applying design-doc §4.4 rules:
 /// - scalar fields override when Some;
 /// - system_prompt_append accumulates;
@@ -242,6 +256,9 @@ impl Role for ConfigRole {
     }
     fn thinking_level(&self) -> Option<String> {
         return self.cfg.thinking_level.clone();
+    }
+    fn models(&self) -> Vec<ModelCandidate> {
+        return self.cfg.models.clone().unwrap_or_default();
     }
 }
 
@@ -311,6 +328,7 @@ pub fn parse_at_role(content: &str) -> Result<RoleConfig, AgentError> {
                             cfg.token_budget = d.token_budget;
                             cfg.skills = d.skills;
                             cfg.thinking_level = d.thinking_level;
+                            cfg.models = d.models;
                             match d.allowed_tiers {
                                 Some(names) => {
                                     let mut tiers: Vec<ModelTier> = vec![];
@@ -381,7 +399,7 @@ pub fn parse_tier_field(s: &str) -> Option<ModelTier> {
 pub fn serialize_at_role(cfg: RoleConfig) -> String {
 
 
-    let mut d: RoleDecl = RoleDecl { name: cfg.name.clone(), description: cfg.description.clone(), model: cfg.model.clone(), model_tier: None, temperature: cfg.temperature.clone(), max_turns: cfg.max_turns.clone(), memory_limit: cfg.memory_limit.clone(), system_prompt: cfg.system_prompt.clone(), system_prompt_append: cfg.system_prompt_append.clone(), tools: cfg.tools.clone(), tools_append: cfg.tools_append.clone(), inherit: cfg.inherit.clone(), allowed_tiers: None, skills: cfg.skills.clone(), token_budget: cfg.token_budget.clone(), soul_file: cfg.soul_file.clone(), thinking_level: cfg.thinking_level.clone() };
+    let mut d: RoleDecl = RoleDecl { name: cfg.name.clone(), description: cfg.description.clone(), model: cfg.model.clone(), model_tier: None, temperature: cfg.temperature.clone(), max_turns: cfg.max_turns.clone(), memory_limit: cfg.memory_limit.clone(), system_prompt: cfg.system_prompt.clone(), system_prompt_append: cfg.system_prompt_append.clone(), tools: cfg.tools.clone(), tools_append: cfg.tools_append.clone(), inherit: cfg.inherit.clone(), allowed_tiers: None, skills: cfg.skills.clone(), token_budget: cfg.token_budget.clone(), soul_file: cfg.soul_file.clone(), thinking_level: cfg.thinking_level.clone(), models: cfg.models.clone() };
     match cfg.model_tier {
         Some(t) => d.model_tier = Some(format!("{}", t.display_name())),
         None => {},

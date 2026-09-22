@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ai_config::ModelTier;
+use ai_config::wire::ModelCandidate;
 
 use crate::config::{parse_at_role, serialize_at_role, RoleConfig};
 use crate::error::AgentError;
@@ -56,6 +57,9 @@ pub struct RoleSummary {
     pub allowed_tiers: Vec<ModelTier>,
     pub skills: Vec<String>,
     pub token_budget: Option<u64>,
+    /// PLAN-034: the role's explicit model candidate chain (empty = legacy
+    /// tier/pin routing). Additive JSON field; older UIs ignore it.
+    pub models: Vec<ModelCandidate>,
     pub is_builtin: bool,
 }
 
@@ -100,6 +104,7 @@ impl RoleRegistry {
                     allowed_tiers: prof.allowed_tiers(),
                     skills: prof.skills(),
                     token_budget: prof.token_budget(),
+                    models: prof.models(),
                     is_builtin: true,
                 };
                 let detail = RoleDetail {
@@ -149,6 +154,7 @@ impl RoleRegistry {
                                 allowed_tiers: cfg.allowed_tiers.clone().unwrap_or_default(),
                                 skills: cfg.skills.clone().unwrap_or_default(),
                                 token_budget: cfg.token_budget,
+                                models: cfg.models.clone().unwrap_or_default(),
                                 is_builtin: false,
                             };
                             tracing::info!("role: loaded '{name}' from {}", path.display());
@@ -331,6 +337,14 @@ fn profession_to_config(prof: &dyn Role) -> RoleConfig {
         token_budget: prof.token_budget(),
         soul_file: None,
         thinking_level: prof.thinking_level(),
+        models: {
+            let m = prof.models();
+            if m.is_empty() {
+                None
+            } else {
+                Some(m)
+            }
+        },
     }
 }
 

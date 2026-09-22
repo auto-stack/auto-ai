@@ -21,7 +21,7 @@ use crate::memory::{Memory};
 use crate::compaction::{CompactionSettings, default_compaction_settings, should_compact, estimate_tokens, compact, is_context_overflow};
 use crate::role_def::{Role};
 use crate::skill::{SkillTool};
-use crate::ai_config::{ModelTier, Usage};
+use crate::ai_config::{ModelTier, ModelCandidate, Usage};
 use crate::tool::{ToolRegistry, tool_to_definition, Tool, ToolOutput};
 use crate::wire::{ContentBlock, JsonValue, ToolDefinition};
 /// The autonomous agent (Layer 3 core).
@@ -388,9 +388,19 @@ impl Agent {
         return self.compaction.clone();
     }
     pub async fn try_compact(&mut self, sink: a2r_std::task::TaskRef<StreamEvent>, reason: &str) -> bool {
-        let model = build_model_id(self.role.model().as_str(), self.role.model_tier());
+
+
+
+        let chain = self.role.models();
+        let mut model: String = "".to_string();
+        if (chain.len() as i64) > 0 {
+            model = chain[0].clone().model.clone();
+        } else {
+            model = build_model_id(self.role.model().as_str(), self.role.model_tier());
+        }
+
         let est = estimate_tokens(self.memory.messages(), self.last_usage.clone());
-        match compact(self.memory.clone(), &self.client, model.as_str(), self.compaction.clone(), self.last_summary.clone()).await {
+        match compact(self.memory.clone(), &self.client, model.as_str(), chain, self.compaction.clone(), self.last_summary.clone()).await {
             Ok(pair) => {
                 self.memory = pair.0;
                 self.last_summary = Some(pair.1);
@@ -691,8 +701,21 @@ impl Agent {
 
 
 
+
+
+
+
+        let chain = self.role.models();
         let pinned = self.role.model();
-        let model = build_model_id(pinned.as_str(), self.role.model_tier());
+        let mut model: String = "".to_string();
+        let mut model_chain: Vec<ModelCandidate> = vec![];
+        if (chain.len() as i64) > 0 {
+            model = chain[0].clone().model.clone();
+            model_chain = chain;
+        } else {
+            model = build_model_id(pinned.as_str(), self.role.model_tier());
+        }
+
 
         let system_prompt = build_system_prompt(self.context_block.clone(), self.role.system_prompt().as_str(), self.skills_block.clone());
 
@@ -701,7 +724,7 @@ impl Agent {
 
         let thinking = match self.thinking_override.clone() { Some(v) => Some(v), None => self.role.thinking_level(), };
 
-        return CompletionRequest { model: model, messages: self.memory.to_messages(), max_tokens: None, temperature: Some(self.role.temperature()), system_prompt: Some(system_prompt), tools: tool_defs, stream: false, preferred_provider: self.role.preferred_provider(), thinking_level: thinking };
+        return CompletionRequest { model: model, messages: self.memory.to_messages(), max_tokens: None, temperature: Some(self.role.temperature()), system_prompt: Some(system_prompt), tools: tool_defs, stream: false, preferred_provider: self.role.preferred_provider(), thinking_level: thinking, model_chain: model_chain };
     }
     pub fn set_thinking_level_override(&mut self, mut level: Option<String>) {
         self.thinking_override = level.clone();
@@ -865,19 +888,6 @@ fn forward_sse_delta(mut ev: JsonValue, sink: &a2r_std::task::TaskRef<StreamEven
         Some(t) => ty = t.as_str().unwrap_or_default().to_string(),
         None => {},
     };
-    // musk plan 073 T-03: daemon degradation notices (tool_call arguments
-    // that failed to parse) arrive as `warning` frames. Map them to
-    // StreamEvent::Warning BEFORE the generic text path — a warning frame
-    // carries `text` too, and falling through would splice the notice into
-    // the model's answer body.
-    if ty == "warning" {
-        if let Some(t) = ev.get("text").and_then(|t| t.as_str()) {
-            if t.is_empty() == false {
-                sink.send(StreamEvent::Warning(t.to_string()));
-            }
-        }
-        return;
-    }
     match ev.get("text") {
         Some(t) => {
             let text = t.as_str().unwrap_or_default();
