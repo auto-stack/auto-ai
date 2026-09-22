@@ -687,6 +687,7 @@ mod run_ash_script_tests {
 
     #[tokio::test]
     async fn content_and_path_are_mutually_exclusive() {
+        if skip_if_no_ash() { return; }
         let err = RunAshScript
             .execute(&json!({"content": "main()", "path": "x.ash"}))
             .await
@@ -696,6 +697,7 @@ mod run_ash_script_tests {
 
     #[tokio::test]
     async fn missing_content_and_path_rejected() {
+        if skip_if_no_ash() { return; }
         let err = RunAshScript.execute(&json!({})).await.expect_err("must reject neither");
         assert!(err.to_string().contains("missing"));
     }
