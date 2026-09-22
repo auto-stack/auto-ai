@@ -1,11 +1,12 @@
 ---
 plan_id: PLAN-034
-status: reviewed
+status: archived
 feature_name: 角色直接绑定模型（有序候选链，替代 tier 间接绑定）
 author: [agent]
 created_at: 2026-09-22T00:00:00Z
 updated_at: 2026-09-22T00:00:00Z
 plan_revision: 1
+completion_kind: delivered
 current_step: 7
 total_steps: 7
 supersedes_spec_components: []
@@ -392,6 +393,36 @@ wait = (显式链 且 当前候选非末位) ? CHAIN_SHORT_WAIT(1s) : 30s
   musk roles 页未适配两项）。关联 AC-07、SD-01。
 
 ## 9. 复审记录
+
+- 2026-09-22（**merge 回执 PLAN-034:r1**）：
+  - `prepared` ✓：reviewed 基线 = r1 pass @ 71df9bf（auto-ai，spec 冻结
+    blob 143415087384e178a3b7581d2436ee3b7b995c5c）+ 0d6671b（os-config）；
+    main 超前核对——auto-ai 630a98d..main 仅本计划簿记
+    （93051ef/57eb44a，只触 docs/plans/034-*.md）；os-config 8fe4cdc..main
+    = PLAN-041 T-10（93b2d7b，只触 auto/src/front/desktop_page.at，与本计划
+    9 文件零重叠）——review 证据无需刷新。
+  - `landed` ✓：两仓各自 rebase（旧→新映射：auto-ai 94de4e5→3626f18、
+    89fd09b→ab4a1db、e8ac394→997c2d7、71df9bf→**360ca89**；os-config
+    9373f76→c3ea27b、0d6671b→**62ed10f**），`git range-diff` 六提交全部
+    `=`（逐补丁等价，安全重写证明）；main 均以 `--ff-only` 落地无 merge
+    commit——auto-ai main tip = 360ca89，os-config main tip = 62ed10f。
+    spec `docs/specs/auto-ai/role-model-binding.md` 在 main 且 blob 哈希与
+    冻结值一致。冒烟：auto-ai main 上 `cargo test -p ai-config -p
+    auto-ai-daemon` = 43+71 绿；os-config main 上 `npm run build` 绿，
+    back `cargo test` 在主检出被**外部 WIP** 挡住（os-config 主检出的
+    `../../auto-lang` 解析到 auto-lang 主检出，其工作区有他会话 WIP：
+    Cargo.toml 重复 `iced` 键致 manifest 解析失败）——已在同提交 62ed10f
+    的 worktree（依赖解析到干净的 ai-034/auto-lang 组兄弟）复验 back 41 绿
+    + 前端构建绿；落地内容与已验证内容逐字节相同（range-diff 全等）。
+    auto-lang 主检出 WIP 属他会话所有，未触碰，已向用户汇报需其 own 路由。
+  - `ledger_refreshed` = **N/A（有据，沿 PLAN-033 先例）**：本仓库无 musk
+    式 ledger/SpecsDocument 派生视图；canonical（docs/specs/auto-ai/
+    role-model-binding.md）与 os-config README 约定表（SD-02）均已随分支
+    落地到各自 main。
+  - `archived` ✓：2026-09-22 `git mv` 至
+    `docs/plans/archive/034-role-direct-model-binding.md`（本仓库归档目录
+    为 `archive/`），`status: archived` + `completion_kind: delivered`。
+  - `cleaned`：（见下方补记）
 
 - 2026-09-22 review（[agent]）：
   `stage: review | plan_id: PLAN-034 | plan_revision: 1 | outcome: pass`
