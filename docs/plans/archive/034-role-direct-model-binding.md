@@ -422,7 +422,16 @@ wait = (显式链 且 当前候选非末位) ? CHAIN_SHORT_WAIT(1s) : 30s
   - `archived` ✓：2026-09-22 `git mv` 至
     `docs/plans/archive/034-role-direct-model-binding.md`（本仓库归档目录
     为 `archive/`），`status: archived` + `completion_kind: delivered`。
-  - `cleaned`：（见下方补记）
+  - `cleaned` ✓（带一处空壳残留备注）：三 worktree 守卫复跑 clean 后移除
+    ——auto-ai `.wt/ai-034/auto-ai` + 分支 `plan-034-dev`（删除时指向
+    360ca89，已含于 main）；os-config `.wt/ai-034/auto-os-config` + 分支
+    `plan-034-dev`（62ed10f，已含于 main；git 注册移除后目录删除两度被
+    僵尸 esbuild 进程锁定——本会话 vite 遗留，已终止并清空 101M 内容）；
+    依赖快照 `.wt/ai-034/auto-lang` + 分支 `ai-034-dev`（只读零改动，
+    bebd09387）。`git worktree list` 两仓均无 ai-034 条目。**残留**：
+    `.wt/ai-034/auto-os-config` 空目录壳被某进程持为 CWD（内容已空、无
+    reparse point），句柄释放后 `rmdir` 即可（纯外观，不影响任何 git 状
+    态）；`e2e` 临时隔离栈目录已随组清理。
 
 - 2026-09-22 review（[agent]）：
   `stage: review | plan_id: PLAN-034 | plan_revision: 1 | outcome: pass`
