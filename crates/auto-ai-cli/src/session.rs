@@ -47,6 +47,35 @@ pub fn session_file(cwd: &Path) -> Option<PathBuf> {
     sessions_dir().map(|d| d.join(format!("{}.json", cwd_hash(cwd))))
 }
 
+/// PLAN-044 T-05：原子替换写（同目录 tmp + flush + rename）。本仓不依赖
+/// auto-lang 全量 crate（只 dep auto-atom/auto-val），故为本地 20 行同算法
+/// 替身；锁路径/算法约定单源 = auto-lang `src/state_file.rs` 模块头（CLI
+/// 会话文件按 cwd 哈希天然分流、单写者，无需 L2 锁）。
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "atomic_write: no parent dir")
+    })?;
+    std::fs::create_dir_all(dir)?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("session");
+    let tmp = dir.join(format!(".{}.tmp-{}", name, std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Save a session (messages + id) for the given cwd. Called after each turn.
 /// Best-effort: errors are logged but don't crash the CLI.
 pub fn save(cwd: &Path, session_id: &str, messages: &[Message]) {
@@ -64,7 +93,8 @@ pub fn save(cwd: &Path, session_id: &str, messages: &[Message]) {
     };
     match serde_json::to_string_pretty(&record) {
         Ok(json) => {
-            if std::fs::write(&path, json).is_err() {
+            // PLAN-044 T-05：原子替换（同 cwd 双 CLI 实例/写中崩溃不再撕裂会话）
+            if atomic_write(&path, json.as_bytes()).is_err() {
                 eprintln!("  (warning: could not save session to {})", path.display());
             }
         }
