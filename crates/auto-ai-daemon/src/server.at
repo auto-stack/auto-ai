@@ -329,14 +329,21 @@ pub fn chat_completions(
         }
     } else {
         // Concrete model id — find the provider that owns it.
+        // PLAN-083 T-06: an id that matches NO provider model is rejected at
+        // the routing layer with 400 instead of being passed through to the
+        // default provider (which upstream-reports "model not found", a
+        // confusing failure surface for callers).
         let cfg = state.cfg()
-        var found = cfg.default_provider
+        var found = ""
         for (name, models) in server_glue.config_provider_models(cfg) {
             for m in models {
                 if m.id == req.model {
                     found = name
                 }
             }
+        }
+        if found == "" {
+            return error_response(StatusCode.BAD_REQUEST, "unknown model '" + req.model + "' (known: tier:max|pro|mid|lite|min, or a provider model id)")
         }
         candidates.push((found, req.model))
     }

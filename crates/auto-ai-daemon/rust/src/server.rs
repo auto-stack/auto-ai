@@ -288,8 +288,12 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
     } else {
         
 
+
+
+
+
         let cfg = state.cfg();
-        let mut found = cfg.default_provider.clone();
+        let mut found: String = "".to_string();
         for (name, models) in crate::server_glue::config_provider_models(&cfg) {
             for m in &models {
                 if m.id == req.model {
@@ -297,7 +301,9 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, headers: Heade
                 }
             }
         }
-        candidates.push((found, req.model));
+        if found == "" {
+            return error_response(StatusCode::BAD_REQUEST.clone(), format!("{}{}", format!("{}{}", "unknown model '", req.model), "' (known: tier:max|pro|mid|lite|min, or a provider model id)").as_str());
+        }        candidates.push((found, req.model));
     }
 
 

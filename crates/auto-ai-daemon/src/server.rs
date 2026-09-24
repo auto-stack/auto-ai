@@ -178,11 +178,24 @@ async fn chat_completions(
         }
     } else {
         // Concrete model id — find the provider that owns it (single candidate).
+        // PLAN-083 T-06: an id that matches NO provider model is rejected at
+        // the routing layer with 400 instead of being passed through to the
+        // default provider (which upstream-reports "model not found", a
+        // confusing failure surface for callers).
         let cfg = state.cfg();
         let found = cfg.providers.iter()
             .find(|(_, pc)| pc.models.iter().any(|m| m.id == req.model))
-            .map(|(name, _)| name.clone())
-            .unwrap_or_else(|| cfg.default_provider.clone());
+            .map(|(name, _)| name.clone());
+        let Some(found) = found else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {"message": format!(
+                    "unknown model '{}' (known: tier:max|pro|mid|lite|min, or a provider model id)",
+                    req.model
+                )}})),
+            )
+                .into_response();
+        };
         vec![(found, req.model.clone())]
     };
 
@@ -860,6 +873,33 @@ mod tests {
         assert_eq!(meta["context_window"], 32_000);
         // usage recorded for the app
         assert_eq!(state.tracker.get("test").total_input_tokens, 10);
+    }
+
+    #[tokio::test]
+    async fn unknown_model_rejected_at_routing_layer() {
+        // PLAN-083 T-06: a non-tier model id that matches no provider model
+        // gets 400 "unknown model" here — it must not pass through to the
+        // default provider (whose upstream would report "model not found").
+        let (state, counters) = state_with(
+            test_config(),
+            vec![("mocka", "model-a", vec![Ok(ok_response())])],
+        );
+        let (status, v) = call_chat(state, "mid").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        let msg = v["error"]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("unknown model 'mid'"), "{msg}");
+        assert!(msg.contains("tier:"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn known_model_id_still_routes() {
+        // Control: a concrete provider model id routes as before.
+        let (state, _) = state_with(
+            test_config(),
+            vec![("mocka", "model-a", vec![Ok(ok_response())])],
+        );
+        let (status, v) = call_chat(state, "model-a").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
     }
 
     #[tokio::test]
