@@ -1298,3 +1298,57 @@ async fn t34_compaction_request_carries_model_chain() {
     assert_eq!(reqs[0].model, "glm-5.3");
     assert_eq!(reqs[0].model_chain, chain);
 }
+
+// ─── PLAN-083 T-05: loop-correction two-stage semantics ────────────────────
+/// At the threshold the identical call is skipped and a correction
+/// tool_result is injected; a repeat after the hint terminates with
+/// LoopDetected. Mirrors the rust-ref `run_detects_loop` update.
+#[tokio::test]
+async fn t_loop_correction_hint_at_threshold_then_terminate() {
+    let client = SseScriptedClient::new(
+        vec![
+            tool_call_response("echo", json!({"word":"hi"})), // count 1 → runs
+            tool_call_response("echo", json!({"word":"hi"})), // count 2 → runs
+            tool_call_response("echo", json!({"word":"hi"})), // count 3 → correction, skipped
+            tool_call_response("echo", json!({"word":"hi"})), // count 4 → terminate
+            text_response("never reached"),
+        ],
+        vec![vec![], vec![], vec![], vec![], vec![]],
+    );
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client.clone()));
+    agent.register_tool(Box::new(EchoTool));
+
+    let err = agent.run("loop").await.unwrap_err();
+    assert!(
+        matches!(err, AgentError::LoopDetected(ref n) if n == "echo"),
+        "expected LoopDetected, got {err:?}"
+    );
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 4, "termination happens on turn 4");
+    assert!(
+        reqs[3].messages.iter().any(|m| m.content.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolResult { content: t, .. } if t.contains("cycle guard")
+        ))),
+        "turn-4 request must carry the correction hint"
+    );
+}
+
+/// Distinct args are distinct keys — no correction, no termination; every
+/// scripted call executes and the run finishes normally.
+#[tokio::test]
+async fn t_loop_correction_ignores_distinct_args() {
+    let client = ScriptedClient::new(vec![
+        tool_call_response("echo", json!({"word":"a"})),
+        tool_call_response("echo", json!({"word":"b"})),
+        tool_call_response("echo", json!({"word":"a"})), // key a → count 2
+        tool_call_response("echo", json!({"word":"b"})), // key b → count 2
+        text_response("fine"),
+    ]);
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client));
+    agent.register_tool(Box::new(EchoTool));
+
+    let result = agent.run("loop-ish").await.unwrap();
+    assert_eq!(result.output, "fine");
+    assert_eq!(result.tool_calls.len(), 4, "all calls executed");
+}

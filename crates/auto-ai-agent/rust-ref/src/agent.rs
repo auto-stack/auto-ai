@@ -8,7 +8,7 @@
 //! be driven by the real [`auto_ai_client::AiClient`] in production *or* a
 //! deterministic mock in tests.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +26,17 @@ use crate::tool::{tool_to_definition, ToolOutput, ToolRegistry};
 
 /// After how many identical (tool, args) repeats the loop bails out as a cycle.
 const LOOP_DETECT_THRESHOLD: usize = 3;
+
+/// PLAN-083 T-05: the one-shot correction text injected as a tool_result when
+/// a (tool, args) pair reaches the loop threshold. Names the repeated call,
+/// shows the exact args, and gives the model its two outs — change the
+/// parameters or answer from results already in hand — plus the consequence
+/// of repeating. Mirrors `cycle_correction_hint` in agent.at.
+fn cycle_correction_hint(name: &str, args: &serde_json::Value, count: usize) -> String {
+    format!(
+        "cycle guard: '{name}' has now been called {count} times with identical args ({args}). Do NOT call it the same way again — change the parameters, use a different tool, or answer directly from the results you already have. One more identical call will terminate this run."
+    )
+}
 
 /// Maximum chars of a tool result stored in memory. Tool outputs longer than
 /// this are truncated (with a notice) so a single read_file of a huge file
@@ -356,8 +367,12 @@ impl Agent {
     ///
     /// Each turn: ask the model, execute any tool calls, feed results back.
     /// Stops when the model replies with plain text (no tool calls), a
-    /// tool-call cycle is detected (LOOP_DETECT_THRESHOLD), or an optional
-    /// safety cap is hit (max_turns * 5, to prevent pathological runaway).
+    /// tool-call cycle is detected, or an optional safety cap is hit
+    /// (max_turns * 5, to prevent pathological runaway). PLAN-083 T-05: a
+    /// detected cycle is two-stage — at the threshold the model receives ONE
+    /// correction hint (a tool_result naming the repeated call; the call
+    /// itself is skipped) and the run continues; only an identical repeat
+    /// after the hint terminates with LoopDetected.
     ///
     /// The Role's `max_turns` is treated as a **soft target**, not a hard
     /// limit — the agent can exceed it if still making progress. The hard
@@ -623,6 +638,9 @@ impl Agent {
         // Track how many times each (tool, args) pair has recurred, for loop
         // detection (ported from AutoForge turn.rs:396-427).
         let mut seen: HashMap<String, usize> = HashMap::new();
+        // PLAN-083 T-05: (tool,args) keys that already received the one-shot
+        // correction hint — the next identical call terminates the run.
+        let mut corrected: HashSet<String> = HashSet::new();
         // PLAN-027 ②: 连续 security error 计数（≥3 → 注入强 hint 短路无效重试）。
         let mut security_errors: usize = 0;
 
@@ -743,6 +761,25 @@ impl Agent {
                     let key = format!("{}::{}", tc.name, tc.input);
                     let count = seen.entry(key.clone()).or_insert(0);
                     *count += 1;
+                    // PLAN-083 T-05: two-stage cycle handling. At the threshold
+                    // the model gets exactly ONE correction hint — a
+                    // tool_result naming the repeated call and its args, with
+                    // the call itself skipped — and the run continues. An
+                    // identical repeat after the hint terminates as before.
+                    // The hint fires once per key, so the call budget stays
+                    // bounded.
+                    if *count >= LOOP_DETECT_THRESHOLD && !corrected.contains(&key) {
+                        corrected.insert(key.clone());
+                        let hint = cycle_correction_hint(&tc.name, &tc.input, *count);
+                        self.memory.add_message(Message::tool_result(&tc.id, &hint));
+                        on_event(StreamEvent::Warning {
+                            text: format!(
+                                "cycle guard: '{}' called {}x with identical args — correction hint injected",
+                                tc.name, count
+                            ),
+                        });
+                        continue;
+                    }
                     if *count >= LOOP_DETECT_THRESHOLD {
                         on_event(StreamEvent::Error {
                             message: format!("loop detected on '{}'", tc.name),
@@ -1034,11 +1071,22 @@ mod tests {
     /// it can live behind an `Arc<dyn Client>`.
     struct MockClient {
         queue: Mutex<Vec<CompletionResponse>>,
+        // PLAN-083 T-05: capture every request so tests can assert what the
+        // model would have seen (e.g. the correction hint message).
+        requests: Mutex<Vec<CompletionRequest>>,
+    }
+
+    impl MockClient {
+        /// Every request the mock served, in order (PLAN-083 T-05 assertions).
+        fn requests(&self) -> Vec<CompletionRequest> {
+            self.requests.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
     impl Client for MockClient {
-        async fn complete(&self, _req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
+        async fn complete(&self, req: &CompletionRequest) -> Result<CompletionResponse, ClientError> {
+            self.requests.lock().unwrap().push(req.clone());
             let mut q = self.queue.lock().unwrap();
             if q.is_empty() {
                 return Ok(CompletionResponse {
@@ -1058,6 +1106,7 @@ mod tests {
     fn mock_client(resps: Vec<CompletionResponse>) -> Arc<MockClient> {
         Arc::new(MockClient {
             queue: Mutex::new(resps),
+            requests: Mutex::new(Vec::new()),
         })
     }
 
@@ -1187,13 +1236,16 @@ mod tests {
 
     #[tokio::test]
     async fn run_detects_loop() {
-        // Same tool + same args 3 times → LoopDetected.
+        // PLAN-083 T-05 two-stage: the 3rd identical call receives a one-shot
+        // correction tool_result (and is NOT executed); only the 4th
+        // identical call terminates with LoopDetected.
         let client = mock_client(vec![
             tool_resp("add_one", "c1", json!({"n":1})),
             tool_resp("add_one", "c2", json!({"n":1})),
-            tool_resp("add_one", "c3", json!({"n":1})),
+            tool_resp("add_one", "c3", json!({"n":1})), // threshold → correction
+            tool_resp("add_one", "c4", json!({"n":1})), // repeat after hint → stop
         ]);
-        let mut agent = Agent::new(MockRole, client as Arc<dyn Client>);
+        let mut agent = Agent::new(MockRole, client.clone() as Arc<dyn Client>);
         agent.register_tool(AddOne);
 
         let err = agent.run("loop").await.unwrap_err();
@@ -1201,6 +1253,19 @@ mod tests {
             AgentError::LoopDetected(name) => assert_eq!(name, "add_one"),
             other => panic!("expected LoopDetected, got {other:?}"),
         }
+        // The termination happens on turn 4 — the correction hint travelled
+        // in the turn-4 request's messages.
+        let reqs = client.requests();
+        assert_eq!(reqs.len(), 4);
+        assert!(
+            reqs[3].messages.iter().any(|m| {
+                m.content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::ToolResult { content, .. } if content.contains("cycle guard")
+                ))
+            }),
+            "turn-4 request must carry the correction hint"
+        );
     }
 
     #[test]

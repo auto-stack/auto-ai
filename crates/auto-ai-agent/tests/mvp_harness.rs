@@ -17,12 +17,14 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use auto_ai_agent::{
-    Agent, Client, Role, StreamEvent, Tool, ToolError, ToolOutput,
+    Agent, AgentError, Client, Role, StreamEvent, Tool, ToolError, ToolOutput,
 };
 use auto_ai_agent::orchestration::{
     FlowSpec, FlowStep, PipelineDriver, PipelineEvent, AgentFactory,
 };
-use auto_ai_client::{CompletionRequest, CompletionResponse, ClientError, Message, ToolCall, Usage};
+use auto_ai_client::{
+    CompletionRequest, CompletionResponse, ClientError, ContentBlock, Message, ToolCall, Usage,
+};
 
 // ── Test mocks ─────────────────────────────────────────────────────────────
 
@@ -1186,4 +1188,103 @@ async fn harness_compaction_request_carries_model_chain() {
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].model, "glm-5.3");
     assert_eq!(reqs[0].model_chain, chain);
+}
+
+// ── PLAN-083 T-05: loop-correction two-stage semantics ─────────────────────
+
+/// At the loop threshold the identical call is NOT executed: the model
+/// receives a one-shot correction tool_result (naming the repeated call and
+/// its args) and the run continues. Only two calls ever reach the tool.
+#[tokio::test]
+async fn loop_correction_injects_hint_at_threshold_and_skips_call() {
+    let client = Arc::new(ScriptedClient::new(vec![
+        tool_call_response("", "echo", json!({"word": "hi"})), // count 1 → runs
+        tool_call_response("", "echo", json!({"word": "hi"})), // count 2 → runs
+        tool_call_response("", "echo", json!({"word": "hi"})), // count 3 → correction, skipped
+        text_response("changed course"),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.register_tool(EchoTool);
+
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = agent.run_stream("task", cb, cancel).await.unwrap();
+
+    assert_eq!(result.output, "changed course");
+    assert_eq!(
+        result.tool_calls.len(), 2,
+        "threshold call must be skipped, executed: {:?}", result.tool_calls
+    );
+    // Turn-4 request carried the correction hint as the latest tool message.
+    let reqs = client.requests();
+    assert_eq!(reqs.len(), 4, "three tool turns + final answer turn");
+    let hint = reqs[3]
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| {
+            m.content.iter().find_map(|b| match b {
+                ContentBlock::ToolResult { content: t, .. } if t.contains("cycle guard") => Some(t.clone()),
+                _ => None,
+            })
+        })
+        .expect("correction tool_result in turn-4 request");
+    assert!(hint.contains("'echo'"), "names the tool: {hint}");
+    assert!(hint.contains("identical args"), "mentions the args: {hint}");
+    assert!(hint.contains("3 times"), "mentions the count: {hint}");
+    assert!(hint.contains("terminate"), "states the consequence: {hint}");
+    // The correction is announced on the stream (Warning), and no Error.
+    let got = events.lock().unwrap();
+    assert!(
+        got.iter().any(|e| matches!(e, StreamEvent::Warning { .. })),
+        "correction warning expected, got: {:?}",
+        got.iter().map(tag).collect::<Vec<_>>()
+    );
+    assert!(!got.iter().any(|e| matches!(e, StreamEvent::Error { .. })));
+}
+
+/// An identical call AFTER the correction hint terminates with LoopDetected,
+/// and the unused scripted response is never consumed.
+#[tokio::test]
+async fn loop_correction_repeat_after_hint_terminates() {
+    let client = Arc::new(ScriptedClient::new(vec![
+        tool_call_response("", "echo", json!({"word": "hi"})), // count 1
+        tool_call_response("", "echo", json!({"word": "hi"})), // count 2
+        tool_call_response("", "echo", json!({"word": "hi"})), // count 3 → hint
+        tool_call_response("", "echo", json!({"word": "hi"})), // count 4 → terminate
+        text_response("never reached"),
+    ]));
+    let mut agent = Agent::new(TestRole, client.clone());
+    agent.register_tool(EchoTool);
+
+    let result = agent.run("task").await;
+    match result {
+        Err(AgentError::LoopDetected(name)) => assert_eq!(name, "echo"),
+        other => panic!("expected LoopDetected, got: {other:?}"),
+    }
+    assert_eq!(client.requests().len(), 4, "termination happens on turn 4");
+}
+
+/// Different args are distinct keys: no correction, no termination.
+#[tokio::test]
+async fn loop_correction_ignores_distinct_args() {
+    let client = Arc::new(ScriptedClient::new(vec![
+        tool_call_response("", "echo", json!({"word": "a"})),
+        tool_call_response("", "echo", json!({"word": "b"})),
+        tool_call_response("", "echo", json!({"word": "a"})), // key a → count 2
+        tool_call_response("", "echo", json!({"word": "b"})), // key b → count 2
+        text_response("fine"),
+    ]));
+    let mut agent = Agent::new(TestRole, client);
+    agent.register_tool(EchoTool);
+
+    let (events, cb) = collect_events();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = agent.run_stream("task", cb, cancel).await.unwrap();
+    assert_eq!(result.output, "fine");
+    assert_eq!(result.tool_calls.len(), 4, "all calls executed");
+    assert!(
+        !events.lock().unwrap().iter().any(|e| matches!(e, StreamEvent::Warning { .. })),
+        "no cycle-guard warning expected"
+    );
 }

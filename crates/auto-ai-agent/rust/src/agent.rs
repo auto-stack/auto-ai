@@ -78,6 +78,15 @@ fn loop_detect_threshold() -> u32 {
     return 3;
 }
 
+/// PLAN-083 T-05: the one-shot correction text injected as a tool_result when
+/// a (tool, args) pair reaches the loop threshold. Names the repeated call,
+/// shows the exact args, and gives the model its two outs — change the
+/// parameters or answer from results already in hand — plus the consequence
+/// of repeating.
+fn cycle_correction_hint(name: &str, args: JsonValue, count: u32) -> String {
+    return format!("cycle guard: '{}' has now been called {} times with identical args ({}). Do NOT call it the same way again — change the parameters, use a different tool, or answer directly from the results you already have. One more identical call will terminate this run.", name, count, args);
+}
+
 /// Maximum chars of a tool result stored in memory (~5k tokens). Tool outputs
 /// longer than this are truncated (with a notice) so a single read_file of a
 /// huge file can't blow out the context window for the rest of the run.
@@ -499,8 +508,16 @@ impl Agent {
         let hard_limit: u32 = soft_limit * 5;
         let mut result = AgentResult::default();
 
-        let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+
+
+
+
+
         let mut seen_names: Vec<String> = vec![];
+
+
+        let mut corrected: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
 
         let mut turn: u32 = 0 as u32;
         while turn < hard_limit {
@@ -617,8 +634,37 @@ impl Agent {
 
                     let tc = tcs[(idx) as usize].clone();
                     let key: String = format!("{}::{}", tc.name, tc.input);
-                    let count = bump_seen(seen.clone(), seen_names.clone(), key.as_str());
+                    seen_names.push(key.clone());
+                    let count = count_key_occurrences(seen_names.clone(), key.as_str());
+                    
+
+
+
+
+
+
+                    let mut give_correction: bool = false;
+                    let mut terminate: bool = false;
                     if count >= loop_detect_threshold() {
+                        match corrected.get(&key) {
+                            Some(_) => terminate = true,
+                            None => give_correction = true,
+                        };
+                    }
+                    if give_correction {
+                        corrected.insert(key, true);
+                        let hint = cycle_correction_hint(tc.name.as_str(), tc.input.clone(), count);
+                        let pr = Message::tool_result(tc.id, hint);
+                        self.memory.add_message(pr);
+                        let wev = StreamEvent::Warning(format!("cycle guard: '{}' called {}x with identical args — correction hint injected", tc.name, count));
+                        sink.send(wev);
+                        idx = idx + 1;
+                        
+
+
+                        continue;
+                    }
+                    if terminate {
                         let ev = StreamEvent::Error(format!("loop detected on '{}'", tc.name));
                         sink.send(ev);
                         return Err(AgentError::LoopDetected(tc.name));
@@ -816,10 +862,14 @@ impl Agent {
 /// 
 /// Each turn: build a request from memory + role, ask the model, execute
 /// any tool calls, feed results back. Stops when the model replies with
-/// plain text (no tool calls), a tool-call cycle is detected
-/// (LOOP_DETECT_THRESHOLD), or the hard safety cap (max_turns * 5) is hit.
-/// The Role's max_turns is a SOFT target — the agent may exceed it while
-/// still making progress; the hard cap is 5x the soft target.
+/// plain text (no tool calls), a tool-call cycle is detected, or the hard
+/// safety cap (max_turns * 5) is hit. The Role's max_turns is a SOFT
+/// target — the agent may exceed it while still making progress; the hard
+/// cap is 5x the soft target.
+/// PLAN-083 T-05: a detected cycle is two-stage — at the threshold the
+/// model receives ONE correction hint (a tool_result naming the repeated
+/// call and its args; the call itself is skipped) and the run continues;
+/// only an identical repeat after the hint terminates with LoopDetected.
 /// `mut fn`: mutates self.memory (add/add_message) + self.tools.
 /// Build the completion request for the current turn: system prompt from
 /// the Role, the role's tier/model, the full memory, and the tools the
@@ -844,17 +894,16 @@ fn is_cancelled(cancel: Option<Arc<AtomicBool>>) -> bool {
 /// Increment the recurrence count for a (tool, args) key, returning the new
 /// count. Keeps the parallel `seen_names` key list in sync (Auto's VM Map has
 /// no iteration API — plan 013 gotcha B5).
-fn bump_seen(mut seen: std::collections::HashMap<String, u32>, mut seen_names: Vec<String>, key: &str) -> u32 {
-    let mut prev: u32 = 0 as u32;
-
-
-    match seen.get(key) {
-        Some(n) => prev = n.clone(),
-        None => seen_names.push(key.to_string()),
-    };
-    let next: u32 = prev + 1;
-    seen.insert(key.to_string(), next);
-    return next;
+/// Count occurrences of `key` in the append-only recurrence log (read-only
+/// on the caller's clone — safe under a2r by-value arg passing).
+fn count_key_occurrences(names: Vec<String>, key: &str) -> u32 {
+    let mut n: u32 = 0 as u32;
+    for k in &names {
+        if k.as_str() == key {
+            n = n + 1;
+        }
+    }
+    return n;
 }
 
 /// Compute the updated running token total after folding in a response's usage
