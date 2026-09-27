@@ -208,6 +208,18 @@ async fn chat_completions(
     //
     // PLAN-034: on an explicit chain, a non-last candidate waits only
     // CHAIN_SHORT_WAIT for its permit before moving on (see the constant).
+    // PLAN-092 T-04: aaid has zero request logging (a UAT observation gap —
+    // a 31-minute run was untraceable from the daemon log). Minimal request
+    // line at entry + outcome lines at each terminal path.
+    tracing::info!(
+        "chat req: app={} model={} stream={} msgs={} candidates={}",
+        app_name,
+        req.model,
+        req.stream,
+        req.messages.len(),
+        candidates.len()
+    );
+    let started = std::time::Instant::now();
     let mut last_error: Option<String> = None;
     for (idx, (provider_name, model_id)) in candidates.iter().enumerate() {
         req.model = model_id.clone();
@@ -245,6 +257,12 @@ async fn chat_completions(
             // Plan 031: the metadata travels with the *actual* serving model
             // (after this candidate won), in the SSE done tail frame.
             let model_meta = model_meta_for(&state.cfg(), provider_name, model_id);
+            // PLAN-092 T-04: stream start line (provider commit point).
+            tracing::info!(
+                "chat stream start: app={} provider={} model={} (waited {}ms)",
+                app_name, provider_name, model_id,
+                started.elapsed().as_millis()
+            );
             return streaming_response(state, app_name, provider, req, permit, model_meta)
                 .await;
         }
@@ -256,6 +274,15 @@ async fn chat_completions(
                 // can adapt its context-window math (tier fallback may have
                 // swapped in a different-window model than requested).
                 resp.model_meta = model_meta_for(&state.cfg(), provider_name, model_id);
+                // PLAN-092 T-04: outcome line — elapsed + usage (the UAT's
+                // 31-minute run cadence was invisible without this).
+                tracing::info!(
+                    "chat ok: app={} provider={} model={} elapsed={}ms in={} out={}",
+                    app_name, provider_name, model_id,
+                    started.elapsed().as_millis(),
+                    resp.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
+                    resp.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0)
+                );
                 if let Some(u) = &resp.usage {
                     state.tracker.record_full(
                         &app_name,
@@ -310,6 +337,15 @@ async fn chat_completions(
     }
 
     // All candidates exhausted.
+    // PLAN-092 T-04: the 502 must leave a log line (was response-only).
+    tracing::error!(
+        "chat failed: app={} model={} candidates={} elapsed={}ms last_error={}",
+        app_name,
+        req.model,
+        candidates.len(),
+        started.elapsed().as_millis(),
+        last_error.as_deref().unwrap_or("unknown")
+    );
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({"error": {"message": format!("all providers failed; last error: {}", last_error.unwrap_or_else(|| "unknown".into()))}})),
@@ -343,6 +379,8 @@ async fn streaming_response(
     // so the provider stops pulling tokens from the upstream and releases the
     // permit promptly instead of running to completion into a dead channel.
     let cancel = CancellationToken::new();
+    // PLAN-092 T-04: stream outcome line shares the start line's clock.
+    let stream_started = std::time::Instant::now();
 
     // Spawn the streaming call: invokes the provider, whose `on_delta` callback
     // pushes deltas into the channel. When done, sends a final event.
@@ -373,6 +411,14 @@ async fn streaming_response(
 
         match provider.complete_stream(&req, on_delta, cancel_for_task).await {
             Ok(resp) => {
+                // PLAN-092 T-04: stream outcome line (elapsed + usage).
+                tracing::info!(
+                    "chat stream done: app={} model={} elapsed={}ms in={} out={}",
+                    app_name, resp.model,
+                    stream_started.elapsed().as_millis(),
+                    resp.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
+                    resp.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0)
+                );
                 if let Some(u) = &resp.usage {
                     state
                         .tracker
@@ -397,6 +443,13 @@ async fn streaming_response(
                 ));
             }
             Err(e) => {
+                // PLAN-092 T-04: stream failure line.
+                tracing::warn!(
+                    "chat stream error: app={} model={} elapsed={}ms error={}",
+                    app_name, req.model,
+                    stream_started.elapsed().as_millis(),
+                    e
+                );
                 let _ = tx.try_send(format!(
                     "data: {}\n\n",
                     json!({"type": "error", "message": format!("{e}")})
