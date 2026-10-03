@@ -169,6 +169,26 @@ impl Tool for EchoTool {
     }
 }
 
+/// PLAN-097 unblock: read-only canvas observation stub — same name class as
+/// the production `canvas_snapshot` so the widened terminate budget applies.
+struct CanvasSnapshotStubTool;
+
+#[async_trait]
+impl Tool for CanvasSnapshotStubTool {
+    fn name(&self) -> String {
+        "canvas_snapshot".into()
+    }
+    fn description(&self) -> String {
+        "Stub canvas snapshot (returns the same face every call).".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{}})
+    }
+    async fn execute(&self, _args: Value) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::text("canvas session starting (state: Starting)"))
+    }
+}
+
 /// A minimal role for ReAct-loop tests. `max_turns` is configurable via a field
 /// (closures aren't allowed in trait impls, so we vary it per test by building
 /// a fresh role struct).
@@ -1332,6 +1352,41 @@ async fn t_loop_correction_hint_at_threshold_then_terminate() {
         ))),
         "turn-4 request must carry the correction hint"
     );
+}
+
+/// PLAN-097 unblock: read-only canvas observation tools get a wider
+/// identical-args budget — correction hint at 3 (unchanged), execution
+/// continues through 4..7, termination moves to 8.
+#[tokio::test]
+async fn t_loop_canvas_readonly_wider_terminate_budget() {
+    // Counts 1,2 run; 3 → correction (skipped); 4..7 run; an 8th identical
+    // call would terminate — the run instead completes via the text response.
+    let mut calls = Vec::new();
+    for _ in 0..7 {
+        calls.push(tool_call_response("canvas_snapshot", json!({})));
+    }
+    calls.push(text_response("done"));
+    let mut results = Vec::new();
+    for _ in 0..10 {
+        results.push(vec![]);
+    }
+    let client = SseScriptedClient::new(calls, results);
+    let mut agent = Agent::new_shared(Box::new(TestRole::new()), Box::new(client.clone()));
+    agent.register_tool(Box::new(CanvasSnapshotStubTool));
+
+    let result = agent.run("canvas wait").await.expect("must NOT terminate at 4");
+    let reqs = client.requests();
+    // hint at count 3 (threshold unchanged); pre-change termination was at 4
+    assert!(
+        reqs[3].messages.iter().any(|m| m.content.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolResult { content: t, .. } if t.contains("cycle guard")
+        ))),
+        "turn-4 request must carry the correction hint (threshold unchanged)"
+    );
+    // counts 1,2,4,5,6,7 execute (3 was the correction slot) = 6 executions
+    assert_eq!(result.tool_calls.len(), 6, "read-only tool executes past the old 4-call termination");
+    assert_eq!(reqs.len(), 8, "7 tool turns + final text turn");
 }
 
 /// Distinct args are distinct keys — no correction, no termination; every

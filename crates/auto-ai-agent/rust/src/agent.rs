@@ -78,6 +78,32 @@ fn loop_detect_threshold() -> u32 {
     return 3;
 }
 
+/// PLAN-097 unblock (auto-musk t12-real-05 serve.log evidence): a coder's
+/// canvas verification loop polling `canvas_snapshot` was terminated at 4
+/// identical repeats while the canvas session was still starting (session
+/// start can take 70s+; every poll returned the same "Starting" face). The
+/// correction hint still fires once at the base threshold; read-only
+/// observation tools get a wider termination budget so legitimate
+/// wait-and-poll verification survives. Mutating tools keep the tight guard
+/// (terminate on the first identical repeat after the hint).
+fn loop_terminate_threshold(tool: &str) -> u32 {
+
+
+    if tool == "canvas_snapshot" {
+        return 8 as u32;
+    }
+    if tool == "canvas_state" {
+        return 8 as u32;
+    }
+    if tool == "canvas_status" {
+        return 8 as u32;
+    }
+    if tool == "canvas_overlay" {
+        return 8 as u32;
+    }
+    return loop_detect_threshold() + 1;
+}
+
 /// PLAN-083 T-05: the one-shot correction text injected as a tool_result when
 /// a (tool, args) pair reaches the loop threshold. Names the repeated call,
 /// shows the exact args, and gives the model its two outs — change the
@@ -647,7 +673,11 @@ impl Agent {
                     let mut terminate: bool = false;
                     if count >= loop_detect_threshold() {
                         match corrected.get(&key) {
-                            Some(_) => terminate = true,
+                            Some(_) => {
+                                if count >= loop_terminate_threshold(tc.name.as_str()) {
+                                    terminate = true;
+                                }
+                            },
                             None => give_correction = true,
                         };
                     }
