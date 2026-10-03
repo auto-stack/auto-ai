@@ -101,6 +101,12 @@ fn loop_terminate_threshold(tool: &str) -> u32 {
     if tool == "canvas_overlay" {
         return 8 as u32;
     }
+    if tool == "canvas_run" {
+        return 8 as u32;
+    }
+    if tool == "canvas_act" {
+        return 8 as u32;
+    }
     return loop_detect_threshold() + 1;
 }
 

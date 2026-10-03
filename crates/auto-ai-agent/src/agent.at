@@ -99,6 +99,12 @@ fn loop_terminate_threshold(tool str) uint {
     if tool == "canvas_overlay" {
         return 8
     }
+    if tool == "canvas_run" {
+        return 8
+    }
+    if tool == "canvas_act" {
+        return 8
+    }
     return loop_detect_threshold() + 1
 }
 

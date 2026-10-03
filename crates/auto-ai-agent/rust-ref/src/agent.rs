@@ -35,8 +35,12 @@ const LOOP_DETECT_THRESHOLD: usize = 3;
 /// correction hint still fires once at the base threshold; mutating tools
 /// keep the tight guard (terminate on the first identical repeat after it).
 fn loop_terminate_threshold(tool: &str) -> usize {
+    // canvas_run/canvas_act 同参重试的合法面：watchdog 重启窗口（最长
+    // 2×120s+退避）内等待会话就绪——t12-real-07 serve.log 实证 coder 在
+    // 重启窗口内同参 canvas_run ×4 被紧防护击杀。上界 8 次有界。
     match tool {
-        "canvas_snapshot" | "canvas_state" | "canvas_status" | "canvas_overlay" => 8,
+        "canvas_snapshot" | "canvas_state" | "canvas_status" | "canvas_overlay"
+        | "canvas_run" | "canvas_act" => 8,
         _ => LOOP_DETECT_THRESHOLD + 1,
     }
 }
