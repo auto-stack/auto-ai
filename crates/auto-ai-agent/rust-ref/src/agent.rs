@@ -27,6 +27,20 @@ use crate::tool::{tool_to_definition, ToolOutput, ToolRegistry};
 /// After how many identical (tool, args) repeats the loop bails out as a cycle.
 const LOOP_DETECT_THRESHOLD: usize = 3;
 
+/// PLAN-097 unblock (auto-musk t12-real-06 serve.log evidence): a coder's
+/// canvas verification loop polling `canvas_snapshot` was terminated at 4
+/// identical repeats while the canvas session was still starting (session
+/// start can take 70s+; every poll returned the same "no frame" face).
+/// Read-only observation tools get a wider termination budget — the
+/// correction hint still fires once at the base threshold; mutating tools
+/// keep the tight guard (terminate on the first identical repeat after it).
+fn loop_terminate_threshold(tool: &str) -> usize {
+    match tool {
+        "canvas_snapshot" | "canvas_state" | "canvas_status" | "canvas_overlay" => 8,
+        _ => LOOP_DETECT_THRESHOLD + 1,
+    }
+}
+
 /// PLAN-083 T-05: the one-shot correction text injected as a tool_result when
 /// a (tool, args) pair reaches the loop threshold. Names the repeated call,
 /// shows the exact args, and gives the model its two outs — change the
@@ -780,7 +794,7 @@ impl Agent {
                         });
                         continue;
                     }
-                    if *count >= LOOP_DETECT_THRESHOLD {
+                    if *count >= loop_terminate_threshold(&tc.name) {
                         on_event(StreamEvent::Error {
                             message: format!("loop detected on '{}'", tc.name),
                         });
