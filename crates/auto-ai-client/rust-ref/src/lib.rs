@@ -151,8 +151,39 @@ impl AiClient {
         let mut model_meta: Option<ModelMeta> = None;
         let mut error_msg: Option<String> = None;
 
-        while let Some(chunk_result) = stream.next().await {
+        // E-STREAM-HANG 根修（PLAN-099 解阻）：读循环自持空闲超时——上游断流/
+        // 半开连接时 `stream.next()` 曾永久 pending（reqwest 默认无超时；运行
+        // 侧 watchselect 的恢复面在同步桥停泊下不可达，preview-live-02 与
+        // 099-e2e 双场景实证），run 整体冻结、会话永久 busy。现按读空闲窗
+        // （env AUTO_AI_CLIENT_STREAM_IDLE_TIMEOUT_SECS，缺省 90s = daemon 侧
+        // 30s 上游窗 ×3 余量）终结为 Http 错误——调用方按既有失败臂落盘可见
+        // 错误并释放守卫。
+        let idle_timeout = std::time::Duration::from_secs(
+            std::env::var("AUTO_AI_CLIENT_STREAM_IDLE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(90),
+        );
+        let mut chunk_count: u64 = 0;
+        loop {
+            let chunk_result = match tokio::time::timeout(idle_timeout, stream.next()).await {
+                Err(_elapsed) => {
+                    tracing::error!(
+                        "llm stream idle timeout: no bytes for {:?} (chunks={})",
+                        idle_timeout,
+                        chunk_count
+                    );
+                    return Err(ClientError::Http(format!(
+                        "llm stream idle timeout: no bytes for {:?} (chunks={})",
+                        idle_timeout, chunk_count
+                    )));
+                }
+                Ok(None) => break, // 上游 EOF（daemon 正常收尾）
+                Ok(Some(r)) => r,
+            };
             let bytes = chunk_result.map_err(|e| ClientError::Http(e.to_string()))?;
+            chunk_count += 1;
             for data_line in sse.push(&bytes) {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data_line) {
                     if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
@@ -309,5 +340,66 @@ mod tests {
         let c = AiClient::with_url("http://example:1234");
         assert_eq!(c.url(), "http://example:1234");
         assert!(c.is_daemon_mode());
+    }
+
+    /// E-STREAM-HANG 根修钉测试（PLAN-099 解阻）：上游静默持连时读循环按
+    /// 空闲窗终结为 Http 错误（不再永久 pending）。stub 发 2 个 SSE 块后
+    /// 静默 30s；env 注入 1s 空闲窗，complete_stream 应在 ~1-2s 内返 Err。
+    #[test]
+    fn complete_stream_idle_timeout_on_silent_upstream() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut s, _)) = listener.accept() else { return };
+            let mut buf = [0u8; 8192];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+            );
+            for i in 0..2 {
+                let ev = format!("data: {{\"type\":\"thinking\",\"thinking\":\"t{i}\"}}\n\n");
+                let p = ev.as_bytes();
+                let _ = s.write_all(format!("{:x}\r\n", p.len()).as_bytes());
+                let _ = s.write_all(p);
+                let _ = s.write_all(b"\r\n");
+                let _ = s.flush();
+            }
+            // 静默持连 30s（测试用 env 短空闲窗，1s 后即应被客户端终结）。
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        std::env::set_var("AUTO_AI_CLIENT_STREAM_IDLE_TIMEOUT_SECS", "1");
+        let c = AiClient::with_url(format!("http://127.0.0.1:{port}"));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let t0 = std::time::Instant::now();
+        let out = rt.block_on(c.complete_stream(
+            &CompletionRequest {
+                model: "m".into(),
+                messages: vec![],
+                max_tokens: None,
+                temperature: None,
+                system_prompt: None,
+                tools: vec![],
+                stream: true,
+                preferred_provider: None,
+                thinking_level: None,
+                model_chain: vec![],
+            },
+            Box::new(|_v| {}),
+        ));
+        let elapsed = t0.elapsed();
+        let err = out.err().expect("静默上游应终结为错误");
+        assert!(
+            format!("{err}").contains("idle timeout"),
+            "错误应携带 idle timeout 语义: {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "应在空闲窗附近终结（实测 {elapsed:?}）"
+        );
     }
 }
