@@ -612,6 +612,47 @@ impl Agent {
         }
     }
 
+    /// PLAN-105 T-03：扫描末条含 ToolUse 的 assistant 消息，为其后缺失
+    /// tool_result 的 ToolUse 补占位（`[interrupted before completion]`，
+    /// is_error=false——外层中止非工具失败，模型可自行决定重试）。仅处理
+    /// 末条（工具批内顺序执行，更早轮次的悬挂在 drop-中止场景不会出现；
+    /// 完整应答的批次为 no-op）。
+    fn repair_orphan_tool_uses(&mut self) {
+        let msgs = self.memory.messages();
+        let Some(idx) = msgs.iter().rposition(|m| {
+            m.role == "assistant"
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+        }) else {
+            return;
+        };
+        let use_ids: Vec<String> = msgs[idx]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let answered: std::collections::HashSet<String> = msgs[idx + 1..]
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let missing: Vec<String> = use_ids
+            .into_iter()
+            .filter(|id| !answered.contains(id))
+            .collect();
+        for id in missing {
+            self.memory
+                .add_message(Message::tool_result(&id, "[interrupted before completion]"));
+        }
+    }
+
     /// Unified ReAct loop backing both [`Self::run`] and [`Self::run_stream`]
     /// (review-003 M4: eliminates the two parallel implementations that had
     /// drifted apart — S3's missing error check was a direct symptom).
@@ -636,6 +677,14 @@ impl Agent {
                 .map(|c| c.load(Ordering::SeqCst))
                 .unwrap_or(false)
         };
+
+        // PLAN-105 T-03：孤儿 tool_use 修补——上一轮被外层中止（如宿主看门
+        // 狗 drop future）在工具批中途时，最后一条 assistant 消息会携带未
+        // 应答的 ToolUse；随后复跑/注入「继续」的请求线对严格提供方是
+        // 400（悬挂 tool_use）。入口统一补占位 tool_result 再挂新任务，
+        // 复跑语义合法化（取消检查点路径本就补位，此为 drop-中止路径的
+        // 对偶面）。
+        self.repair_orphan_tool_uses();
 
         // Plan 028: auto-compact before the run starts (never mid-run). A
         // failure is non-fatal — the ring-buffer trim still guards the limit.
@@ -1221,6 +1270,66 @@ mod tests {
         assert_eq!(result.turns, 1);
         assert_eq!(result.output, "hello!");
         assert!(result.tool_calls.is_empty());
+    }
+
+    /// PLAN-105 T-03：孤儿 tool_use 修补——外层 drop-中止（如宿主看门狗）
+    /// 后复跑，末条 assistant 消息的悬挂 ToolUse 在新一轮请求挂载前被补
+    /// 占位 tool_result（严格提供方对悬挂 tool_use 回 400 的防线）；已有
+    /// result 的调用不重复补。
+    #[tokio::test]
+    async fn run_repairs_orphan_tool_uses_before_new_request() {
+        let client = mock_client(vec![text_resp("resumed")]);
+        let mut agent = Agent::new(MockRole, client.clone() as Arc<dyn Client>);
+        // 模拟 drop-中止现场：assistant 带 2 个 ToolUse，仅其一有 result。
+        agent.memory.add("user", "do things");
+        agent.memory.add_message(Message {
+            role: "assistant".into(),
+            content: vec![
+                ContentBlock::Text { text: "对策：".into() },
+                ContentBlock::ToolUse { id: "a1".into(), name: "add_one".into(), input: json!({"n": 1}) },
+                ContentBlock::ToolUse { id: "a2".into(), name: "add_one".into(), input: json!({"n": 2}) },
+            ],
+        });
+        agent.memory.add_message(Message::tool_result("a1", "2"));
+        // 复跑（「继续」语义——musk T-03 注入轮路径）。
+        let result = agent.run("继续：从中断处推进").await.unwrap();
+        assert_eq!(result.output, "resumed");
+        let reqs = client.requests();
+        assert_eq!(reqs.len(), 1);
+        let msgs = &reqs[0].messages;
+        let pos_placeholder = msgs
+            .iter()
+            .position(|m| {
+                m.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::ToolResult { tool_use_id, content, .. }
+                            if tool_use_id == "a2" && content.contains("[interrupted before completion]")
+                    )
+                })
+            })
+            .expect("a2 应有占位 tool_result");
+        let pos_user = msgs
+            .iter()
+            .position(|m| {
+                m.role == "user"
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Text { text, .. } if text.contains("继续")))
+            })
+            .expect("新 user 消息应在请求线上");
+        assert!(
+            pos_placeholder < pos_user,
+            "占位 tool_result 应先于新 user 消息: {:?}",
+            msgs
+        );
+        // a1 不重复补（恰一条 a1 的 tool_result）。
+        let a1_results = msgs
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "a1"))
+            .count();
+        assert_eq!(a1_results, 1, "a1 已有 result 不得重复补");
     }
 
     #[tokio::test]
