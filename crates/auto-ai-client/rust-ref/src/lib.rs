@@ -402,4 +402,56 @@ mod tests {
             "应在空闲窗附近终结（实测 {elapsed:?}）"
         );
     }
+
+    /// PLAN-105 P1（UAT 87af4d4b 定罪形态）：send 阶段（连接/写/等响应头）
+    /// 无超时——stub daemon accept 后持连不响应，complete_stream 曾永久
+    /// pending（读循环的空闲超时只覆盖响应体阶段，send().await 本身无界；
+    /// 099 根修补的是体读窗，此为同文件残余面）。env 注入 1s send 窗，
+    /// 应在 ~1-2s（单次重试后）终结为 Http 错误。
+    #[test]
+    fn complete_stream_send_timeout_on_silent_daemon() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut s, _)) = listener.accept() else { return };
+            let mut buf = [0u8; 8192];
+            let _ = s.read(&mut buf);
+            // 持连不响应（send 阶段悬死形态），测试进程退出时随连接关闭。
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        std::env::set_var("AUTO_AI_CLIENT_SEND_TIMEOUT_SECS", "1");
+        let c = AiClient::with_url(format!("http://127.0.0.1:{port}"));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let t0 = std::time::Instant::now();
+        let out = rt.block_on(c.complete_stream(
+            &CompletionRequest {
+                model: "m".into(),
+                messages: vec![],
+                max_tokens: None,
+                temperature: None,
+                system_prompt: None,
+                tools: vec![],
+                stream: true,
+                preferred_provider: None,
+                thinking_level: None,
+                model_chain: vec![],
+            },
+            Box::new(|_v| {}),
+        ));
+        let elapsed = t0.elapsed();
+        let err = out.err().expect("静默 daemon 的 send 阶段应终结为错误");
+        assert!(
+            format!("{err}").contains("send timeout"),
+            "错误应携带 send timeout 语义: {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "应在 send 窗（含单次重试）附近终结（实测 {elapsed:?}）"
+        );
+    }
 }
