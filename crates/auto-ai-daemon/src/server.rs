@@ -424,7 +424,7 @@ async fn streaming_response(
                         .tracker
                         .record(&app_name, u.input_tokens as u64, u.output_tokens as u64);
                 }
-                let _ = tx.try_send(format!(
+                let done_payload = format!(
                     "data: {}\n\n",
                     json!({
                         "type": "done",
@@ -440,7 +440,24 @@ async fn streaming_response(
                         })).collect::<Vec<_>>(),
                         "stop_reason": resp.stop_reason,
                     })
-                ));
+                );
+                // PLAN-105 P1 加固：尾帧有界 await 投递——原 `try_send` 在
+                // mpsc（容量 64）满时静默丢帧：done 丢失会让 client 把带
+                // 工具调用的响应当纯文本终答（假收束，tool_calls 无从抵达，
+                // 且 EOF 后无从分辨）。30s 界防死消费者拖住 permit 释放；
+                // EOF 只在本 send 返回后随通道关闭抵达，保 done 先于流结束。
+                if tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    tx.send(done_payload),
+                )
+                .await
+                .is_err()
+                {
+                    tracing::error!(
+                        "chat stream done frame undeliverable (channel stalled 30s): app={} model={}",
+                        app_name, resp.model
+                    );
+                }
             }
             Err(e) => {
                 // PLAN-092 T-04: stream failure line.
@@ -450,10 +467,23 @@ async fn streaming_response(
                     stream_started.elapsed().as_millis(),
                     e
                 );
-                let _ = tx.try_send(format!(
+                let err_payload = format!(
                     "data: {}\n\n",
                     json!({"type": "error", "message": format!("{e}")})
-                ));
+                );
+                // PLAN-105 P1 加固：同 done 帧——错误尾帧也不可静默丢。
+                if tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    tx.send(err_payload),
+                )
+                .await
+                .is_err()
+                {
+                    tracing::error!(
+                        "chat stream error frame undeliverable (channel stalled 30s): app={}",
+                        app_name
+                    );
+                }
             }
         }
         // Release the concurrency permit when streaming finishes.

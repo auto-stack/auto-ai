@@ -76,20 +76,69 @@ impl AiClient {
         }
     }
 
+    /// PLAN-105 P1（UAT 87af4d4b 定罪）：send 阶段窗——`reqwest::Client` 裸构
+    /// 无任何超时，池化连接半死/对端持连不响应时 `send().await`（连接/写/
+    /// 等响应头）永久 pending（099 的 90s 只覆盖响应体读循环）。缺省 60s
+    /// 盖过 daemon 侧 30s permit 最长等待；env `AUTO_AI_CLIENT_SEND_TIMEOUT_SECS`
+    /// 可调（0 视为未设）。超时单次重试（新连接可绕开半死池化连接），再失败
+    /// 终结为 Http 错误交运行侧既有失败臂。
+    fn send_timeout() -> std::time::Duration {
+        std::time::Duration::from_secs(
+            std::env::var("AUTO_AI_CLIENT_SEND_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(60),
+        )
+    }
+
+    /// 发起到响应头抵达的有界请求（complete/complete_stream 共用）。超时
+    /// 重试一次（半死池化连接的典型一过性），二次超时返回 Http 错误。
+    async fn send_bounded(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, ClientError> {
+        let window = Self::send_timeout();
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let rb = req.try_clone().expect("json body is cloneable");
+            match tokio::time::timeout(window, rb.send()).await {
+                Ok(r) => return r.map_err(ClientError::from),
+                Err(_elapsed) => {
+                    if attempt >= 2 {
+                        tracing::error!(
+                            "llm send timeout: no response headers for {:?} (attempt {})",
+                            window,
+                            attempt
+                        );
+                        return Err(ClientError::Http(format!(
+                            "llm send timeout: no response headers for {:?} (attempt {})",
+                            window, attempt
+                        )));
+                    }
+                    tracing::warn!(
+                        "llm send timeout after {:?}; retrying once on a fresh connection",
+                        window
+                    );
+                }
+            }
+        }
+    }
+
     /// Send a canonical completion request, receive a canonical response.
     pub async fn complete(
         &self,
         req: &CompletionRequest,
     ) -> Result<CompletionResponse, ClientError> {
-        let resp = self
-            .http
-            .post(format!("{}/v1/chat/completions", self.url))
-            .header("Content-Type", "application/json")
-            .header("X-App-Name", "auto-ai-client")
-            .json(req)
-            .send()
-            .await
-            .map_err(ClientError::from)?;
+        let resp = self.send_bounded(
+            self.http
+                .post(format!("{}/v1/chat/completions", self.url))
+                .header("Content-Type", "application/json")
+                .header("X-App-Name", "auto-ai-client")
+                .json(req),
+        )
+        .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -97,10 +146,18 @@ impl AiClient {
             return Err(ClientError::Api(format!("daemon {status}: {text}")));
         }
 
-        let resp = resp
-            .json::<CompletionResponse>()
-            .await
-            .map_err(|e| ClientError::Api(format!("parse response: {e}")))?;
+        // PLAN-105 P1：体读同窗包界（send 窗复用——响应头已到而体停滞同样
+        // 不应永悬；非流式体为一次性 JSON，窗内未完成即终结）。
+        let resp = match tokio::time::timeout(Self::send_timeout(), resp.json::<CompletionResponse>()).await
+        {
+            Ok(r) => r.map_err(|e| ClientError::Api(format!("parse response: {e}")))?,
+            Err(_) => {
+                return Err(ClientError::Http(format!(
+                    "llm body timeout: no response body for {:?}",
+                    Self::send_timeout()
+                )))
+            }
+        };
         self.remember_meta(&resp);
         Ok(resp)
     }
@@ -123,15 +180,18 @@ impl AiClient {
         let mut req = req.clone();
         req.stream = true;
 
+        // PLAN-105 P1：send 阶段有界（原裸 send().await 永悬——UAT 87af4d4b
+        // run 悬挂 300s 的定罪落点）。响应头抵达后的体读仍由 099 的 90s
+        // 空闲窗管辖（长流合法）。
         let resp = self
-            .http
-            .post(format!("{}/v1/chat/completions", self.url))
-            .header("Content-Type", "application/json")
-            .header("X-App-Name", "auto-ai-client")
-            .json(&req)
-            .send()
-            .await
-            .map_err(ClientError::from)?;
+            .send_bounded(
+                self.http
+                    .post(format!("{}/v1/chat/completions", self.url))
+                    .header("Content-Type", "application/json")
+                    .header("X-App-Name", "auto-ai-client")
+                    .json(&req),
+            )
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
