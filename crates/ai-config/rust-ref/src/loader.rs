@@ -339,12 +339,12 @@ fn opt_models(node: &Node, key: &str) -> Vec<ModelDefinition> {
                         _ => ModelTier::Mid,
                     };
                     // Plan 028 model metadata (all optional).
-                    let context_window = o.get("context_window").map(|v| v.as_uint());
-                    let max_output_tokens = o.get("max_output_tokens").map(|v| v.as_uint());
+                    let context_window = o.get("context_window").map(|v| v.to_uint());
+                    let max_output_tokens = o.get("max_output_tokens").map(|v| v.to_uint());
                     let cost_per_mtok = o.get("cost_per_mtok").map(|c| CostPerMtok {
-                        input: c.as_obj().get("input").map(|v| v.as_uint()).unwrap_or(0) as u64,
-                        output: c.as_obj().get("output").map(|v| v.as_uint()).unwrap_or(0) as u64,
-                        cache_read: c.as_obj().get("cache_read").map(|v| v.as_uint()).unwrap_or(0) as u64,
+                        input: c.as_obj().get("input").map(|v| v.to_uint()).unwrap_or(0) as u64,
+                        output: c.as_obj().get("output").map(|v| v.to_uint()).unwrap_or(0) as u64,
+                        cache_read: c.as_obj().get("cache_read").map(|v| v.to_uint()).unwrap_or(0) as u64,
                     });
                     let capabilities = o.get("capabilities").map(|c| ModelCapabilities {
                         vision: c.as_obj().get("vision").map(|v| v.as_bool()).unwrap_or(false),
@@ -386,6 +386,24 @@ fn parse_tier(s: &str) -> ModelTier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_metadata_uses_current_unsigned_value_api() {
+        let cfg = parse_client_config(r#"
+            client {
+                vendor {
+                    kind : openai
+                    models : [{ id : "test", context_window : 131072, max_output_tokens : 8192,
+                        cost_per_mtok : { input : 100, output : 200, cache_read : 25 } }]
+                }
+            }
+        "#).unwrap();
+        let model = &cfg.providers["vendor"].models[0];
+        assert_eq!(model.context_window, Some(131072));
+        assert_eq!(model.max_output_tokens, Some(8192));
+        let cost = model.cost_per_mtok.as_ref().unwrap();
+        assert_eq!((cost.input, cost.output, cost.cache_read), (100, 200, 25));
+    }
 
     #[test]
     fn parse_client_config_example() {
